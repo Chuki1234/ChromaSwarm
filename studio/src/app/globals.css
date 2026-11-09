@@ -1,0 +1,48 @@
+@import "tailwindcss";
+
+/* ChromaSwarm Studio tokens — OKLCH 60-30-10, brand hue 250 (cool slate). */
+:root {
+  --h: 250;
+  --bg-primary: oklch(98.5% 0.005 var(--h));
+  --bg-surface: oklch(96% 0.008 var(--h));
+  --text-primary: oklch(15% 0.015 var(--h));
+  --text-secondary: oklch(42% 0.015 var(--h));
+  --text-muted: oklch(58% 0.015 var(--h));
+  --border-subtle: oklch(90% 0.01 var(--h));
+  --accent: oklch(52% 0.17 155);
+  --accent-fg: oklch(98.5% 0.005 155);
+  --danger: oklch(55% 0.19 27);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-primary: oklch(13% 0.01 var(--h));
+    --bg-surface: oklch(18% 0.015 var(--h));
+    --text-primary: oklch(96% 0.015 var(--h));
+    --text-secondary: oklch(72% 0.015 var(--h));
+    --text-muted: oklch(52% 0.015 var(--h));
+    --border-subtle: oklch(24% 0.015 var(--h));
+    --accent: oklch(72% 0.16 155);
+    --accent-fg: oklch(15% 0.02 155);
+    --danger: oklch(68% 0.17 27);
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg-primary);
+  --color-surface: var(--bg-surface);
+  --color-fg: var(--text-primary);
+  --color-fg-2: var(--text-secondary);
+  --color-fg-3: var(--text-muted);
+  --color-line: var(--border-subtle);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-danger: var(--danger);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}

@@ -1,0 +1,230 @@
+"use client";
+
+import { useState } from "react";
+import type { PipelineState } from "@/components/pipeline-console";
+
+export type Option = { value: string; label: string; hint: string };
+export type Question = {
+  step: string;
+  kind: "text" | "choice" | "assets" | "recommend_url" | "approval" | "info";
+  key: string;
+  text: string;
+  options: Option[];
+  recommended: string | null;
+  allow_free_text: boolean;
+  note: string | null;
+};
+export type Answer = { value: unknown; label: string };
+
+type Props = {
+  question: Question;
+  notice: string | null;
+  state: PipelineState;
+  busy: boolean;
+  onAnswer: (a: Answer) => void;
+};
+
+const input =
+  "w-full rounded-lg border border-line bg-surface px-4 py-3 text-sm outline-none transition-colors duration-200 placeholder:text-fg-3 focus-visible:border-accent";
+const primaryBtn =
+  "h-12 rounded-lg bg-accent px-6 text-sm font-medium text-accent-fg transition-[filter,transform] duration-200 hover:brightness-110 active:scale-[0.98] disabled:opacity-50";
+const secondaryBtn =
+  "h-12 rounded-lg border border-line px-6 text-sm font-medium text-fg-2 transition-colors duration-200 hover:border-fg-3 hover:text-fg active:scale-[0.98] disabled:opacity-50";
+
+const PLACEHOLDERS: Record<string, string> = {
+  raw_prompt: "Ví dụ: Mình muốn làm web bán đồ nội thất tối giản",
+  scope: "Ví dụ: Người 30–45 tuổi, xem trên điện thoại; muốn họ bấm “Đặt lịch xem showroom”",
+};
+
+export function QuestionCard({ question: q, notice, state, busy, onAnswer }: Props) {
+  return (
+    <div className="flex flex-col gap-6" data-swarm-section="question">
+      {(notice || q.note) && (
+        <p className="rounded-lg border border-line bg-surface px-4 py-3 text-sm text-fg-2">{notice || q.note}</p>
+      )}
+      <p className="max-w-[72ch] whitespace-pre-line text-lg leading-relaxed">{q.text}</p>
+      {q.kind === "choice" && <Choice q={q} busy={busy} onAnswer={onAnswer} />}
+      {q.kind === "text" && <FreeText busy={busy} onAnswer={onAnswer} placeholder={PLACEHOLDERS[q.key]} />}
+      {q.kind === "recommend_url" && <RecommendUrl busy={busy} onAnswer={onAnswer} />}
+      {q.kind === "assets" && <Assets busy={busy} onAnswer={onAnswer} />}
+      {q.kind === "approval" && <Approval state={state} busy={busy} onAnswer={onAnswer} />}
+    </div>
+  );
+}
+
+function Choice({ q, busy, onAnswer }: { q: Question; busy: boolean; onAnswer: Props["onAnswer"] }) {
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="grid gap-3 sm:grid-cols-2">
+        {q.options.map((o) => (
+          <button
+            key={o.value}
+            type="button"
+            disabled={busy}
+            data-swarm-id={`option-${o.value}`}
+            data-swarm-role="button"
+            onClick={() => onAnswer({ value: o.value, label: o.label })}
+            className="group flex flex-col items-start gap-1 rounded-xl border border-line p-4 text-left transition-colors duration-200 hover:border-accent focus-visible:border-accent active:scale-[0.98] disabled:opacity-50"
+          >
+            <span className="flex items-center gap-2 text-sm font-medium">
+              {o.label}
+              {q.recommended === o.value && (
+                <span className="rounded-sm bg-accent px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-wider text-accent-fg">
+                  Nên làm trước
+                </span>
+              )}
+            </span>
+            {o.hint && <span className="text-xs text-fg-3">{o.hint}</span>}
+          </button>
+        ))}
+      </div>
+      {q.allow_free_text && <FreeText busy={busy} onAnswer={onAnswer} placeholder="Hoặc mô tả bằng lời của bạn…" />}
+    </div>
+  );
+}
+
+function FreeText({ busy, onAnswer, placeholder }: { busy: boolean; onAnswer: Props["onAnswer"]; placeholder?: string }) {
+  const [text, setText] = useState("");
+  return (
+    <form
+      className="flex flex-col gap-3 sm:flex-row"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (text.trim()) onAnswer({ value: text.trim(), label: text.trim() });
+      }}
+    >
+      <label htmlFor="free-text" className="sr-only">
+        Câu trả lời
+      </label>
+      <input
+        id="free-text"
+        autoFocus
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder={placeholder ?? "Ví dụ: Mình muốn làm web bán đồ nội thất tối giản"}
+        data-swarm-id="free-text-input"
+        data-swarm-role="input"
+        className={`${input} h-12 flex-1 py-0`}
+      />
+      <button type="submit" disabled={busy || !text.trim()} data-swarm-id="send-answer" data-swarm-role="button" className={primaryBtn}>
+        Gửi
+      </button>
+    </form>
+  );
+}
+
+function RecommendUrl({ busy, onAnswer }: { busy: boolean; onAnswer: Props["onAnswer"] }) {
+  const [url, setUrl] = useState("");
+  return (
+    <div className="flex flex-col gap-3 sm:flex-row">
+      <label htmlFor="ref-url" className="sr-only">
+        Link trang tham khảo
+      </label>
+      <input id="ref-url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…" className={`${input} h-12 flex-1 py-0`} />
+      <button type="button" disabled={busy || !url.trim()} onClick={() => onAnswer({ value: url.trim(), label: url.trim() })} className={primaryBtn}>
+        Gửi link
+      </button>
+      <button type="button" disabled={busy} onClick={() => onAnswer({ value: "", label: "Không có link" })} className={secondaryBtn}>
+        Không có link
+      </button>
+    </div>
+  );
+}
+
+function Assets({ busy, onAnswer }: { busy: boolean; onAnswer: Props["onAnswer"] }) {
+  const [items, setItems] = useState("");
+  const [shot, setShot] = useState("");
+  const [url, setUrl] = useState("");
+  const submit = () => {
+    const assets = items
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => ({ kind: "other", path_or_text: l }));
+    const references = shot.trim() || url.trim() ? [{ screenshot_path: shot.trim() || null, url: url.trim() || null }] : [];
+    const parts = [assets.length ? `${assets.length} tài nguyên` : "chưa có tài nguyên", references.length ? "1 tham khảo" : ""];
+    onAnswer({ value: { assets, references, done: true }, label: parts.filter(Boolean).join(", ") });
+  };
+  return (
+    <div className="flex flex-col gap-4">
+      <label className="flex flex-col gap-2 text-sm">
+        <span className="text-fg-2">Tài nguyên (mỗi dòng một mục: logo, ảnh, slogan, bảng giá…)</span>
+        <textarea value={items} onChange={(e) => setItems(e.target.value)} rows={4} className={input} placeholder={"logo.svg\nSlogan: Nội thất gỗ sồi, làm thủ công tại Đà Lạt"} />
+      </label>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <label className="flex flex-col gap-2 text-sm">
+          <span className="text-fg-2">Ảnh chụp trang mẫu (tên file)</span>
+          <input value={shot} onChange={(e) => setShot(e.target.value)} className={input} placeholder="reference.png" />
+        </label>
+        <label className="flex flex-col gap-2 text-sm">
+          <span className="text-fg-2">Link trang mẫu</span>
+          <input value={url} onChange={(e) => setUrl(e.target.value)} className={input} placeholder="https://…" />
+        </label>
+      </div>
+      <button type="button" disabled={busy} onClick={submit} data-swarm-id="assets-done" data-swarm-role="button" className={`${primaryBtn} self-start`}>
+        Đã gửi đủ
+      </button>
+    </div>
+  );
+}
+
+const DOCS = [
+  { key: "design_md", label: "DESIGN.md" },
+  { key: "product_md", label: "PRODUCT.md" },
+  { key: "plan_md", label: "PLAN.md" },
+] as const;
+
+function Approval({ state, busy, onAnswer }: { state: PipelineState; busy: boolean; onAnswer: Props["onAnswer"] }) {
+  const [tab, setTab] = useState<(typeof DOCS)[number]["key"]>("design_md");
+  const [feedback, setFeedback] = useState("");
+  return (
+    <div className="flex flex-col gap-4">
+      <div role="tablist" className="flex gap-1 border-b border-line">
+        {DOCS.map((d) => (
+          <button
+            key={d.key}
+            role="tab"
+            aria-selected={tab === d.key}
+            onClick={() => setTab(d.key)}
+            data-swarm-id={`doc-tab-${d.key}`}
+            data-swarm-role="tab"
+            className={`-mb-px border-b-2 px-4 py-2 font-mono text-xs transition-colors duration-200 ${
+              tab === d.key ? "border-accent text-fg" : "border-transparent text-fg-3 hover:text-fg"
+            }`}
+          >
+            {d.label}
+          </button>
+        ))}
+      </div>
+      <pre className="max-h-[480px] overflow-auto whitespace-pre-wrap rounded-xl border border-line bg-surface p-6 font-mono text-xs leading-relaxed text-fg-2">
+        {state[tab]}
+      </pre>
+      <label className="flex flex-col gap-2 text-sm">
+        <span className="text-fg-2">Muốn đổi gì? (để trống nếu duyệt luôn)</span>
+        <textarea value={feedback} onChange={(e) => setFeedback(e.target.value)} rows={2} className={input} placeholder="Ví dụ: đổi màu chủ đạo sang xanh rêu, bớt chữ ở hero" />
+      </label>
+      <div className="flex flex-col gap-3 sm:flex-row">
+        <button
+          type="button"
+          disabled={busy}
+          data-swarm-id="approve-plan"
+          data-swarm-role="button"
+          onClick={() => onAnswer({ value: { approve: true }, label: "Duyệt kế hoạch" })}
+          className={primaryBtn}
+        >
+          Duyệt & bắt đầu dựng
+        </button>
+        <button
+          type="button"
+          disabled={busy || !feedback.trim()}
+          data-swarm-id="request-changes"
+          data-swarm-role="button"
+          onClick={() => onAnswer({ value: { approve: false, feedback: feedback.trim() }, label: `Yêu cầu sửa: ${feedback.trim()}` })}
+          className={secondaryBtn}
+        >
+          Yêu cầu chỉnh sửa
+        </button>
+      </div>
+    </div>
+  );
+}

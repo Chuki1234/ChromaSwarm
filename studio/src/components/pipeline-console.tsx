@@ -1,0 +1,231 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { QuestionCard, type Answer, type Question } from "@/components/question-card";
+
+const BACKEND_WS = process.env.NEXT_PUBLIC_BACKEND_WS ?? "ws://localhost:8100";
+
+const STEPS: { id: string; label: string; phase: string }[] = [
+  { id: "B1", label: "Đọc prompt", phase: "Tư vấn" },
+  { id: "B2", label: "Tư vấn sitemap", phase: "Tư vấn" },
+  { id: "B3", label: "Hỏi 5 trụ cột", phase: "Tư vấn" },
+  { id: "B4", label: "Assets & tham khảo", phase: "Tư vấn" },
+  { id: "B5", label: "DESIGN.md", phase: "Kế hoạch" },
+  { id: "B6", label: "PRODUCT.md + PLAN.md", phase: "Kế hoạch" },
+  { id: "B7", label: "Duyệt kế hoạch", phase: "Kế hoạch" },
+  { id: "B8", label: "Phòng Design", phase: "Triển khai" },
+  { id: "B9", label: "Phòng Developer", phase: "Triển khai" },
+  { id: "B10", label: "Hợp nhất", phase: "Triển khai" },
+  { id: "B11", label: "Cursor Lớn Nhất", phase: "Kiểm định" },
+  { id: "B12", label: "Bàn giao", phase: "Kiểm định" },
+];
+
+export type PipelineState = {
+  step: string;
+  session_id: string;
+  design_md: string | null;
+  product_md: string | null;
+  plan_md: string | null;
+  pillars: Record<string, string | null>;
+};
+
+type Snapshot = {
+  state: PipelineState;
+  question: Question | null;
+  notice: string | null;
+  finished: boolean;
+  missing: string[];
+  tools: string[];
+  clarity_score: number;
+};
+
+type Status = "connecting" | "open" | "closed";
+type Turn = { step: string; question: string; answer: string };
+
+function sessionId(): string {
+  try {
+    const saved = localStorage.getItem("chromaswarm-session");
+    if (saved) return saved;
+    const id = `s-${Date.now().toString(36)}`;
+    localStorage.setItem("chromaswarm-session", id);
+    return id;
+  } catch {
+    return `s-${Date.now().toString(36)}`;
+  }
+}
+
+export function PipelineConsole() {
+  const [snap, setSnap] = useState<Snapshot | null>(null);
+  const [status, setStatus] = useState<Status>("connecting");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [history, setHistory] = useState<Turn[]>([]);
+  const wsRef = useRef<WebSocket | null>(null);
+
+  useEffect(() => {
+    const ws = new WebSocket(`${BACKEND_WS}/ws/session/${sessionId()}`);
+    wsRef.current = ws;
+    ws.onopen = () => setStatus("open");
+    ws.onclose = () => setStatus("closed");
+    ws.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data);
+      setBusy(false);
+      if (msg.type === "state") {
+        setSnap(msg);
+        setError(null);
+      } else if (msg.type === "error") {
+        setError(msg.message);
+      }
+    };
+    return () => ws.close();
+  }, []);
+
+  const answer = (a: Answer) => {
+    if (!snap?.question) return;
+    setHistory((h) => [...h, { step: snap.state.step, question: snap.question!.text.split("\n")[0], answer: a.label }]);
+    setBusy(true);
+    wsRef.current?.send(JSON.stringify({ type: "answer", value: a.value }));
+  };
+
+  const restart = () => {
+    try {
+      localStorage.removeItem("chromaswarm-session");
+    } catch {}
+    location.reload();
+  };
+
+  const current = snap?.state.step ?? "B1";
+  const currentIdx = STEPS.findIndex((s) => s.id === current);
+
+  return (
+    <main className="mx-auto grid w-full max-w-[1360px] flex-1 gap-8 px-4 py-12 md:grid-cols-[240px_1fr] md:px-8 lg:grid-cols-[240px_1fr_280px]">
+      <aside className="flex flex-col gap-4">
+        <div className="flex items-baseline justify-between">
+          <h1 className="text-xl font-semibold tracking-tight">ChromaSwarm</h1>
+          <span className={`font-mono text-xs ${status === "open" ? "text-accent" : "text-fg-3"}`}>● {status}</span>
+        </div>
+        <ol className="flex flex-col border-l border-line" data-swarm-section="step-tracker">
+          {STEPS.map((s, i) => {
+            const state = i < currentIdx ? "done" : i === currentIdx ? "current" : "todo";
+            return (
+              <li
+                key={s.id}
+                aria-current={state === "current" ? "step" : undefined}
+                className={`-ml-px flex items-center gap-3 border-l-2 py-2 pl-4 text-sm ${
+                  state === "current"
+                    ? "border-accent font-medium text-fg"
+                    : state === "done"
+                      ? "border-transparent text-fg-2"
+                      : "border-transparent text-fg-3"
+                }`}
+              >
+                <span className="w-8 font-mono text-xs">{s.id}</span>
+                <span>{s.label}</span>
+              </li>
+            );
+          })}
+        </ol>
+        <button
+          type="button"
+          onClick={restart}
+          data-swarm-id="restart-session"
+          data-swarm-role="button"
+          className="mt-4 self-start text-xs text-fg-3 underline-offset-4 transition-colors duration-200 hover:text-fg hover:underline"
+        >
+          Bắt đầu phiên mới
+        </button>
+      </aside>
+
+      <section className="flex min-w-0 flex-col gap-8" data-swarm-section="conversation">
+        <header className="flex flex-col gap-2">
+          <p className="font-mono text-xs uppercase tracking-widest text-fg-3">
+            {STEPS[currentIdx]?.phase} · {current}
+          </p>
+          <h2 className="text-3xl font-semibold tracking-tight">{STEPS[currentIdx]?.label}</h2>
+        </header>
+
+        {history.length > 0 && (
+          <ol className="flex flex-col gap-4 border-b border-line pb-8">
+            {history.map((t, i) => (
+              <li key={i} className="grid grid-cols-[40px_1fr] gap-x-4 gap-y-1 text-sm">
+                <span className="font-mono text-xs text-fg-3">{t.step}</span>
+                <span className="text-fg-2">{t.question}</span>
+                <span />
+                <span className="font-medium">→ {t.answer}</span>
+              </li>
+            ))}
+          </ol>
+        )}
+
+        {error && (
+          <p role="alert" className="rounded-lg border border-danger/40 px-4 py-3 text-sm text-danger">
+            {error}
+          </p>
+        )}
+
+        {snap?.question ? (
+          <QuestionCard
+            key={`${snap.state.step}-${snap.question.key}-${history.length}`}
+            question={snap.question}
+            notice={snap.notice}
+            state={snap.state}
+            busy={busy || status !== "open"}
+            onAnswer={answer}
+          />
+        ) : snap?.finished ? (
+          <div className="flex flex-col gap-2 rounded-xl border border-line bg-surface p-6">
+            <p className="font-medium">Kế hoạch đã được duyệt.</p>
+            <p className="text-sm text-fg-2">{snap.notice}</p>
+          </div>
+        ) : (
+          <p className="text-sm text-fg-3">{busy ? "Đang xử lý…" : "Đang kết nối…"}</p>
+        )}
+      </section>
+
+      <aside className="flex flex-col gap-4 md:col-start-2 lg:col-start-auto" data-swarm-section="gates">
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-1">
+          <Stat label="Clarity Score (B3)" value={`${Math.round((snap?.clarity_score ?? 0) * 100)}%`} />
+          <Stat label="Tool được cấp" value={String(snap?.tools.length ?? "–")} />
+        </div>
+        <Panel title="Điều kiện để qua bước">
+          {snap?.missing.length ? (
+            <ul className="flex flex-col gap-2 font-mono text-xs text-fg-2">
+              {snap.missing.map((m) => (
+                <li key={m}>— {m}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-fg-2">Đã đủ.</p>
+          )}
+        </Panel>
+        <Panel title="Tool agent được dùng">
+          <ul className="flex flex-wrap gap-2">
+            {snap?.tools.map((t) => (
+              <li key={t} className="rounded-md border border-line px-2 py-1 font-mono text-xs text-fg-2">
+                {t}
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      </aside>
+    </main>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex flex-col gap-1 rounded-xl border border-line bg-surface p-4">
+      <span className="text-xs text-fg-3">{label}</span>
+      <span className="font-mono text-2xl">{value}</span>
+    </div>
+  );
+}
+
+function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border border-line p-4">
+      <h3 className="text-sm font-medium">{title}</h3>
+      {children}
+    </div>
+  );
+}
