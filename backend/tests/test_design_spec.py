@@ -61,7 +61,7 @@ def test_design_md_sections_and_values():
     for heading in ("## 1. Triết lý", "## 2. Đặc trưng", "## 3. Hệ màu OKLCH", "## 4. Typography",
                     "## 5. Không gian", "## 6. Chuyển động", "## 7. Luật chống AI Slop"):
         assert heading in md
-    assert "Instrument Serif" in md and "1280px" in md and "128px" in md
+    assert "Playfair Display" in md and "1280px" in md and "128px" in md
     assert "FAIL" not in md
     assert spec.typography.ratio == pytest.approx(1.333)
 

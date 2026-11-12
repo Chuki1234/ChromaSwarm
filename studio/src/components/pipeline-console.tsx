@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { BuildPanel } from "@/components/build-panel";
 import { QuestionCard, type Answer, type Question } from "@/components/question-card";
 
 const BACKEND_WS = process.env.NEXT_PUBLIC_BACKEND_WS ?? "ws://localhost:8100";
@@ -27,6 +28,22 @@ export type PipelineState = {
   product_md: string | null;
   plan_md: string | null;
   pillars: Record<string, string | null>;
+  sections_planned: string[];
+  sections_done: string[];
+  sections_checked: string[];
+  preview_url: string | null;
+  token_changes: string[];
+  open_findings: string[];
+  build_error: string | null;
+  qa_passed: boolean;
+  qa_summary: string | null;
+  qa_failures: string[];
+  heal_history: { iteration: number; failures: string[] }[];
+  heal_rules: string[];
+  escalated_to_user: boolean;
+  page_routes: Record<string, string>;
+  motion_effects: string[];
+  handover_closed: boolean;
 };
 
 type Snapshot = {
@@ -37,6 +54,7 @@ type Snapshot = {
   missing: string[];
   tools: string[];
   clarity_score: number;
+  running: boolean;
 };
 
 type Status = "connecting" | "open" | "closed";
@@ -163,6 +181,8 @@ export function PipelineConsole() {
           </p>
         )}
 
+        {snap?.question?.kind === "handover" && <BuildPanel state={snap.state} notice={null} running={false} />}
+
         {snap?.question ? (
           <QuestionCard
             key={`${snap.state.step}-${snap.question.key}-${history.length}`}
@@ -172,11 +192,8 @@ export function PipelineConsole() {
             busy={busy || status !== "open"}
             onAnswer={answer}
           />
-        ) : snap?.finished ? (
-          <div className="flex flex-col gap-2 rounded-xl border border-line bg-surface p-6">
-            <p className="font-medium">Kế hoạch đã được duyệt.</p>
-            <p className="text-sm text-fg-2">{snap.notice}</p>
-          </div>
+        ) : snap && (snap.running || snap.finished) && currentIdx >= STEPS.findIndex((s) => s.id === "B8") ? (
+          <BuildPanel state={snap.state} notice={snap.notice} running={snap.running} />
         ) : (
           <p className="text-sm text-fg-3">{busy ? "Đang xử lý…" : "Đang kết nối…"}</p>
         )}

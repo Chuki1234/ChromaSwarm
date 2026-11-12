@@ -45,7 +45,7 @@ def test_happy_path_reaches_approval_and_writes_artifacts(runner, tmp_path):
     assert last["question"]["kind"] == "approval"
     p = last["pipeline"]
     assert p.pillars.clarity_score == 1.0
-    assert "Instrument Serif" in p.design_md and "FAIL" not in p.design_md
+    assert "Playfair Display" in p.design_md and "FAIL" not in p.design_md
     assert "data-swarm-section" in p.plan_md and "`cta-primary`" in p.plan_md
     for name in ("DESIGN.md", "PRODUCT.md", "PLAN.md", "tokens.css"):
         assert (tmp_path / "s1" / "artifacts" / name).exists()
@@ -130,3 +130,30 @@ def test_cta_and_title_extraction():
     assert project_title("Mình muốn làm web bán đồ nội thất gỗ sồi tối giản") == "Web bán đồ nội thất gỗ sồi tối giản"
     long = project_title("Mình muốn làm " + "rất " * 30 + "đẹp")
     assert long.endswith("…") and not long[:-1].endswith(" ")
+
+
+def test_b7_feedback_changes_pillars_and_regenerates(runner):
+    run(drive(runner, "s8", HAPPY))
+    before = run(runner.snapshot("s8"))["pipeline"].design_md
+    snap = run(runner.answer("s8", {"approve": False, "feedback": "Mình muốn đổi sang tông tối"}))
+    p = snap["pipeline"]
+    assert p.step is Step.B7_APPROVAL
+    assert p.pillars.color == "dark #8a3b12"  # brand colour kept, only the tone changed
+    assert "(dark," in p.design_md and p.design_md != before
+    assert snap["notice"].startswith("Đã cập nhật: Màu sắc → Tối")
+    assert "FAIL |" not in p.design_md  # the new dark palette still passes every contrast check
+
+
+def test_b7_feedback_without_pillar_change_is_recorded_only(runner):
+    run(drive(runner, "s9", HAPPY))
+    snap = run(runner.answer("s9", {"approve": False, "feedback": "Bớt chữ ở hero"}))
+    assert snap["pipeline"].pillars.color == "warm-paper #8a3b12"
+    assert snap["notice"].startswith("Đã ghi góp ý")
+
+
+def test_b7_empty_feedback_stays_at_gate(runner):
+    run(drive(runner, "s10", HAPPY))
+    snap = run(runner.answer("s10", {"approve": False, "feedback": "  "}))
+    assert snap["pipeline"].step is Step.B7_APPROVAL
+    assert snap["pipeline"].design_md  # documents not thrown away
+    assert "ghi rõ" in snap["notice"]

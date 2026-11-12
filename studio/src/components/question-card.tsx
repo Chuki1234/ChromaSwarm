@@ -6,7 +6,7 @@ import type { PipelineState } from "@/components/pipeline-console";
 export type Option = { value: string; label: string; hint: string };
 export type Question = {
   step: string;
-  kind: "text" | "choice" | "assets" | "recommend_url" | "approval" | "info";
+  kind: "text" | "choice" | "assets" | "recommend_url" | "approval" | "info" | "handover";
   key: string;
   text: string;
   options: Option[];
@@ -48,6 +48,7 @@ export function QuestionCard({ question: q, notice, state, busy, onAnswer }: Pro
       {q.kind === "recommend_url" && <RecommendUrl busy={busy} onAnswer={onAnswer} />}
       {q.kind === "assets" && <Assets busy={busy} onAnswer={onAnswer} />}
       {q.kind === "approval" && <Approval state={state} busy={busy} onAnswer={onAnswer} />}
+      {q.kind === "handover" && <Handover q={q} state={state} busy={busy} onAnswer={onAnswer} />}
     </div>
   );
 }
@@ -223,6 +224,57 @@ function Approval({ state, busy, onAnswer }: { state: PipelineState; busy: boole
           className={secondaryBtn}
         >
           Yêu cầu chỉnh sửa
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** B12: the page is the user's now. Build the next sitemap page, refine this one, or finish. */
+function Handover({ q, state, busy, onAnswer }: { q: Question; state: PipelineState; busy: boolean; onAnswer: Props["onAnswer"] }) {
+  const [feedback, setFeedback] = useState("");
+  return (
+    <div className="flex flex-col gap-6">
+      {state.preview_url && (
+        <a href={state.preview_url} target="_blank" rel="noreferrer" data-swarm-id="open-handover" data-swarm-role="link"
+          className={`${primaryBtn} inline-flex items-center self-start`}>
+          Mở trang để dùng thử ↗
+        </a>
+      )}
+      {q.options.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <h3 className="text-sm font-medium">Dựng trang tiếp theo (giữ nguyên DESIGN.md)</h3>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {q.options.map((o) => (
+              <button key={o.value} type="button" disabled={busy} data-swarm-id={`next-page-${o.value}`} data-swarm-role="button"
+                onClick={() => onAnswer({ value: { action: "next", page: o.value }, label: `Dựng trang: ${o.label}` })}
+                className="flex flex-col items-start gap-1 rounded-xl border border-line p-4 text-left transition-colors duration-200 hover:border-accent focus-visible:border-accent active:scale-[0.98] disabled:opacity-50">
+                <span className="flex items-center gap-2 text-sm font-medium">
+                  {o.label}
+                  {q.recommended === o.value && (
+                    <span className="rounded-sm bg-accent px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-wider text-accent-fg">Nên làm tiếp</span>
+                  )}
+                </span>
+                {o.hint && <span className="text-xs text-fg-3">{o.hint}</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      <label className="flex flex-col gap-2 text-sm">
+        <span className="font-medium">Hoặc tinh chỉnh trang này</span>
+        <textarea value={feedback} onChange={(e) => setFeedback(e.target.value)} rows={2} className={input}
+          placeholder="Ví dụ: đổi sang tông tối, khoảng cách gọn hơn" data-swarm-id="refine-feedback" data-swarm-role="input" />
+      </label>
+      <div className="flex flex-col gap-3 sm:flex-row">
+        <button type="button" disabled={busy || !feedback.trim()} data-swarm-id="refine-page" data-swarm-role="button"
+          onClick={() => onAnswer({ value: { action: "refine", feedback: feedback.trim() }, label: `Tinh chỉnh: ${feedback.trim()}` })}
+          className={secondaryBtn}>
+          Tinh chỉnh (duyệt lại kế hoạch)
+        </button>
+        <button type="button" disabled={busy} data-swarm-id="finish-session" data-swarm-role="button"
+          onClick={() => onAnswer({ value: { action: "finish" }, label: "Kết thúc" })} className={secondaryBtn}>
+          Kết thúc
         </button>
       </div>
     </div>

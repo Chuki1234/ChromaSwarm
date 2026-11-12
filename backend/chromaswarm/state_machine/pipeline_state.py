@@ -152,13 +152,29 @@ class PipelineState(BaseModel):
     plan_approved: bool = False
 
     # B8-B10
-    sections_done: list[str] = Field(default_factory=list)
+    design_system_installed: bool = False  # B8: tokens.css written into the workspace
+    sections_planned: list[str] = Field(default_factory=list)
+    sections_done: list[str] = Field(default_factory=list)  # B9 Developer: written
+    sections_checked: list[str] = Field(default_factory=list)  # B9 Design: measured (and repaired)
+    preview_url: str | None = None
+    page_routes: dict[str, str] = Field(default_factory=dict)  # sitemap slug -> app route ("/" for the first page)
+    motion_effects: list[str] = Field(default_factory=list)  # B8.1 effects applied via MCP
+    token_changes: list[str] = Field(default_factory=list)  # Design fixes written to tokens.css
+    open_findings: list[str] = Field(default_factory=list)  # left for the Developer / B11
     integrated: bool = False
+    build_error: str | None = None  # a B8-B10 failure the user must see; stops the build loop
 
     # B11
     qa_passed: bool = False
     heal_history: list[HealAttempt] = Field(default_factory=list)
     escalated_to_user: bool = False
+    qa_summary: str | None = None
+    qa_failures: list[str] = Field(default_factory=list)  # human-readable, latest run
+    heal_rules: list[str] = Field(default_factory=list)  # Developer CSS patches -> app/heal.css
+    heal_contrast: list[dict] = Field(default_factory=list)  # colour pairs for the Design department
+
+    # B12
+    handover_closed: bool = False  # user chose "finish": no further page in this session
 
     # ------------------------------------------------------------------ gates
 
@@ -188,10 +204,15 @@ class PipelineState(BaseModel):
             return [n for n, v in (("product_md", self.product_md), ("plan_md", self.plan_md)) if not v]
         if s is Step.B7_APPROVAL:
             return [] if self.plan_approved else ["user_approval"]
-        # B8 and B9 run pipelined per section (Phase 5); in this linear view
-        # both steps only require that at least one section has been built.
-        if s in (Step.B8_DESIGN, Step.B9_DEVELOP):
-            return [] if self.sections_done else ["sections"]
+        if s is Step.B8_DESIGN:
+            out = [] if self.design_system_installed else ["design_system"]
+            return out + ([] if self.sections_planned else ["sections_planned"])
+        if s is Step.B9_DEVELOP:
+            # Pipelined per section (decision 3): Dev writes N while Design measures N-1.
+            planned = set(self.sections_planned)
+            out = [f"write:{x}" for x in self.sections_planned if x not in self.sections_done]
+            out += [f"check:{x}" for x in self.sections_planned if x not in self.sections_checked]
+            return out if planned else ["sections_planned"]
         if s is Step.B10_INTEGRATE:
             return [] if self.integrated else ["integrated"]
         if s is Step.B11_MASTER_QA:
@@ -242,8 +263,29 @@ class PipelineState(BaseModel):
             self.escalated_to_user = True
             return self.step
         self.sections_done = []
+        self.sections_checked = []
         self.integrated = False
         self.step = Step.B8_DESIGN
+        return self.step
+
+    def escalate_qa(self, failures: list[str]) -> Step:
+        """B11 FAIL with nothing the departments can patch: hand over to the user now
+        instead of re-running an identical build."""
+        if self.step is not Step.B11_MASTER_QA:
+            raise GateError("escalate_qa() only valid at B11")
+        self.heal_history.append(HealAttempt(iteration=len(self.heal_history) + 1, failures=failures))
+        self.escalated_to_user = True
+        return self.step
+
+    def refine_current_page(self) -> Step:
+        """B12 'Tinh chỉnh trang này' with feedback: documents are regenerated (B5) and the
+        changed plan must be approved again at B7 before anything is rebuilt."""
+        if self.step is not Step.B12_HANDOVER:
+            raise GateError("refine_current_page() only valid at B12")
+        self.plan_approved = False
+        self.design_md = self.product_md = self.plan_md = self.tokens_css = None
+        self._reset_build()
+        self.step = Step.B5_DESIGN_MD
         return self.step
 
     def upgrade_current_page(self) -> Step:
@@ -271,11 +313,23 @@ class PipelineState(BaseModel):
         return self.step
 
     def _reset_build(self) -> None:
+        self.build_error = None
+        self.preview_url = None
+        self.motion_effects = []
+        self.design_system_installed = False
+        self.sections_planned = []
+        self.sections_checked = []
+        self.token_changes = []
+        self.open_findings = []
         self.sections_done = []
         self.integrated = False
         self.qa_passed = False
         self.heal_history = []
         self.escalated_to_user = False
+        self.qa_summary = None
+        self.qa_failures = []
+        self.heal_rules = []
+        self.heal_contrast = []
 
 
 class GateError(RuntimeError):
@@ -289,6 +343,7 @@ DOC_TOOLS = frozenset({"write_design_md", "write_product_md", "write_plan_md"})
 CODEGEN_TOOLS = frozenset({"write_workspace_file", "run_dev_server"})
 BROWSER_TOOLS = frozenset({"swarm_cursor", "browser_measure", "write_tokens"})
 QA_TOOLS = frozenset({"qa_hover", "qa_click", "qa_scroll", "qa_viewport", "qa_report"})
+MCP_TOOLS = frozenset({"mcp_motion"})  # B8.1 Motion & 2D/3D MCP Specialist (Design department)
 
 ALLOWED_TOOLS: dict[Step, frozenset[str]] = {
     Step.B1_READ_PROMPT: READ_ONLY_TOOLS,
@@ -299,7 +354,7 @@ ALLOWED_TOOLS: dict[Step, frozenset[str]] = {
     Step.B6_PLAN: READ_ONLY_TOOLS | DOC_TOOLS,
     Step.B7_APPROVAL: READ_ONLY_TOOLS,
     Step.B8_DESIGN: READ_ONLY_TOOLS | BROWSER_TOOLS,
-    Step.B9_DEVELOP: READ_ONLY_TOOLS | CODEGEN_TOOLS,
+    Step.B9_DEVELOP: READ_ONLY_TOOLS | CODEGEN_TOOLS | BROWSER_TOOLS | MCP_TOOLS,  # both departments, pipelined
     Step.B10_INTEGRATE: READ_ONLY_TOOLS | CODEGEN_TOOLS | BROWSER_TOOLS,
     Step.B11_MASTER_QA: READ_ONLY_TOOLS | QA_TOOLS,
     Step.B12_HANDOVER: READ_ONLY_TOOLS,

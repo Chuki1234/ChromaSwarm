@@ -83,3 +83,11 @@ def test_type_scale_monotonic_on_mobile_and_desktop(ratio):
     maxs = [st.px_max for st in s.steps]
     assert mins == sorted(mins) and len(set(mins)) == len(mins)
     assert maxs == sorted(maxs)
+
+
+def test_every_preset_font_supports_vietnamese():
+    from chromaswarm.engines.presets import THEMES, VIETNAMESE_FONTS
+
+    for preset in THEMES.values():
+        for font in filter(None, (preset.heading_font, preset.body_font, preset.mono_font)):
+            assert font in VIETNAMESE_FONTS, f"{preset.theme}: {font} has no Vietnamese subset"

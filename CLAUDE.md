@@ -9,11 +9,20 @@ pages one page at a time. Full spec: `docs/00_HANDOFF_CLAUDE.md` and
 - `backend/` — Python 3.11+ orchestrator (`uv`, FastAPI + WebSocket, Pydantic, LangGraph, Anthropic SDK, Playwright).
   - `chromaswarm/state_machine/pipeline_state.py` — B1→B12 state, exit criteria, per-step tool grants.
   - `chromaswarm/state_machine/graph.py` — LangGraph B1–B7, one `interrupt()` per node pass, single router on `pipeline.step`; `PipelineRunner` is the WebSocket-facing API.
-  - `chromaswarm/agents/consultant.py` — `ConsultantAgent` interface + `RuleBasedConsultant` (no-LLM baseline; Claude agent plugs in at Phase 3).
+  - `chromaswarm/agents/consultant.py` — `ConsultantAgent` interface + `RuleBasedConsultant` (no-LLM baseline).
+  - `chromaswarm/agents/llm.py` + `llm_consultant.py` — `LLMConsultant`: any OpenAI-compatible model (configured for Qwen `qwen3.8-flash`) maps free text onto closed value sets, turns B7 feedback into pillar changes, and writes B5 philosophy prose (rejected unless every number it cites is in `philosophy_facts`); output is validated, falls back to rules on provider errors. `uv run python -m chromaswarm.agents.llm` checks the live connection. Enabled by `CHROMASWARM_LLM_MODEL` in `backend/.env` (see `backend/.env.example`); unset = rule-based. `/health` reports which consultant is active.
   - `chromaswarm/agents/planner.py` — section blueprints, PRODUCT.md / PLAN.md renderers.
   - `chromaswarm/engines/` — deterministic, no LLM: `color` (OKLCH, WCAG, APCA), `palette` (60-30-10), `typography`, `spacing` (8pt), `presets`, `style_dna` (analysis), `design_spec` (DESIGN.md + tokens.css).
   - `chromaswarm/playwright_engine/style_dna_scraper.py` — returns aggregate style stats only (no DOM/text).
-  - Generated artifacts go to `workspaces/<session>/artifacts/`.
+  - `chromaswarm/playwright_engine/swarm_overlay.js` — injected overlay (shadow DOM, `pointer-events:none`, re-attaches after re-renders): 4 Design cursors + rulers/box-model bands, 2.2x Master cursor + HUD + red flags, `handover()` removes it. It only reads the DOM.
+  - `chromaswarm/playwright_engine/swarm.py` — `SwarmOverlay` (Python driver, event sink for streaming) and `design_pass()`: per section Layout → Color → Typography; verdicts (8pt grid, mobile gutter ≥16px, WCAG/APCA, 45–72ch, type scale) computed in Python with the engines. Demo: `uv run python -m chromaswarm.playwright_engine.demo [url]` (fixture page with 3 seeded defects).
+  - `chromaswarm/developer/` — B9 Developer (rule-based baseline): `nextjs.py` renders one TSX component per PLAN.md section structure (real interactions, `data-swarm-*` on every control, styling only via tokens) + workspace scaffold; `content.py` builds page copy from the user's answers/assets; `workspace.py` writes files tool-gated per step and runs `next dev` (port 3001+, own process group).
+  - `chromaswarm/design/dept.py` — B8 Design repairs: contrast → shift the colour token's OKLCH lightness; off-grid spacing → snap the spacing token. Written to the workspace `app/tokens.css` (decision 4); the rest goes to `open_findings`.
+  - `chromaswarm/build/runtime.py` — `LocalBuildRuntime` owns per-session workspace, dev server, Playwright page + overlay (not checkpointed). B8 installs tokens; each B9 graph tick = Dev writes section N ∥ Design checks N−1; B10 reloads, checks section order + console errors. `CHROMASWARM_BUILD=0` stops after B7, `CHROMASWARM_HEADED=0` hides the browser.
+  - `chromaswarm/qa/` — B11 Master QA: `qa_probe.js` (read-only DOM measurements) + `master.py` (4 tests of standards ch.5: interaction sweep incl. hover/click/console/focus-visible, scroll & sticky, 1440/1024/768/375 overflow/collision/margins/tap targets, DESIGN.md fonts + contrast + automatable anti-slop rules). Each failure carries a `heal` CSS rule (Developer → `app/heal.css` on the next B9) or a colour reading (Design → `tokens.css`). Loop: FAIL → B8 (tokens kept) → B11, max 3; nothing patchable → escalate at once. Fixture with one seeded defect per rule: `qa/fixtures/qa_defects.html`.
+  - `chromaswarm/mcp_motion/` — B8.1: a real MCP server (`server.py`, stdio, tools `list_effects` / `build_effect`) returning dependency-free CSS effects (reveal, scroll-driven parallax, stagger; reduced-motion safe, page-scoped); `client.py` is what the Motion agent uses. `CHROMASWARM_MOTION_MCP="<cmd>"` swaps in an external server with the same tool contract. Motion failures never stop a build.
+  - B12 (`graph.b12`): overlay removed + in-page handover bar (exposed binding → `main.browser_choice`), Studio card: next sitemap page (→ B6, DESIGN.md + tokens kept, new route `/<slug>`, earlier pages' headers re-rendered with the new link), refine with feedback (→ B5, re-approval at B7), or finish. One lock per session serialises Studio and browser answers.
+  - Generated artifacts go to `workspaces/<session>/artifacts/`, the target app to `workspaces/<session>/app/`.
 - `studio/` — Next.js 16 control UI (chat, step tracker, B7 approval). Port 3000.
 - `workspaces/<project>/` — generated target apps (port 3001+). Never generated inside `studio/`.
 - `knowledge-base/` — `FRONTEND_STANDARDS.md` + templates for DESIGN/PRODUCT/PLAN.md.
@@ -21,7 +30,9 @@ pages one page at a time. Full spec: `docs/00_HANDOFF_CLAUDE.md` and
 ## Commands
 
 ```bash
-cd backend && uv run pytest -q   # needs `uv run playwright install chromium` once
+cd backend && uv run pytest -q   # offline; needs `uv run playwright install chromium` once
+CHROMASWARM_E2E=1 uv run pytest -q tests/test_build.py   # + real npm/next dev/Chromium build (~35s)
+cp backend/.env.example backend/.env   # then set the LLM key, or empty the model for rule-based
 cd backend && uv run uvicorn chromaswarm.main:app --port 8100 --reload
 cd studio && npm run dev
 ```
@@ -32,13 +43,13 @@ The backend uses port **8100** (8000 is taken by another local service).
 
 1. Orchestrator is Python, not TypeScript (doc 04 Part 4 is superseded).
 2. Gates are enforced in code: B1–B7 agents get no code-writing tools (`ALLOWED_TOOLS`); Clarity Score = filled pillars / 5; B7 passes only via an explicit user `approve_plan`.
-3. B8/B9 run pipelined per section (Dev writes section N while Design measures N−1), not truly simultaneously.
+3. B8/B9 run pipelined per section (Dev writes section N while Design measures N−1), not truly simultaneously. B8 = Design installs tokens only; B9 grants both departments' tools because they work pipelined.
 4. Design-department changes are written to the workspace token file, never only applied via CSSOM.
 5. B11 self-healing loop is capped at `MAX_HEAL_ITERATIONS = 3`, then escalates to the user.
 6. Swarm Rebuild is inspiration only; the overlay is written from scratch.
 7. Every number in DESIGN.md comes from the engines; an LLM may only write the philosophy prose and pick presets.
 8. Unclear answers are re-asked (`interpret()` returns None) — never filled in by the agent.
-9. Deviations from FRONTEND_STANDARDS.md, chosen to keep APCA / 8pt checks passing: dark-mode text-secondary 78% and text-muted 68% (spec: 72% / 52%); dense section padding 48px (spec: 40–56px, off-grid); mobile type ratio = 1 + 0.6·(r−1).
+9. Deviations from FRONTEND_STANDARDS.md, chosen to keep APCA / 8pt checks passing: dark-mode text-secondary 78% and text-muted 68% (spec: 72% / 52%); dense section padding 48px (spec: 40–56px, off-grid); mobile type ratio = 1 + 0.6·(r−1). Fonts: Instrument Serif → Playfair Display (editorial-luxury), Outfit/DM Sans → Lexend/Be Vietnam Pro (warm-organic), because the originals have no Vietnamese subset; `VIETNAMESE_FONTS` + a test guard every preset font.
 10. Studio UI itself follows `FRONTEND_STANDARDS.md` (OKLCH tokens in `globals.css`, 8pt spacing, no AI-slop patterns).
 
 ## Next.js note
@@ -47,4 +58,4 @@ The backend uses port **8100** (8000 is taken by another local service).
 
 ## Roadmap
 
-Phase 0 scaffold ✅ · 1 LangGraph wiring + interrupts ✅ · 2 deterministic engines ✅ · 3 Claude-backed B1–B7 agents · 4 swarm overlay · 5 B8–B10 · 6 B11 Master QA · 7 B12 + B8.1 MCP.
+Phase 0 scaffold ✅ · 1 LangGraph wiring + interrupts ✅ · 2 deterministic engines ✅ · 3 LLM-backed B1–B7 agents ✅ (B1–B4 interpretation, B5 philosophy prose, B7 feedback → pillar changes; rule-based fallback for each; not yet run against a live Qwen key) · 4 swarm overlay ✅ (not yet driven by the pipeline: B8 wiring comes with Phase 5) · 5 B8–B10 ✅ (rule-based codegen; LLM codegen pluggable via `render_section`) · 6 B11 Master QA ✅ · 7 B12 + B8.1 MCP ✅. Not yet done: LLM-backed codegen/copy (needs an API key), real product assets instead of tonal placeholders.

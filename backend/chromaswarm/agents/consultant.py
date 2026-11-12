@@ -3,7 +3,7 @@
 `ConsultantAgent` is the interface the LangGraph nodes call. `RuleBasedConsultant`
 implements it with keyword rules and the tables of FRONTEND_STANDARDS.md §1:
 it runs without an API key and is the non-LLM baseline for the paper's ablation.
-A Claude-backed implementation plugs in at Phase 3 with the same interface.
+`LLMConsultant` (llm_consultant.py) implements the same interface with an LLM.
 
 Zero-guessing: `interpret()` returns None when an answer is ambiguous or empty,
 and the graph re-asks instead of filling the gap itself.
@@ -17,10 +17,11 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
+from chromaswarm.engines.design_spec import Philosophy
 from chromaswarm.engines.palette import Mode
 from chromaswarm.engines.presets import LAYOUTS, THEMES, Layout, Theme
 from chromaswarm.engines.spacing import Density
-from chromaswarm.state_machine.pipeline_state import Domain, SitemapPage
+from chromaswarm.state_machine.pipeline_state import Domain, Pillars, SitemapPage
 
 
 class Option(BaseModel):
@@ -45,6 +46,8 @@ class ConsultantAgent(Protocol):
     def sitemap_for(self, domain: Domain) -> tuple[list[SitemapPage], str]: ...
     def pillar_question(self, pillar: str) -> Question: ...
     def interpret(self, pillar: str, answer: str) -> str | None: ...
+    def interpret_feedback(self, feedback: str, pillars: Pillars) -> dict[str, str]: ...
+    def write_philosophy(self, facts: dict) -> Philosophy | None: ...
 
 
 def fold(text: str) -> str:
@@ -227,6 +230,40 @@ class RuleBasedConsultant:
             if re.search(rf"\b{re.escape(fold(name))}\b", folded):
                 return f"{mode} {COLOR_NAMES[name]}"
         return mode  # no brand color yet: a theme default is proposed and shown at B7
+
+    # ------------------------------------------------------------ B7 / B5
+    def interpret_feedback(self, feedback: str, pillars: Pillars) -> dict[str, str]:
+        """Pillar changes stated *explicitly* in B7 feedback ('đổi sang tông tối').
+        Anything else (copy, imagery...) changes nothing here and is passed to the
+        Dev department as a recorded rule."""
+        fb = (feedback or "").strip()
+        if not fb:
+            return {}
+        found: dict[str, str | None] = {
+            "theme": _match(fb, {k.value: v for k, v in THEME_WORDS.items()}),
+            "layout": _match(fb, {k.value: v for k, v in LAYOUT_WORDS.items()}),
+            "margins": _match(fb, {k.value: v for k, v in DENSITY_WORDS.items()}),
+        }
+        mode = _match(fb, {k.value: v for k, v in MODE_WORDS.items()})
+        hex_ = HEX.search(fb)
+        seed = hex_.group(0).lower() if hex_ else next(
+            (COLOR_NAMES[n] for n in sorted(COLOR_NAMES, key=len, reverse=True)
+             if re.search(rf"\b{re.escape(fold(n))}\b", fold(fb)) and n not in ("đen",)), None)
+        found["color"] = merge_color(pillars.color, mode, seed)
+        return {k: v for k, v in found.items() if v and v != getattr(pillars, k)}
+
+    def write_philosophy(self, facts: dict) -> Philosophy | None:
+        return None  # the engine's default_philosophy is the baseline prose
+
+
+def merge_color(current: str | None, mode: str | None, seed: str | None) -> str | None:
+    """Apply a partial colour change: keep whichever half the user did not mention."""
+    if not mode and not seed:
+        return None
+    parts = (current or "light").split()
+    new_mode = mode or parts[0]
+    new_seed = seed or (parts[1] if len(parts) > 1 else None)
+    return f"{new_mode} {new_seed}" if new_seed else new_mode
 
 
 def split_color(value: str, theme: Theme) -> tuple[Mode, str, bool]:

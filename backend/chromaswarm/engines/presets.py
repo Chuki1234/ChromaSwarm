@@ -39,10 +39,19 @@ class ThemePreset(BaseModel):
     landing_ratio: Ratio
 
 
+# Google Fonts families verified (2026-11) to ship the `vietnamese` subset. Every preset font
+# must be in this set: without it, diacritics fall back glyph-by-glyph to another font and
+# words like "gỗ sồi" render with mismatched marks. Instrument Serif, Outfit and DM Sans
+# (the standard's original examples) lack the subset and were replaced.
+VIETNAMESE_FONTS = frozenset({
+    "Playfair Display", "Cormorant Garamond", "Lora", "Fraunces", "Inter", "Geist", "Geist Mono",
+    "Lexend", "Be Vietnam Pro", "Nunito", "Manrope", "Space Grotesk", "JetBrains Mono",
+})
+
 THEMES: dict[Theme, ThemePreset] = {
     Theme.EDITORIAL_LUXURY: ThemePreset(
         theme=Theme.EDITORIAL_LUXURY, label_vi="Sang trọng & tĩnh lặng",
-        heading_font="Instrument Serif", body_font="Inter", mono_font=None,
+        heading_font="Playfair Display", body_font="Inter", mono_font=None,
         radius_sm=0, radius_md=2, radius_lg=4, button_radius="2px", border="1px solid var(--border-subtle)",
         elevation="none — separate surfaces with 1px hairlines and whitespace",
         motion_duration_ms=600, motion_easing="cubic-bezier(0.16, 1, 0.3, 1)", landing_ratio=Ratio.PERFECT_FOURTH),
@@ -55,7 +64,7 @@ THEMES: dict[Theme, ThemePreset] = {
         motion_duration_ms=200, motion_easing="cubic-bezier(0.22, 1, 0.36, 1)", landing_ratio=Ratio.MAJOR_THIRD),
     Theme.WARM_ORGANIC: ThemePreset(
         theme=Theme.WARM_ORGANIC, label_vi="Thân thiện & ấm áp",
-        heading_font="Outfit", body_font="DM Sans", mono_font=None,
+        heading_font="Lexend", body_font="Be Vietnam Pro", mono_font=None,
         radius_sm=12, radius_md=16, radius_lg=24, button_radius="9999px", border="1px solid var(--border-subtle)",
         elevation="soft diffused shadows tinted with the background hue",
         motion_duration_ms=300, motion_easing="cubic-bezier(0.22, 1, 0.36, 1)", landing_ratio=Ratio.MAJOR_THIRD),

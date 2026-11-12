@@ -6,6 +6,9 @@ number in DESIGN.md comes from the engines, so it is reproducible and testable.
 
 from __future__ import annotations
 
+import json
+import re
+
 from pydantic import BaseModel, Field
 
 from chromaswarm.engines.palette import Mode, Palette, generate_palette
@@ -69,6 +72,32 @@ def default_philosophy(theme: ThemePreset, spatial: SpatialSystem, palette: Pale
             f"Chữ dẫn dắt: {theme.heading_font} cho tiêu đề, {theme.body_font} cho nội dung, dòng chữ 45–72ch.",
         ],
     )
+
+
+def philosophy_facts(spec: DesignSpec) -> dict:
+    """The only facts an LLM may cite when writing the philosophy prose."""
+    i = spec.inputs
+    return {
+        "project": i.project_name, "page": i.page, "persona_and_goal": i.persona,
+        "primary_cta": i.primary_cta or "Primary CTA",
+        "style": spec.theme.label_vi, "layout": spec.layout.label_vi, "reading_pattern": spec.layout.reading_pattern,
+        "mode": spec.palette.mode.value, "accent": spec.palette.get("accent").css,
+        "heading_font": spec.typography.heading_font, "body_font": spec.typography.body_font,
+        "section_padding_px": spec.spatial.section_padding_desktop, "grid": "8pt", "line_length": "45-72ch", "color_rule": "60-30-10",
+        "learned_from_reference": spec.dna_rules,
+        "user_feedback": [r for r in i.extra_rules if r.startswith("User feedback")],
+    }
+
+
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
+
+
+def philosophy_is_grounded(phil: Philosophy, facts: dict) -> bool:
+    """Decision 7: every number in DESIGN.md comes from the engines. Reject prose
+    that cites any number not present in the facts it was given."""
+    allowed = set(_NUMBER.findall(json.dumps(facts, ensure_ascii=False)))
+    text = " ".join([phil.statement, *phil.principles])
+    return all(n in allowed for n in _NUMBER.findall(text))
 
 
 def build_design_spec(inp: DesignInputs) -> DesignSpec:

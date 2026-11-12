@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QA defects</title>
+<!-- Fixture for Master QA tests: every block seeds one defect of FRONTEND_STANDARDS ch.3/ch.5. -->
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { font: 16px/1.5 Inter, system-ui, sans-serif; background: #fff; color: #111; }
+  section { padding: 48px 24px; }
+  button { min-height: 48px; padding: 12px 24px; border: 1px solid #999; background: #fff; cursor: pointer; }
+  button:hover { background: #eee; }
+  button:focus-visible { outline: 2px solid #000; }
+  .header { position: sticky; top: 0; padding: 16px 24px; background: transparent; }
+  .dead:hover { background: #fff; }                                  /* no hover feedback */
+  .no-focus:focus-visible { outline: none; }                          /* no focus ring */
+  .tiny { min-height: 0; padding: 2px 4px; font-size: 12px; }          /* tap target < 40px */
+  .wide { width: 560px; height: 24px; background: #ddd; }             /* overflows 375px */
+  .slop-gradient { background-image: linear-gradient(90deg, #6366f1, #a855f7, #ec4899); color: #fff; }
+  .heavy { padding: 24px; box-shadow: 0 10px 25px rgba(0, 0, 0, .35); }
+  .centered { text-align: center; max-width: 30ch; }
+  .ghost { opacity: 0; }
+  .overlap { position: relative; }
+  .overlap span { position: absolute; left: 0; top: 0; }
+</style>
+</head>
+<body>
+  <header class="header" data-swarm-section="header"><strong>Header trong suốt</strong></header>
+  <section data-swarm-section="buttons">
+    <button data-swarm-id="ok-button" data-swarm-role="button" onclick="this.textContent='Đã bấm'">Nút chuẩn</button>
+    <button class="dead" data-swarm-id="dead-button" data-swarm-role="button">Nút chết</button>
+    <button class="no-focus" data-swarm-id="nofocus-button" data-swarm-role="button" onclick="this.textContent='Ok'">Không viền focus</button>
+    <button data-swarm-id="error-button" data-swarm-role="button" onclick="this.textContent='x'; console.error('boom from button')">Gây lỗi</button>
+    <button class="tiny" data-swarm-id="tiny-button" data-swarm-role="button" onclick="this.textContent='t'">x</button>
+    <button class="slop-gradient" data-swarm-id="gradient-button" data-swarm-role="button" onclick="this.textContent='g'">Gradient</button>
+  </section>
+  <section data-swarm-section="layout">
+    <div class="wide"></div>
+    <div class="heavy">Thẻ có bóng đổ nặng</div>
+    <p class="centered">Một đoạn văn dài được căn giữa toàn bộ, kéo dài qua nhiều dòng liên tiếp để mắt người đọc không có điểm neo cố định nào cả.</p>
+    <p>Lorem ipsum dolor sit amet.</p>
+    <div class="ghost">Kẹt ẩn</div>
+    <div class="overlap"><p>Chữ thứ nhất</p><span>Chữ đè lên</span></div>
+    <img src="/missing-image.png" alt="ảnh hỏng" width="120" height="80">
+  </section>
+</body>
+</html>
