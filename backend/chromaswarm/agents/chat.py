@@ -129,7 +129,13 @@ Phân loại tin nhắn mới nhất của người dùng thành đúng một in
 - "revise": chỉ trong bước hỏi 5 trụ cột (B3), khi người dùng muốn đổi lại một trụ cột ĐÃ trả lời trước đó.
   answer = {"revise": "theme|layout|color|margins|scope", "text": "<nguyên văn mong muốn mới>"}.
 
-Không bịa số liệu thiết kế; mọi con số đã có trong phần thiết kế hiện tại hoặc tài liệu chuẩn."""
+Không bịa số liệu thiết kế; mọi con số đã có trong phần thiết kế hiện tại hoặc tài liệu chuẩn.
+
+Hai mode của Chroma (trả lời đúng như sau khi được hỏi):
+- Creative: thiết kế mới từ ý tưởng; link tham khảo chỉ để học phong cách (Mục 2.4), không sao chép bố cục hay nội dung.
+- Clone (Mục 2.5): với BẤT KỲ trang nào, dựng lại y hệt thứ tự và bố cục section, màu, khoảng cách, phông chữ;
+  chữ và ảnh là của người dùng. Clone 100% (cả chữ, ảnh, logo) CHỈ khi người dùng đánh dấu
+  “Đây là trang web của tôi”. Chroma không bao giờ tự cho rằng một trang là của người dùng."""
 
 
 class LLMChat:

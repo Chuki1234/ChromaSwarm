@@ -20,10 +20,23 @@
     if (kids.length === 1 && kids[0].getBoundingClientRect().width >= vw * 0.9) root = kids[0];
     else break;
   }
-  let blocks = [...root.children].filter(visible).filter(el => el.getBoundingClientRect().height >= 40);
-  // A <main> among the blocks holds the page's real sections: expand it in place.
-  blocks = blocks.flatMap(el => el.tagName === "MAIN" && el.children.length > 1
-    ? [...el.children].filter(visible).filter(c => c.getBoundingClientRect().height >= 40) : [el]);
+  const kidsOf = el => [...el.children].filter(visible).filter(c => c.getBoundingClientRect().height >= 40);
+  let blocks = kidsOf(root);
+  // Wrappers hide the real sections: expand <main>, and any block taller than ~2 screens that
+  // holds several blocks of its own (e.g. one 9000px div around the whole page), a few levels deep.
+  for (let depth = 0; depth < 6; depth++) {
+    let changed = false;
+    blocks = blocks.flatMap(el => {
+      const kids = kidsOf(el);
+      const tall = el.getBoundingClientRect().height > innerHeight * 2;
+      if (kids.length >= 1 && (el.tagName === "MAIN" || tall)) { changed = true; return kids; }  // single wrappers too
+      return [el];
+    });
+    if (!changed) break;
+  }
+  // A lone heading or link strip is part of the section after it, not a section of its own.
+  blocks = blocks.filter((el, i) => i === 0 || i === blocks.length - 1
+    || (el.getBoundingClientRect().height >= 120 && !/^(H1|H2|H3|H4|P|A|UL)$/.test(el.tagName)));
 
   const priceRe = /(\d[\d.,]*\s?(₫|đ|vnd|vnđ|\$|€|usd))|((\$|€)\s?\d)/i;
 
@@ -56,6 +69,19 @@
     });
   }
 
+  // Testimonial cards: a long sentence followed by a short "Role, Company" line.
+  const ROLE = /(engineer|designer|founder|ceo|cto|head of|director|manager|giám đốc|trưởng|nhà sáng lập|khách hàng)/i;
+  function attributions(el) {
+    let n = 0;
+    for (const card of el.querySelectorAll("figure, article, li, a, div")) {
+      const lines = (card.innerText || "").split("\n").map(t => t.trim()).filter(Boolean);
+      if (lines.length >= 2 && lines.length <= 5 && lines.some(l => l.length >= 40)
+          && lines.some(l => l.length < 60 && ROLE.test(l))) n++;
+      if (n >= 4) break;
+    }
+    return n >= 2 ? 2 : 0;
+  }
+
   const pageBg = getComputedStyle(document.body).backgroundColor;
   const out = [];
   blocks.forEach((el, index) => {
@@ -63,7 +89,12 @@
     const cs = getComputedStyle(el);
     const cols = columns(el);
     const imgs = [...el.querySelectorAll("img")].filter(visible);
-    const bigImg = imgs.some(i => i.getBoundingClientRect().width >= vw * 0.35);
+    // Visual media of any kind: product shots are often <video>, <canvas>, inline <svg> or <picture>.
+    const media = [...el.querySelectorAll("img, picture, video, canvas, svg")].filter(visible).filter(m => {
+      const r = m.getBoundingClientRect();
+      return r.width >= 120 && r.height >= 80 && !m.parentElement.closest("svg");
+    });
+    const bigImg = media.some(i => i.getBoundingClientRect().width >= vw * 0.35);
     const heading = el.querySelector("h1, h2, h3");
     const features = {
       tag: el.tagName.toLowerCase(), role: el.getAttribute("role"), index, height: Math.round(r.height),
@@ -73,14 +104,21 @@
       inputs: el.querySelectorAll("input:not([type=hidden]), textarea, select").length,
       password: !!el.querySelector("input[type=password]"),
       accordion: el.querySelectorAll("details, [aria-expanded]").length,
-      tablist: !!el.querySelector("[role=tablist]"), images: imgs.length, big_image: bigImg,
+      tablist: !!el.querySelector("[role=tablist]"), images: media.length, big_image: bigImg,
       bg_differs: cs.backgroundColor !== "rgba(0, 0, 0, 0)" && cs.backgroundColor !== pageBg,
-      bg_image: cs.backgroundImage !== "none" || (imgs[0] && imgs[0].getBoundingClientRect().width >= vw * 0.9),
+      bg_image: cs.backgroundImage !== "none" || (media[0] && media[0].getBoundingClientRect().width >= vw * 0.9),
       columns: cols.count, scroller: scroller(el), text_len: text(el).length,
       prices: (text(el).match(new RegExp(priceRe, "gi")) || []).length,
       numeric_items: cols.items.filter(i => /^\s*[\d.,%+<>~]+/.test(text(i))).length,
       card_widths: cols.items.map(i => Math.round(i.getBoundingClientRect().width)),
-      row_items_with_img: cols.items.filter(i => i.querySelector("img")).length,
+      // Testimonials: blockquotes, or text blocks (at any depth) whose own text opens with a quote mark.
+      quotes: el.querySelectorAll("blockquote").length + [...el.querySelectorAll("p, div, span, h3, h4, figure, q")].filter(n => {
+        const t = ownText(n);
+        if (t.length <= 30) return false;
+        const before = getComputedStyle(n, "::before").content || "";
+        return /^[“"«]/.test(t) || /[“"«]/.test(before.replace(/^"|"$/g, "")) || n.tagName === "Q";
+      }).length + attributions(el),
+      row_items_with_img: cols.items.filter(i => i.querySelector("img, picture, video, canvas, svg")).length,
       padding_y: Math.round(px(cs.paddingTop) + px(cs.paddingBottom)),
     };
     const block = { features };

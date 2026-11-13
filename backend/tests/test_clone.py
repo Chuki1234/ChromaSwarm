@@ -28,10 +28,15 @@ def test_blocks_are_classified_onto_buildable_structures():
     assert classify(feat(columns=4, numeric_items=4), 2, 5) == "inline-metrics"
     assert classify(feat(columns=4, images=4, prices=4), 2, 5) == "grid-4"
     assert classify(feat(columns=2, images=4, card_widths=[600, 300], row_items_with_img=2), 2, 5) == "bento"
+    assert classify(feat(columns=4, images=0, row_items_with_img=4, card_widths=[300] * 4), 2, 5) == "bento"  # feature cards
     assert classify(feat(columns=2, images=3, card_widths=[500, 700], row_items_with_img=1), 2, 5) == "alternating-z"
     assert classify(feat(accordion=5), 3, 5) == "accordion"
     assert classify(feat(bg_differs=True, buttons=1, text_len=80), 3, 5) == "full-bleed-band"
     assert classify(feat(tag="footer", links=8), 4, 5) == "footer-columns"
+    assert classify(feat(columns=2, quotes=2), 2, 6) == "testimonials"
+    assert classify(feat(headings=1, height=228, text_len=60, links=2), 4, 6) == "full-bleed-band"  # closing CTA
+    assert classify(feat(headings=1, height=1200, text_len=900), 2, 9) == "feature-showcase"
+    assert classify(feat(columns=4, text_len=800, card_widths=[272] * 4), 2, 9) == "text-cards"
 
 
 def test_section_ids_are_unique_and_a_header_is_always_present():
@@ -155,3 +160,59 @@ def test_style_dna_reads_oklch_colours():
     dna = asyncio.run(scrape_html(html))
     assert dna.accents, "accent colour lost (lab() not parsed)"
     assert not dna.is_dark and dna.neutral_temperature == "warm"
+
+
+def test_product_md_states_the_clone_level_and_plan_flags_approximations(tmp_path):
+    runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=fake_reader()))
+    p = asyncio.run(drive(runner, "c7", ["clone", {"url": "https://gom-moc.vn", "prompt": PROMPT, "owned": False}]))["pipeline"]
+    assert "Clone cấu trúc" in p.product_md and "§2.5" in p.product_md
+    secs = sections_from_blocks([feat(h1=True, images=1), feat(text_len=900)])
+    assert "khối nội dung gần nhất" in secs[-1].content  # an unmatched block is flagged in PLAN.md
+
+
+def test_design_md_shows_the_clone_policy_not_the_anti_cloning_boundary(tmp_path):
+    runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=fake_reader(),
+                                 scrape=_fake_dna))
+    p = asyncio.run(drive(runner, "c8", ["clone", {"url": "https://gom-moc.vn", "prompt": PROMPT}]))["pipeline"]
+    assert "Clone mode (FRONTEND_STANDARDS §2.5)" in p.design_md
+    assert "Ranh giới chống sao chép" not in p.design_md
+
+
+async def _fake_dna(url):
+    from chromaswarm.engines.style_dna import RawStyleSample, analyze
+    return analyze(RawStyleSample(source_url=url, viewport_w=1440, viewport_h=900, page_height=3000,
+                                  backgrounds=[{"color": "rgb(250, 247, 240)", "area": 1e6}],
+                                  texts=[{"color": "rgb(20, 20, 20)", "chars": 400, "font_family": "Inter",
+                                          "font_size": 16, "font_weight": 400}],
+                                  spacing=[16, 24, 32], block_padding=[128], radii=[8], border_count=2,
+                                  shadow_count=0, backdrop_blur_count=0, motion=[]))
+
+
+def test_sections_of_the_same_kind_never_repeat_sample_copy():
+    from chromaswarm.developer.content import copy_for
+    from chromaswarm.state_machine.pipeline_state import Domain, PipelineState
+
+    copy = build_copy(PipelineState(session_id="x", raw_prompt="phần mềm quản lý", domain=Domain.SAAS))
+    seq = ["alternating-z", "split-5-7", "feature-showcase", "split-5-7", "text-cards"]
+    used = []
+    for i, st in enumerate(seq):
+        n = {"alternating-z": 3, "text-cards": 3}.get(st, 1)
+        used += [t for t, _ in copy_for(st, seq[:i], copy).story[:n]]
+    assert len(used) == 9 and len(set(used[:6])) == 6  # the first 6 rows are all different
+    assert "vật liệu" not in " ".join(used)  # SaaS copy, not the furniture story
+
+
+def test_testimonials_with_css_quote_marks_are_recognised():
+    """Quote marks drawn with ::before and 'Role, Company' lines (as on linear.app)."""
+    import urllib.parse
+
+    card = ('<a href="#" class="t"><p class="q">This tool changed how our whole team plans and ships every week.</p>'
+            '<span>Jane Tran</span><span>Head of Engineering, Acme</span></a>')
+    html = ("<style>body{margin:0;font:16px sans-serif} .t{display:block;width:500px;padding:24px}"
+            ".q::before{content:'“'} .row{display:flex;gap:24px;padding:48px}</style>"
+            "<header><nav><a href='/'>Brand</a></nav></header>"
+            "<section><h1>Hero heading</h1><p>Some text here for the hero section.</p></section>"
+            f"<section class='row'>{card}{card}</section>"
+            "<footer><a>a</a><a>b</a><a>c</a><a>d</a></footer>")
+    a = asyncio.run(analyse("data:text/html," + urllib.parse.quote(html), owned=False))
+    assert "testimonials" in [s.structure for s in a.sections]

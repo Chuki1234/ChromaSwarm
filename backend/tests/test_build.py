@@ -335,7 +335,11 @@ def test_every_generated_button_has_a_handler():
     from chromaswarm.state_machine.pipeline_state import Domain, PipelineState
 
     copy = build_copy(PipelineState(session_id="x", raw_prompt="web bán đồ", domain=Domain.ECOMMERCE))
-    for slug, sections in list(BLUEPRINTS.items()) + [("generic", GENERIC)]:
+    from chromaswarm.agents.planner import Section
+    from chromaswarm.developer.nextjs import BY_STRUCTURE
+
+    clone_kinds = [Section(id=k, name=k, structure=k, content="x") for k in BY_STRUCTURE]
+    for slug, sections in list(BLUEPRINTS.items()) + [("generic", GENERIC), ("clone", clone_kinds)]:
         for section in sections:
             code = render_section(section, copy).content
             for button in re.findall(r"<button\b[^>]*>", code, flags=re.S):
