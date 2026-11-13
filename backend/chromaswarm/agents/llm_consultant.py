@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import logging
 
-from chromaswarm.agents.consultant import HEX, PILLAR_QUESTIONS, RuleBasedConsultant, merge_color
+from chromaswarm.agents.consultant import HEX, PILLAR_QUESTIONS, RuleBasedConsultant, merge_color, named_color
 from chromaswarm.agents.llm import JSONChat, LLMError
 from chromaswarm.engines.design_spec import Philosophy
 from chromaswarm.engines.palette import Mode
@@ -128,7 +128,8 @@ class LLMConsultant(RuleBasedConsultant):
         hex_ = literal.group(0).lower() if literal else data.get("hex")
         if isinstance(hex_, str) and HEX.fullmatch(hex_.strip()) and len(hex_.strip()) == 7:
             return f"{mode} {hex_.strip().lower()}"
-        return mode
+        named = named_color(answer)  # the model kept the tone but dropped a colour the user named
+        return f"{mode} {named}" if named else mode
 
     def _interpret_scope(self, answer: str) -> str | None:
         system = (f"{BASE_RULES}\nCâu hỏi đã hỏi: {PILLAR_QUESTIONS['scope'][0]}\n"
@@ -149,6 +150,8 @@ class LLMConsultant(RuleBasedConsultant):
         system = (f"{BASE_RULES}\nNgười dùng vừa xem bản kế hoạch thiết kế và góp ý. "
                   "Chỉ ghi nhận thay đổi được nói RÕ RÀNG về phong cách (theme), bố cục (layout), "
                   "khoảng cách (margins), tông nền (mode) hoặc màu thương hiệu (hex #rrggbb). "
+                  "Một cảm giác người dùng mô tả mà khớp với nhãn của đúng một phong cách "
+                  "(ví dụ 'ấm áp, gần gũi hơn' khớp 'Thân thiện & ấm áp') là yêu cầu đổi theme sang phong cách đó. "
                   "Góp ý về nội dung chữ, hình ảnh, nút bấm... thì để null hết. "
                   f"Giá trị hợp lệ: {json.dumps(options, ensure_ascii=False)}; "
                   f"mode: {json.dumps({m.value: h for m, h in MODE_HINTS.items()}, ensure_ascii=False)}. "

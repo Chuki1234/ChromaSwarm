@@ -90,6 +90,7 @@ def test_config_from_env():
         "CHROMASWARM_LLM_EXTRA_BODY": '{"enable_thinking": false}',
     })
     assert cfg.model == "qwen3.8-flash" and cfg.extra_body == {"enable_thinking": False}
+    assert cfg.models["vision"] == "qwen3.8-flash"  # roles fall back to the text model
     with pytest.raises(LLMError):
         LLMConfig.from_env({"CHROMASWARM_LLM_MODEL": "m", "CHROMASWARM_LLM_EXTRA_BODY": "{bad"})
 
@@ -164,3 +165,9 @@ def test_llm_feedback_is_validated_and_merged():
                                                                      "color": "warm-paper #5b6b2f"}
     assert c.interpret_feedback("bớt chữ ở hero", p) == {}
     assert c.interpret_feedback("đổi sang tông tối", p) == {"color": "dark #8a4b2a"}  # rules fallback
+
+
+def test_named_colour_survives_when_the_model_drops_it():
+    # Seen live with qwen/qwen3.8-flash: tone understood, "xanh rêu" lost.
+    c = LLMConsultant(FakeChat([{"mode": "warm-paper", "hex": None}]))
+    assert c.interpret("color", "giấy kem ấm, màu xanh rêu") == "warm-paper #5b6b2f"

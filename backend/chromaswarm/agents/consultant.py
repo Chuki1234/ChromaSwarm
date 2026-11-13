@@ -225,11 +225,8 @@ class RuleBasedConsultant:
         hex_ = HEX.search(answer)
         if hex_:
             return f"{mode} {hex_.group(0).lower()}"
-        folded = fold(answer)
-        for name in sorted(COLOR_NAMES, key=len, reverse=True):
-            if re.search(rf"\b{re.escape(fold(name))}\b", folded):
-                return f"{mode} {COLOR_NAMES[name]}"
-        return mode  # no brand color yet: a theme default is proposed and shown at B7
+        named = named_color(answer)
+        return f"{mode} {named}" if named else mode  # no brand colour yet: a theme default is shown at B7
 
     # ------------------------------------------------------------ B7 / B5
     def interpret_feedback(self, feedback: str, pillars: Pillars) -> dict[str, str]:
@@ -246,14 +243,29 @@ class RuleBasedConsultant:
         }
         mode = _match(fb, {k.value: v for k, v in MODE_WORDS.items()})
         hex_ = HEX.search(fb)
-        seed = hex_.group(0).lower() if hex_ else next(
-            (COLOR_NAMES[n] for n in sorted(COLOR_NAMES, key=len, reverse=True)
-             if re.search(rf"\b{re.escape(fold(n))}\b", fold(fb)) and n not in ("đen",)), None)
+        seed = hex_.group(0).lower() if hex_ else named_color(fb, exclude=("đen",))
         found["color"] = merge_color(pillars.color, mode, seed)
         return {k: v for k, v in found.items() if v and v != getattr(pillars, k)}
 
     def write_philosophy(self, facts: dict) -> Philosophy | None:
         return None  # the engine's default_philosophy is the baseline prose
+
+
+def named_color(text: str, exclude: tuple[str, ...] = ()) -> str | None:
+    """'màu xanh rêu' -> '#5b6b2f' from COLOR_NAMES, longest name first.
+
+    Accented match first: 'cảm giác' must not read as 'cam' (orange). The accent-folded
+    match is used only when the user typed without diacritics at all."""
+    names = [n for n in sorted(COLOR_NAMES, key=len, reverse=True) if n not in exclude]
+    lower = (text or "").lower()
+    for name in names:
+        if re.search(rf"\b{re.escape(name)}\b", lower):
+            return COLOR_NAMES[name]
+    if fold(lower) == lower:  # no Vietnamese diacritics anywhere: 'mau xanh reu'
+        for name in names:
+            if re.search(rf"\b{re.escape(fold(name))}\b", lower):
+                return COLOR_NAMES[name]
+    return None
 
 
 def merge_color(current: str | None, mode: str | None, seed: str | None) -> str | None:

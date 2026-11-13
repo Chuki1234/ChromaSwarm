@@ -157,3 +157,17 @@ def test_b7_empty_feedback_stays_at_gate(runner):
     assert snap["pipeline"].step is Step.B7_APPROVAL
     assert snap["pipeline"].design_md  # documents not thrown away
     assert "ghi rõ" in snap["notice"]
+
+
+def test_cam_giac_is_not_the_colour_orange():
+    """'cảm giác' folds to 'cam giac'; it must not change the brand colour to cam (orange)."""
+    from chromaswarm.agents.consultant import named_color
+    from chromaswarm.state_machine.pipeline_state import Pillars
+
+    p = Pillars(theme="editorial-luxury", layout="visual-first", color="dark #0f8f7f", margins="airy", scope="x")
+    changes = RuleBasedConsultant().interpret_feedback("cho mình cảm giác ấm áp, gần gũi hơn một chút", p)
+    assert changes.get("theme") == "warm-organic"
+    assert not changes.get("color", "").endswith("#e0661b")  # brand colour is not replaced by orange
+    assert named_color("cảm giác sang trọng") is None
+    assert named_color("mau cam dat") == "#e0661b"  # typed without diacritics: folded match allowed
+    assert named_color("màu xanh rêu") == "#5b6b2f"
