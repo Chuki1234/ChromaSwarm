@@ -91,6 +91,8 @@ class FakeBuild:
 
 async def drive(runner, sid, answers, progress=None):
     await runner.start(sid)
+    if not answers or answers[0] not in ("creative", "clone"):
+        answers = ["creative", *answers]  # B1 opens with the mode choice
     snap = None
     for a in answers:
         snap = await runner.answer(sid, a, on_progress=progress)

@@ -23,13 +23,14 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
+from chromaswarm.agents.chat import LLMChat, RuleChat
 from chromaswarm.agents.consultant import RuleBasedConsultant
 from chromaswarm.agents.llm import LLMConfig, OpenAICompatChat
 from chromaswarm.agents.llm_consultant import LLMConsultant
 from chromaswarm.build.runtime import LocalBuildRuntime
 from chromaswarm.playwright_engine.style_dna_scraper import scrape_url
 from chromaswarm.state_machine.graph import Deps, PipelineRunner
-from chromaswarm.state_machine.pipeline_state import GateError, Step, tools_for
+from chromaswarm.state_machine.pipeline_state import BuildMode, GateError, Step, tools_for
 
 BUILD_STEPS = {Step.B8_DESIGN, Step.B9_DEVELOP, Step.B10_INTEGRATE, Step.B11_MASTER_QA}
 
@@ -75,7 +76,16 @@ def build_consultant(env: dict[str, str] | None = None):
     return LLMConsultant(OpenAICompatChat(cfg))
 
 
+def build_chat(env: dict[str, str] | None = None):
+    """Creative-mode chat agent: LLM when configured (text role), otherwise answers go straight through."""
+    cfg = LLMConfig.from_env(env)
+    if cfg is None:
+        return RuleChat()
+    return LLMChat(OpenAICompatChat(cfg.for_role("text")))
+
+
 consultant = build_consultant()
+chat_agent = build_chat()
 log.warning("ChromaSwarm consultant: %s", getattr(consultant, "name", "rule-based"))
 runner = PipelineRunner(Deps(consultant=consultant, scrape=scrape_url, build=build))
 
@@ -97,7 +107,8 @@ def to_message(snap: dict) -> dict:
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True, "consultant": getattr(consultant, "name", "rule-based"), "build": build is not None}
+    return {"ok": True, "consultant": getattr(consultant, "name", "rule-based"),
+            "chat": getattr(chat_agent, "name", "rule-based"), "build": build is not None}
 
 
 # Every open Studio tab of a session, and one lock per session so an answer from the Studio
@@ -122,6 +133,38 @@ async def resume(session_id: str, value) -> dict:
         snap = await runner.answer(session_id, value, on_progress=progress)
     await broadcast(session_id, to_message(snap))
     return snap
+
+
+CHATS: dict[str, list[dict]] = defaultdict(list)  # Creative-mode transcript per session (memory only)
+
+
+def design_summary(p) -> str:
+    if p.design_md and "## 2." in p.design_md:
+        return p.design_md[: p.design_md.index("## 2.")]
+    return ""
+
+
+async def chat(session_id: str, ws: WebSocket, text: str) -> None:
+    """Creative mode: one free message -> answer / ask / revise (see agents/chat.py)."""
+    text = (text or "").strip()
+    if not text:
+        return
+    snap = await runner.snapshot(session_id)
+    p = snap["pipeline"]
+    if p.mode is BuildMode.CLONE:
+        await ws.send_json({"type": "error", "message": "Clone mode dùng biểu mẫu link + mô tả; chat dành cho Creative mode."})
+        return
+    history = CHATS[session_id]
+    history.append({"role": "user", "text": text})
+    await broadcast(session_id, {"type": "chat", "role": "user", "text": text})
+    turn = await asyncio.to_thread(chat_agent.respond, p.step.value, snap["question"],
+                                   p.pillars.model_dump(), design_summary(p), history, text)
+    if turn.reply:
+        history.append({"role": "assistant", "text": turn.reply})
+        await broadcast(session_id, {"type": "chat", "role": "assistant", "text": turn.reply, "intent": turn.intent})
+    del history[:-40]
+    if turn.intent in ("answer", "revise"):
+        await resume(session_id, turn.answer)
 
 
 async def browser_choice(session_id: str, value: dict) -> None:
@@ -153,11 +196,14 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
         await ws.send_json(to_message(await runner.start(session_id)))  # inside: the tab may close at once
         while True:
             msg = await ws.receive_json()
-            if msg.get("type") != "answer":
+            if msg.get("type") not in ("answer", "chat"):
                 await ws.send_json({"type": "error", "message": f"Unknown message type {msg.get('type')!r}"})
                 continue
             try:
-                await resume(session_id, msg.get("value"))
+                if msg["type"] == "chat":
+                    await chat(session_id, ws, str(msg.get("text") or ""))
+                else:
+                    await resume(session_id, msg.get("value"))
             except GateError as e:
                 await ws.send_json({"type": "error", "message": str(e)})
             except Exception as e:  # keep the socket alive; surface the problem

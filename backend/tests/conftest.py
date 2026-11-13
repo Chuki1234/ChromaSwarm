@@ -5,3 +5,5 @@ import os
 os.environ["CHROMASWARM_LLM_MODEL"] = ""
 # The WebSocket tests drive the real app module: no Next.js builds or browser windows there.
 os.environ["CHROMASWARM_BUILD"] = "0"
+# Fail on any checkpoint type missing from graph.SERDE's allowlist (it would be dropped on resume).
+os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")

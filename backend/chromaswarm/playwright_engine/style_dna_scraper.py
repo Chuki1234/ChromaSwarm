@@ -22,8 +22,16 @@ COLLECT_JS = r"""
   const out = { viewport_w: vw, viewport_h: innerHeight, page_height: pageH,
     backgrounds: [], texts: [], spacing: [], block_padding: [], radii: [], border_count: 0,
     shadow_count: 0, backdrop_blur_count: 0, motion: [] };
-  const rootBg = getComputedStyle(document.body).backgroundColor;
-  const htmlBg = getComputedStyle(document.documentElement).backgroundColor;
+  // Chromium serialises oklch()/color-mix() colours as lab()/oklch(none ...): paint one pixel and
+  // read it back so the engines always receive sRGB.
+  const pix = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+  const srgb = c => {
+    pix.clearRect(0, 0, 1, 1); pix.fillStyle = '#000'; pix.fillStyle = c; pix.fillRect(0, 0, 1, 1);
+    const [r, g, b, a] = pix.getImageData(0, 0, 1, 1).data;
+    return a === 0 ? 'rgba(0, 0, 0, 0)' : (a < 255 ? `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(3)})` : `rgb(${r}, ${g}, ${b})`);
+  };
+  const rootBg = srgb(getComputedStyle(document.body).backgroundColor);
+  const htmlBg = srgb(getComputedStyle(document.documentElement).backgroundColor);
   out.backgrounds.push({ color: rootBg !== 'rgba(0, 0, 0, 0)' ? rootBg : htmlBg, area: vw * pageH * 0.25 });
   let n = 0;
   for (const el of document.body.querySelectorAll('*')) {
@@ -33,12 +41,13 @@ COLLECT_JS = r"""
     const r = el.getBoundingClientRect();
     if (r.width < 1 || r.height < 1) continue;
     const w = Math.min(r.width, vw);
-    if (cs.backgroundColor && cs.backgroundColor !== 'rgba(0, 0, 0, 0)')
-      out.backgrounds.push({ color: cs.backgroundColor, area: w * r.height });
+    const bg = srgb(cs.backgroundColor);
+    if (bg !== 'rgba(0, 0, 0, 0)')
+      out.backgrounds.push({ color: bg, area: w * r.height });
     let chars = 0;
     for (const node of el.childNodes) if (node.nodeType === 3) chars += node.textContent.trim().length;
     if (chars > 0) out.texts.push({
-      color: cs.color, chars, font_family: cs.fontFamily, font_size: px(cs.fontSize),
+      color: srgb(cs.color), chars, font_family: cs.fontFamily, font_size: px(cs.fontSize),
       font_weight: parseInt(cs.fontWeight) || 400,
       line_height: cs.lineHeight === 'normal' ? null : px(cs.lineHeight) / px(cs.fontSize),
       uppercase: cs.textTransform === 'uppercase', letter_spacing: px(cs.letterSpacing) });

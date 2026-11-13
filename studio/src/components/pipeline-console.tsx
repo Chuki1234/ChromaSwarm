@@ -23,6 +23,8 @@ const STEPS: { id: string; label: string; phase: string }[] = [
 
 export type PipelineState = {
   step: string;
+  mode: "creative" | "clone" | null;
+  clone: { url: string; owned: boolean; title: string | null; notes: string[] } | null;
   session_id: string;
   design_md: string | null;
   product_md: string | null;
@@ -59,6 +61,7 @@ type Snapshot = {
 
 type Status = "connecting" | "open" | "closed";
 type Turn = { step: string; question: string; answer: string };
+type ChatLine = { role: "user" | "assistant"; text: string };
 
 function sessionId(): string {
   try {
@@ -78,6 +81,8 @@ export function PipelineConsole() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState<Turn[]>([]);
+  const [chat, setChat] = useState<ChatLine[]>([]);
+  const [draft, setDraft] = useState("");
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -91,6 +96,9 @@ export function PipelineConsole() {
       if (msg.type === "state") {
         setSnap(msg);
         setError(null);
+      } else if (msg.type === "chat") {
+        setChat((c) => [...c, { role: msg.role, text: msg.text }]);
+        if (msg.role === "user") setBusy(true); // the reply / next question is on its way
       } else if (msg.type === "error") {
         setError(msg.message);
       }
@@ -105,6 +113,14 @@ export function PipelineConsole() {
     wsRef.current?.send(JSON.stringify({ type: "answer", value: a.value }));
   };
 
+  const sendChat = () => {
+    const text = draft.trim();
+    if (!text) return;
+    setDraft("");
+    setBusy(true);
+    wsRef.current?.send(JSON.stringify({ type: "chat", text }));
+  };
+
   const restart = () => {
     try {
       localStorage.removeItem("chromaswarm-session");
@@ -113,6 +129,8 @@ export function PipelineConsole() {
   };
 
   const current = snap?.state.step ?? "B1";
+  // Creative mode (and the mode choice itself) talks through the chat bar; Clone uses its form.
+  const chatEnabled = !!snap && snap.state.mode !== "clone" && !!snap.question && snap.question.kind !== "clone_source";
   const currentIdx = STEPS.findIndex((s) => s.id === current);
 
   return (
@@ -181,6 +199,18 @@ export function PipelineConsole() {
           </p>
         )}
 
+        {chat.length > 0 && (
+          <ol className="flex flex-col gap-3" aria-label="Trò chuyện với Chroma" data-swarm-section="chat-log">
+            {chat.map((m, i) => (
+              <li key={i} className={`max-w-[72ch] rounded-xl px-4 py-3 text-sm leading-relaxed ${
+                m.role === "user" ? "self-end bg-surface text-fg" : "self-start border border-line text-fg-2"}`}>
+                {m.role === "assistant" && <span className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-fg-3">Chroma</span>}
+                {m.text}
+              </li>
+            ))}
+          </ol>
+        )}
+
         {snap?.question?.kind === "handover" && <BuildPanel state={snap.state} notice={null} running={false} />}
 
         {snap?.question ? (
@@ -191,11 +221,33 @@ export function PipelineConsole() {
             state={snap.state}
             busy={busy || status !== "open"}
             onAnswer={answer}
+            chatMode={chatEnabled}
           />
         ) : snap && (snap.running || snap.finished) && currentIdx >= STEPS.findIndex((s) => s.id === "B8") ? (
           <BuildPanel state={snap.state} notice={snap.notice} running={snap.running} />
         ) : (
           <p className="text-sm text-fg-3">{busy ? "Đang xử lý…" : "Đang kết nối…"}</p>
+        )}
+        {chatEnabled && (
+          <form
+            className="sticky bottom-4 flex gap-3 rounded-xl border border-line bg-bg p-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              sendChat();
+            }}
+            data-swarm-section="chat-bar"
+          >
+            <label htmlFor="chat-input" className="sr-only">Nhắn cho Chroma</label>
+            <input id="chat-input" value={draft} onChange={(e) => setDraft(e.target.value)} autoComplete="off"
+              placeholder="Trả lời, hỏi lại (vd: “Bento là gì?”) hoặc đổi ý (vd: “cho mình đổi lại màu”)…"
+              className="h-12 flex-1 rounded-lg bg-transparent px-3 text-sm outline-none placeholder:text-fg-3"
+              data-swarm-id="chat-input" data-swarm-role="input" />
+            <button type="submit" disabled={busy || status !== "open" || !draft.trim()} data-swarm-id="chat-send"
+              data-swarm-role="button"
+              className="h-12 rounded-lg bg-accent px-6 text-sm font-medium text-accent-fg transition-[filter,transform] duration-200 hover:brightness-110 active:scale-[0.98] disabled:opacity-50">
+              Gửi
+            </button>
+          </form>
         )}
       </section>
 

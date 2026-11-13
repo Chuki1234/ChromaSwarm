@@ -38,6 +38,7 @@ class PageCopy(BaseModel):
     closing: str
     footer_line: str
     tabs: list[tuple[str, str]]
+    images: list[str] = []  # Clone mode, owned site: the reference's own photos (used before tonal placeholders)
 
 
 DEFAULTS: dict[Domain, dict] = {
@@ -127,6 +128,52 @@ def nav_links(state: PipelineState, labels: list[str]) -> list[tuple[str, str]]:
     return (built + anchors)[:5]
 
 
+def owned_clone_copy(copy: PageCopy, content: dict) -> PageCopy:
+    """Clone mode on the user's own site: their real text and images replace the sample copy."""
+    secs: dict[str, dict] = content.get("sections", {})
+    by_kind = lambda *kinds: [v for v in secs.values() if v.get("structure") in kinds]  # noqa: E731
+    hero = next(iter(by_kind("split-7-5", "full-bleed-image")), {})
+    header = next(iter(by_kind("sticky-bar")), {})
+    updates: dict = {}
+    brand = header.get("logo") or content.get("site_title")
+    if brand:
+        updates["brand"] = brand[:40]
+    if hero.get("heading"):
+        updates["headline"] = hero["heading"]
+    if hero.get("paragraphs"):
+        updates["subhead"] = hero["paragraphs"][0]
+    if hero.get("buttons"):
+        updates["cta"] = hero["buttons"][0]
+    nav = [(label, href) for label, href in header.get("nav", []) if label != brand]  # the logo is not a nav item
+    if nav:
+        updates["nav"] = [label for label, _ in nav][:5]
+        updates["nav_links"] = [(label, href if href.startswith(("/", "#", "http")) else "#") for label, href in nav][:5]
+    # Each kind of copy comes only from the section kind that holds it on the reference page.
+    items = [i for v in by_kind("bento", "grid-4", "horizontal-scroller") for i in v.get("items", []) if i.get("title")]
+    if len(items) >= 2:
+        updates["items"] = [Item(name=i["title"][:60], note=i.get("note", "")[:140], price=i.get("price", "")) for i in items[:8]]
+    faqs = [tuple(f) for v in by_kind("accordion") for f in v.get("faqs", []) if f and f[0]]
+    if faqs:
+        updates["faqs"] = faqs[:8]
+    story = [pair for v in by_kind("alternating-z", "split-5-7")
+             for pair in zip([h for h in v.get("headings", []) if h], v.get("paragraphs", []))]
+    if story:
+        updates["story"] = story[:3]
+    metrics = next(iter(by_kind("inline-metrics")), {})
+    facts = [(i["title"], i.get("note", "")) for i in metrics.get("items", []) if i.get("title")]
+    if len(facts) >= 2:
+        updates["facts"] = facts[:4]
+    band = next(iter(by_kind("full-bleed-band")), {})
+    if band.get("heading"):
+        updates["closing"] = band["heading"]
+    images = list(dict.fromkeys(u for v in secs.values() for u in v.get("images", []) if u.startswith("https://")))
+    if images:
+        updates["images"] = images[:12]
+    if content.get("site_title"):
+        updates["footer_line"] = f"© {content['site_title'][:40]}"
+    return copy.model_copy(update=updates)
+
+
 def build_copy(state: PipelineState) -> PageCopy:
     d = DEFAULTS.get(state.domain or Domain.OTHER, DEFAULTS[Domain.ECOMMERCE])
     title = project_title(state.raw_prompt or "Dự án", limit=40).rstrip("…")
@@ -137,7 +184,7 @@ def build_copy(state: PipelineState) -> PageCopy:
     persona = (state.pillars.scope or "").split(",")[0].strip()
     subhead = (f"Dành cho {persona[:1].lower() + persona[1:]}: " if persona else "") + \
         "rõ ràng về chất liệu, giá và thời gian nhận hàng ngay trên trang này."
-    return PageCopy(
+    copy = PageCopy(
         brand=brand, headline=headline, subhead=subhead, cta=cta, cta_secondary="Xem chi tiết",
         nav=d["nav"], nav_links=nav_links(state, d["nav"]), facts=d["facts"],
         story=[("Chọn vật liệu trước, thiết kế sau", "Mỗi lựa chọn bắt đầu từ vật liệu bền và an toàn, rồi mới đến hình dáng."),
@@ -150,3 +197,7 @@ def build_copy(state: PipelineState) -> PageCopy:
               ("Chất liệu", "Thành phần, nguồn gốc và cách bảo quản."),
               ("Giao hàng", "Thời gian giao, phí vận chuyển và chính sách đổi trả.")],
     )
+    clone = state.clone
+    if state.selected_page == "clone" and clone and clone.owned and clone.content:
+        return owned_clone_copy(copy, clone.content)
+    return copy

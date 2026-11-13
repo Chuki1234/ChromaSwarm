@@ -135,9 +135,10 @@ class LocalBuildRuntime:
         ws.write(Step.B8_DESIGN, WorkspaceFile(path=TOKENS_PATH, content=tokens_css))
 
     # -------------------------------------------------------------- B9
-    async def start_app(self, session: str, project: str, spec: DesignSpec, route: str = "/") -> str:
+    async def start_app(self, session: str, project: str, spec: DesignSpec, route: str = "/",
+                        photos: list[str] | None = None) -> str:
         s = self._s(session)
-        for f in scaffold(project, spec):
+        for f in scaffold(project, spec, photos):
             if f.path in CREATE_ONLY and (s.workspace.root / f.path).exists():
                 continue
             s.workspace.write(Step.B9_DEVELOP, f)

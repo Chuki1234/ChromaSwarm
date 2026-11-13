@@ -20,6 +20,8 @@ def runner(tmp_path):
 async def drive(runner, sid, answers):
     snap = await runner.start(sid)
     trace = [snap]
+    if not answers or answers[0] not in ("creative", "clone"):
+        answers = ["creative", *answers]  # B1 opens with the mode choice
     for a in answers:
         snap = await runner.answer(sid, a)
         trace.append(snap)
@@ -38,9 +40,10 @@ HAPPY = [
 def test_happy_path_reaches_approval_and_writes_artifacts(runner, tmp_path):
     trace = run(drive(runner, "s1", HAPPY))
     first, last = trace[0], trace[-1]
-    assert first["question"]["step"] == "B1"
-    assert [t["question"]["step"] for t in trace[1:6]] == ["B2", "B3", "B3", "B3", "B3"]
-    assert trace[2]["question"]["key"] == "theme" and trace[5]["question"]["key"] == "margins"
+    assert first["question"]["step"] == "B1" and first["question"]["key"] == "mode"
+    assert trace[1]["question"]["key"] == "raw_prompt"  # after choosing Creative
+    assert [t["question"]["step"] for t in trace[2:7]] == ["B2", "B3", "B3", "B3", "B3"]
+    assert trace[3]["question"]["key"] == "theme" and trace[6]["question"]["key"] == "margins"
     assert last["pipeline"].step is Step.B7_APPROVAL
     assert last["question"]["kind"] == "approval"
     p = last["pipeline"]

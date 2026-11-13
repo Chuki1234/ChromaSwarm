@@ -8,7 +8,9 @@ def test_ws_drives_pipeline():
     with client.websocket_connect("/ws/session/ws-demo") as ws:
         first = ws.receive_json()
         assert first["state"]["step"] == "B1"
-        assert first["question"]["key"] == "raw_prompt"
+        assert first["question"]["key"] == "mode"
+        ws.send_json({"type": "answer", "value": "creative"})
+        assert ws.receive_json()["question"]["key"] == "raw_prompt"
         assert "write_workspace_file" not in first["tools"]
 
         ws.send_json({"type": "answer", "value": "Làm web bán giày thể thao"})

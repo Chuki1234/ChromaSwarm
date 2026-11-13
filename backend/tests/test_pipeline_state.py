@@ -14,7 +14,7 @@ from chromaswarm.state_machine.pipeline_state import (
 
 
 def walk_to_b7() -> PipelineState:
-    s = PipelineState(session_id="t")
+    s = PipelineState(session_id="t", mode="creative")
     s.raw_prompt = "Làm web bán đồ nội thất tối giản"
     s.domain = Domain.ECOMMERCE
     s.advance()  # -> B2

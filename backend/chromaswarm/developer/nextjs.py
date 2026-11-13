@@ -39,7 +39,7 @@ def _js(value) -> str:
 
 # ----------------------------------------------------------------- scaffold
 
-def scaffold(project: str, spec: DesignSpec) -> list[WorkspaceFile]:
+def scaffold(project: str, spec: DesignSpec, photos: list[str] | None = None) -> list[WorkspaceFile]:
     fonts = sorted({spec.typography.heading_font, spec.typography.body_font})
     families = "&".join("family=" + urllib.parse.quote_plus(f) + ":wght@400;500;600;700" for f in fonts)
     return [
@@ -88,7 +88,7 @@ export default function RootLayout({{ children }}: {{ children: React.ReactNode 
         WorkspaceFile(path="app/base.css", content=BASE_CSS),
         heal_file([]),
         motion_file([]),
-        WorkspaceFile(path="components/Art.tsx", content=art_component(spec)),
+        WorkspaceFile(path="components/Art.tsx", content=art_component(spec, photos or [])),
     ]
 
 
@@ -128,7 +128,7 @@ export default function Page() {{
 """)
 
 
-def art_component(spec: DesignSpec) -> str:
+def art_component(spec: DesignSpec, photos: list[str] | None = None) -> str:
     """Tonal image placeholders as data-URI SVG, so pages never show grey boxes
     and every <img> has naturalWidth > 0 for the B11 image check."""
     p = spec.palette
@@ -143,12 +143,15 @@ def art_component(spec: DesignSpec) -> str:
                f'<rect x="120" y="{620 - i * 40}" width="560" height="2" fill="{c1}" opacity=".5"/></svg>')
         variants.append("data:image/svg+xml;utf8," + urllib.parse.quote(svg))
     return f'''const ART = {_js(variants)};
+// Clone mode on the user's own site: their real photos come first.
+const PHOTOS: string[] = {_js(photos or [])};
 
 type Props = {{ label: string; ratio?: string; tone?: number }};
 
-/** Placeholder imagery in the page's own palette. Replace with real photos at B12. */
+/** Real photos when the user supplied them, otherwise tonal placeholders in the page's own palette. */
 export function Art({{ label, ratio = "4 / 5", tone = 0 }}: Props) {{
-  return <img className="art" src={{ART[tone % ART.length]}} alt={{label}} style={{{{ aspectRatio: ratio }}}} />;
+  const src = PHOTOS.length ? PHOTOS[tone % PHOTOS.length] : ART[tone % ART.length];
+  return <img className="art" src={{src}} alt={{label}} style={{{{ aspectRatio: ratio }}}} />;
 }}
 '''
 

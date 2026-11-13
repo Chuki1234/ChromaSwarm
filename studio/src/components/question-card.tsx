@@ -6,7 +6,7 @@ import type { PipelineState } from "@/components/pipeline-console";
 export type Option = { value: string; label: string; hint: string };
 export type Question = {
   step: string;
-  kind: "text" | "choice" | "assets" | "recommend_url" | "approval" | "info" | "handover";
+  kind: "text" | "choice" | "mode" | "clone_source" | "assets" | "recommend_url" | "approval" | "info" | "handover";
   key: string;
   text: string;
   options: Option[];
@@ -22,6 +22,7 @@ type Props = {
   state: PipelineState;
   busy: boolean;
   onAnswer: (a: Answer) => void;
+  chatMode?: boolean; // Creative mode: free text goes through the chat bar instead of per-card inputs
 };
 
 const input =
@@ -36,15 +37,16 @@ const PLACEHOLDERS: Record<string, string> = {
   scope: "Ví dụ: Người 30–45 tuổi, xem trên điện thoại; muốn họ bấm “Đặt lịch xem showroom”",
 };
 
-export function QuestionCard({ question: q, notice, state, busy, onAnswer }: Props) {
+export function QuestionCard({ question: q, notice, state, busy, onAnswer, chatMode = false }: Props) {
   return (
     <div className="flex flex-col gap-6" data-swarm-section="question">
       {(notice || q.note) && (
         <p className="rounded-lg border border-line bg-surface px-4 py-3 text-sm text-fg-2">{notice || q.note}</p>
       )}
       <p className="max-w-[72ch] whitespace-pre-line text-lg leading-relaxed">{q.text}</p>
-      {q.kind === "choice" && <Choice q={q} busy={busy} onAnswer={onAnswer} />}
-      {q.kind === "text" && <FreeText busy={busy} onAnswer={onAnswer} placeholder={PLACEHOLDERS[q.key]} />}
+      {(q.kind === "choice" || q.kind === "mode") && <Choice q={q} busy={busy} onAnswer={onAnswer} hideFreeText={chatMode} />}
+      {q.kind === "text" && !chatMode && <FreeText busy={busy} onAnswer={onAnswer} placeholder={PLACEHOLDERS[q.key]} />}
+      {q.kind === "clone_source" && <CloneSource busy={busy} onAnswer={onAnswer} />}
       {q.kind === "recommend_url" && <RecommendUrl busy={busy} onAnswer={onAnswer} />}
       {q.kind === "assets" && <Assets busy={busy} onAnswer={onAnswer} />}
       {q.kind === "approval" && <Approval state={state} busy={busy} onAnswer={onAnswer} />}
@@ -53,7 +55,7 @@ export function QuestionCard({ question: q, notice, state, busy, onAnswer }: Pro
   );
 }
 
-function Choice({ q, busy, onAnswer }: { q: Question; busy: boolean; onAnswer: Props["onAnswer"] }) {
+function Choice({ q, busy, onAnswer, hideFreeText = false }: { q: Question; busy: boolean; onAnswer: Props["onAnswer"]; hideFreeText?: boolean }) {
   return (
     <div className="flex flex-col gap-4">
       <div className="grid gap-3 sm:grid-cols-2">
@@ -79,7 +81,7 @@ function Choice({ q, busy, onAnswer }: { q: Question; busy: boolean; onAnswer: P
           </button>
         ))}
       </div>
-      {q.allow_free_text && <FreeText busy={busy} onAnswer={onAnswer} placeholder="Hoặc mô tả bằng lời của bạn…" />}
+      {q.allow_free_text && !hideFreeText && <FreeText busy={busy} onAnswer={onAnswer} placeholder="Hoặc mô tả bằng lời của bạn…" />}
     </div>
   );
 }
@@ -278,5 +280,48 @@ function Handover({ q, state, busy, onAnswer }: { q: Question; state: PipelineSt
         </button>
       </div>
     </div>
+  );
+}
+
+/** Clone mode, B1: link + a short description + whether the site belongs to the user. */
+function CloneSource({ busy, onAnswer }: { busy: boolean; onAnswer: Props["onAnswer"] }) {
+  const [url, setUrl] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [owned, setOwned] = useState(false);
+  return (
+    <form
+      className="flex flex-col gap-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onAnswer({ value: { url: url.trim(), prompt: prompt.trim(), owned }, label: `${url.trim()}${owned ? " (trang của tôi)" : ""}` });
+      }}
+    >
+      <label className="flex flex-col gap-2 text-sm">
+        <span className="font-medium">Link trang muốn dựng lại</span>
+        <input id="clone-url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…" required
+          className={`${input} h-12 py-0`} data-swarm-id="clone-url" data-swarm-role="input" />
+      </label>
+      <label className="flex flex-col gap-2 text-sm">
+        <span className="font-medium">Mô tả trang web của bạn</span>
+        <textarea id="clone-prompt" value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} required className={input}
+          placeholder="Ví dụ: Shop gốm thủ công Bát Tràng, khách 25–40 tuổi, muốn họ bấm “Nhắn tin đặt hàng”"
+          data-swarm-id="clone-prompt" data-swarm-role="input" />
+      </label>
+      <label className="flex items-start gap-3 rounded-lg border border-line p-4 text-sm">
+        <input id="clone-owned" type="checkbox" checked={owned} onChange={(e) => setOwned(e.target.checked)}
+          className="mt-1 size-4 accent-[var(--color-accent)]" data-swarm-id="clone-owned" data-swarm-role="input" />
+        <span className="flex flex-col gap-1">
+          <span className="font-medium">Đây là trang web của tôi</span>
+          <span className="text-fg-2">
+            Chroma sẽ sao chép cả chữ và ảnh. Nếu không đánh dấu, Chroma chỉ dựng lại cấu trúc và phong cách;
+            chữ và ảnh dùng nội dung của bạn.
+          </span>
+        </span>
+      </label>
+      <button type="submit" disabled={busy || !url.trim() || prompt.trim().length < 12} data-swarm-id="clone-submit"
+        data-swarm-role="button" className={`${primaryBtn} self-start`}>
+        Đọc trang mẫu
+      </button>
+    </form>
   );
 }

@@ -126,6 +126,16 @@ GENERIC = [NAV, Section(id="page-hero", name="Page intro", structure="split-7-5"
                    interactive=[_i("main-tab", "tab", "switch view")]), FOOTER]
 
 
+CLONE_PAGE = "clone"  # sitemap slug of the page rebuilt from the Clone-mode reference
+
+
+def page_sections(state: PipelineState) -> list[Section]:
+    """Sections of the page being built: read from the reference in Clone mode, blueprints otherwise."""
+    if state.selected_page == CLONE_PAGE and state.clone and state.clone.sections:
+        return [Section.model_validate(s) for s in state.clone.sections]
+    return sections_for(state.selected_page or "", Layout(state.pillars.layout))
+
+
 def sections_for(slug: str, layout: Layout) -> list[Section]:
     sections = [s.model_copy(deep=True) for s in BLUEPRINTS.get(slug, GENERIC)]
     if layout is Layout.CATALOG and slug == "landing":
@@ -141,12 +151,14 @@ def design_inputs(state: PipelineState, project_name: str, dna: StyleDNA | None 
     theme = Theme(p.theme)
     mode, seed, _ = split_color(p.color or "light", theme)
     page = next((pg.title for pg in state.sitemap if pg.slug == state.selected_page), state.selected_page or "")
-    effects = [s.effect for s in sections_for(state.selected_page or "", Layout(p.layout)) if s.effect]
+    effects = [s.effect for s in page_sections(state) if s.effect]
+    clone = state.clone if state.selected_page == CLONE_PAGE else None
     return DesignInputs(
         project_name=project_name, page=page, theme=theme, layout=Layout(p.layout), density=Density(p.margins),
         mode=mode, seed_color=seed, page_kind="app" if state.selected_page in ("dashboard", "workspace") else "landing",
         base_font_px=base_font_for(p.scope or ""), persona=p.scope or "", primary_cta=extract_cta(p.scope or "") or "",
         motion_effects=effects, style_dna=dna,
+        heading_font=clone.heading_font if clone else None, body_font=clone.body_font if clone else None,
         extra_rules=[f"User feedback (B7): {f}" for f in state.plan_feedback],
     )
 
@@ -193,7 +205,7 @@ BREAKPOINTS = [(1440, 900), (1024, 768), (768, 1024), (375, 812)]
 
 
 def render_plan_md(state: PipelineState, spec: DesignSpec) -> str:
-    sections = sections_for(state.selected_page or "", spec.inputs.layout)
+    sections = page_sections(state)
     lines = [
         f"# PLAN.md — Kế hoạch triển khai trang: {spec.inputs.page}",
         "",

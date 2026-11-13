@@ -32,7 +32,8 @@ from chromaswarm.agents.consultant import (
     project_title,
     split_color,
 )
-from chromaswarm.agents.planner import Section, design_inputs, render_plan_md, render_product_md, sections_for
+from chromaswarm.agents.planner import CLONE_PAGE, Section, design_inputs, page_sections, render_plan_md, render_product_md
+from chromaswarm.clone.reader import analyse as analyse_reference
 from chromaswarm.build.runtime import SectionCheck
 from chromaswarm.developer.content import build_copy
 from chromaswarm.qa.master import heal_css
@@ -47,6 +48,10 @@ from chromaswarm.engines.presets import Layout, Theme
 from chromaswarm.engines.style_dna import StyleDNA
 from chromaswarm.state_machine.pipeline_state import (
     Asset,
+    BuildMode,
+    CloneSource,
+    Pillars,
+    SitemapPage,
     Domain,
     PageStatus,
     PipelineState,
@@ -70,6 +75,7 @@ class Deps(BaseModel):
     consultant: Any = RuleBasedConsultant()
     artifacts_root: Path = Path(__file__).resolve().parents[3] / "workspaces"
     scrape: Any = None  # async (url) -> StyleDNA; None disables URL scraping
+    clone_reader: Any = None  # async (url, owned) -> CloneAnalysis; None = real Playwright reader
     build: Any = None  # BuildRuntime for B8-B10; None stops after approval (B1-B7 only)
 
 
@@ -97,7 +103,7 @@ def _copy(state: GraphState) -> PipelineState:
 
 
 _STATE_TYPES = ("PipelineState", "Step", "Domain", "Framework", "PageStatus", "Pillars", "SitemapPage",
-                "Reference", "Asset", "HealAttempt")
+                "Reference", "Asset", "HealAttempt", "BuildMode", "CloneSource")
 SERDE = JsonPlusSerializer(allowed_msgpack_modules=[
     ("chromaswarm.state_machine.pipeline_state", name) for name in _STATE_TYPES
 ] + [("chromaswarm.state_machine.graph", "GraphState")])
@@ -115,6 +121,39 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
     # ---------------------------------------------------------------- B1
     def b1(state: GraphState) -> dict:
         p = _copy(state)
+        if not p.mode:
+            answer = interrupt(Question(
+                step="B1", kind="mode", key="mode", allow_free_text=False,
+                text="Bạn muốn Chroma làm theo cách nào?",
+                options=[Option(value=BuildMode.CREATIVE.value, label="Creative: dựng từ ý tưởng của bạn",
+                                hint="Trò chuyện với Chroma; Chroma hỏi 5 trụ cột rồi thiết kế riêng cho bạn"),
+                         Option(value=BuildMode.CLONE.value, label="Clone: dựng lại từ một trang web",
+                                hint="Gửi link và mô tả; dựng lại cấu trúc trang, cả chữ và ảnh nếu là trang của bạn")],
+            ).model_dump())
+            try:
+                p.mode = BuildMode(answer)
+            except ValueError:
+                return {"pipeline": p, "notice": "Vui lòng chọn Creative hoặc Clone."}
+            return {"pipeline": p, "notice": None}
+        if p.mode is BuildMode.CLONE and not p.clone:
+            answer = interrupt(Question(
+                step="B1", kind="clone_source", key="clone_source",
+                text=("Gửi link trang bạn muốn dựng lại, kèm mô tả ngắn trang web của bạn "
+                      "(bán gì, cho ai, muốn khách bấm gì)."),
+            ).model_dump())
+            data = answer if isinstance(answer, dict) else {}
+            prompt = str(data.get("prompt") or "").strip()
+            try:
+                url = Reference.model_validate({"url": str(data.get("url") or "")}).url
+            except ValueError:
+                url = None
+            if not url:
+                return {"pipeline": p, "notice": "Clone cần một link hợp lệ (ví dụ https://tenmien.vn)."}
+            if len(prompt) < 12:
+                return {"pipeline": p, "notice": "Bạn mô tả thêm một chút về trang web của bạn nhé (ít nhất một câu)."}
+            p.clone = CloneSource(url=url, owned=bool(data.get("owned")))
+            p.raw_prompt = prompt
+            return {"pipeline": p, "notice": None}
         if not p.raw_prompt:
             answer = interrupt(Question(step="B1", kind="text", key="raw_prompt",
                                         text="Bạn muốn xây dựng trang web gì? Cứ mô tả bằng lời bình thường.").model_dump())
@@ -139,8 +178,36 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         return {"pipeline": p, "notice": None}
 
     # ---------------------------------------------------------------- B2
-    def b2(state: GraphState) -> dict:
+    async def b2(state: GraphState) -> dict:
         p = _copy(state)
+        if p.mode is BuildMode.CLONE:
+            return await b2_clone(p)
+        return b2_creative(p)
+
+    async def b2_clone(p: PipelineState) -> dict:
+        """Read the reference page: structure, style and (owned) content."""
+        reader = deps.clone_reader or analyse_reference
+        try:
+            a = await reader(p.clone.url, p.clone.owned)
+        except Exception as e:
+            log.warning("clone analysis failed for %s: %s", p.clone.url, e)
+            p.reset_clone_source()
+            return {"pipeline": p, "notice": f"Không mở được trang {p.clone.url if p.clone else ''}: {str(e)[:120]}. Bạn kiểm tra link rồi gửi lại nhé."}
+        p.clone = p.clone.model_copy(update={
+            "analysed": True, "title": a.title, "sections": [sec.model_dump() for sec in a.sections],
+            "pillars": a.pillars, "heading_font": a.heading_font, "body_font": a.body_font,
+            "content": a.content, "notes": a.notes})
+        pages, _ = agent.sitemap_for(p.domain)
+        clone_page = SitemapPage(slug=CLONE_PAGE, title=f"Bản dựng lại · {a.title}"[:80],
+                                 purpose=f"Dựng lại từ {p.clone.url}", status=PageStatus.BUILDING)
+        p.sitemap = [clone_page] + pages
+        p.selected_page = CLONE_PAGE
+        p.advance()
+        kind = "cấu trúc, chữ và ảnh (trang của bạn)" if p.clone.owned else "cấu trúc và phong cách (chữ, ảnh là của bạn)"
+        names = ", ".join(sec.name for sec in a.sections)
+        return {"pipeline": p, "notice": f"Đã đọc {len(a.sections)} section từ trang mẫu: {names}. Sẽ dựng lại {kind}."}
+
+    def b2_creative(p: PipelineState) -> dict:
         pages, first = agent.sitemap_for(p.domain)
         p.sitemap = pages
         listing = "\n".join(f"{n}. {pg.title} — {pg.purpose}" for n, pg in enumerate(pages, 1))
@@ -160,10 +227,30 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
     # ---------------------------------------------------------------- B3
     def b3(state: GraphState) -> dict:
         p = _copy(state)
+        if p.mode is BuildMode.CLONE and p.clone and p.clone.analysed:
+            # Measured on the reference page, not guessed; the user reviews them at B7.
+            for key, value in p.clone.pillars.items():
+                if not getattr(p.pillars, key):
+                    setattr(p.pillars, key, value)
+            if not p.pillars.scope and p.raw_prompt and len(p.raw_prompt) >= 12:
+                p.pillars.scope = p.raw_prompt
+            if p.can_advance():
+                p.advance()
+                return {"pipeline": p, "notice": "Đã lấy 4 trụ cột từ trang mẫu và đối tượng từ mô tả của bạn."}
         pillar = p.pillars.next_question()
         q = agent.pillar_question(pillar)
         q.note = state.notice
         answer = interrupt(q.model_dump())
+        if isinstance(answer, dict) and answer.get("revise") in Pillars.ORDERED_FIELDS:
+            # Creative chat: change a pillar answered earlier; the pending question stays.
+            target = answer["revise"]
+            value = agent.interpret(target, str(answer.get("text") or ""))
+            if value is None:
+                return {"pipeline": p, "notice": "Mình chưa hiểu rõ điều bạn muốn đổi, bạn nói cụ thể hơn nhé."}
+            setattr(p.pillars, target, value)
+            if p.can_advance():
+                p.advance()
+            return {"pipeline": p, "notice": f"Đã đổi {PILLAR_LABELS.get(target, 'đối tượng & CTA')}."}
         value = agent.interpret(pillar, str(answer))
         if value is None:
             return {"pipeline": p, "notice": "Mình chưa hiểu rõ câu trả lời — bạn chọn một phương án hoặc mô tả cụ thể hơn nhé."}
@@ -175,6 +262,13 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
     # ---------------------------------------------------------------- B4
     def b4(state: GraphState) -> dict:
         p = _copy(state)
+        if p.mode is BuildMode.CLONE and p.clone:
+            # The reference itself is the resource; B5 reads its Style DNA from the URL.
+            if not any(r.url == p.clone.url for r in p.references):
+                p.references.append(Reference.model_validate({"url": p.clone.url}))
+            p.assets_confirmed = True
+            p.advance()
+            return {"pipeline": p, "notice": None}
         pending = next((i for i, r in enumerate(p.references)
                         if r.screenshot_path and not r.url and not r.url_recommended), None)
         if pending is not None:
@@ -284,7 +378,7 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
     def build_context(p: PipelineState) -> tuple[str, Any, list[Section]]:
         project = project_title(p.raw_prompt or "")
         spec = build_design_spec(design_inputs(p, project))
-        return project, spec, sections_for(p.selected_page or "", Layout(p.pillars.layout))
+        return project, spec, page_sections(p)
 
     async def b8(state: GraphState) -> dict:
         """Design installs the design system into the workspace (tokens only, no code)."""
@@ -314,7 +408,9 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             slug = p.selected_page or ""
             route = p.page_routes.get(slug, "/")
             if not p.preview_url:
-                p.preview_url = await deps.build.start_app(p.session_id, project, spec, route)
+                photos = build_copy(p).images
+                p.preview_url = await (deps.build.start_app(p.session_id, project, spec, route, photos) if photos
+                                       else deps.build.start_app(p.session_id, project, spec, route))
             if not p.sections_done and (p.heal_rules or p.heal_contrast):  # first tick of a heal loop
                 healed = await deps.build.heal(p.session_id, p.heal_rules, p.heal_contrast)
                 p.token_changes += [f"{c.token}: {c.old} → {c.new} (B11: {c.reason})" for c in healed]

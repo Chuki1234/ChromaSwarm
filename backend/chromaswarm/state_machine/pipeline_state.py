@@ -104,9 +104,30 @@ class Reference(BaseModel):
         v = v.strip()
         if not v.startswith(("http://", "https://")):
             v = "https://" + v
-        if "." not in v.split("//", 1)[1].split("/", 1)[0]:
+        host = v.split("//", 1)[1].split("/", 1)[0].split(":", 1)[0]
+        if "." not in host and host != "localhost":  # a local dev server is a valid (own) reference
             raise ValueError(f"not a web URL: {v}")
         return v
+
+
+class BuildMode(StrEnum):
+    CREATIVE = "creative"  # build from the user's idea, chatting through B1-B7
+    CLONE = "clone"  # rebuild the page at a link (structure; text and images too if the user owns it)
+
+
+class CloneSource(BaseModel):
+    """Clone mode input and what was read from the reference page."""
+
+    url: str
+    owned: bool = False  # user confirmed the site is theirs: its text and images may be copied
+    analysed: bool = False
+    title: str | None = None
+    sections: list[dict] = Field(default_factory=list)  # planner.Section dumps, in the page's order
+    pillars: dict[str, str] = Field(default_factory=dict)
+    heading_font: str | None = None
+    body_font: str | None = None
+    content: dict | None = None  # owned sites only
+    notes: list[str] = Field(default_factory=list)
 
 
 class Asset(BaseModel):
@@ -125,6 +146,8 @@ class PipelineState(BaseModel):
     step: Step = Step.B1_READ_PROMPT
 
     # B1
+    mode: BuildMode | None = None
+    clone: CloneSource | None = None
     raw_prompt: str | None = None
     domain: Domain | None = None
     framework: Framework = Framework.NEXTJS
@@ -182,7 +205,12 @@ class PipelineState(BaseModel):
         """Exit criteria of the current step. Empty list == may advance."""
         s = self.step
         if s is Step.B1_READ_PROMPT:
-            return [n for n, v in (("raw_prompt", self.raw_prompt), ("domain", self.domain)) if not v]
+            out = [n for n, v in (("mode", self.mode), ("raw_prompt", self.raw_prompt), ("domain", self.domain)) if not v]
+            if self.mode is BuildMode.CLONE and not (self.clone and self.clone.url):
+                out.append("clone_url")
+            return out
+        if s is Step.B2_SITEMAP and self.mode is BuildMode.CLONE and not (self.clone and self.clone.analysed):
+            return ["clone_analysis"]
         if s is Step.B2_SITEMAP:
             out = []
             if not self.sitemap:
@@ -234,6 +262,14 @@ class PipelineState(BaseModel):
         return self.step
 
     # ------------------------------------------------------- explicit actions
+
+    def reset_clone_source(self) -> Step:
+        """Clone mode: the link could not be read; ask for it again at B1."""
+        if self.step is not Step.B2_SITEMAP or self.mode is not BuildMode.CLONE:
+            raise GateError("reset_clone_source() only valid at B2 in Clone mode")
+        self.clone = None
+        self.step = Step.B1_READ_PROMPT
+        return self.step
 
     def approve_plan(self) -> Step:
         """Only callable from a user action in the Studio / WebSocket."""
@@ -347,7 +383,7 @@ MCP_TOOLS = frozenset({"mcp_motion"})  # B8.1 Motion & 2D/3D MCP Specialist (Des
 
 ALLOWED_TOOLS: dict[Step, frozenset[str]] = {
     Step.B1_READ_PROMPT: READ_ONLY_TOOLS,
-    Step.B2_SITEMAP: READ_ONLY_TOOLS,
+    Step.B2_SITEMAP: READ_ONLY_TOOLS | {"scrape_style_dna"},  # Clone mode reads the reference page here
     Step.B3_ELICITATION: READ_ONLY_TOOLS,
     Step.B4_ASSETS: READ_ONLY_TOOLS | {"save_asset", "scrape_style_dna"},
     Step.B5_DESIGN_MD: READ_ONLY_TOOLS | {"scrape_style_dna", "write_design_md"},

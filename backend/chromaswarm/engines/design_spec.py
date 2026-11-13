@@ -39,6 +39,8 @@ class DesignInputs(BaseModel):
     style_dna: StyleDNA | None = None
     philosophy: Philosophy | None = None
     extra_rules: list[str] = Field(default_factory=list)
+    heading_font: str | None = None  # Clone mode: the reference's font, when it ships Vietnamese
+    body_font: str | None = None
 
 
 class DesignSpec(BaseModel):
@@ -57,8 +59,10 @@ class DesignSpec(BaseModel):
     anti_slop: list[str]
 
 
-def default_philosophy(theme: ThemePreset, spatial: SpatialSystem, palette: Palette, cta: str) -> Philosophy:
+def default_philosophy(theme: ThemePreset, spatial: SpatialSystem, palette: Palette, cta: str,
+                       fonts: tuple[str, str] | None = None) -> Philosophy:
     """Rule-based baseline philosophy (used without an LLM and as the ablation baseline)."""
+    fonts = fonts or (theme.heading_font, theme.body_font)
     calm = spatial.section_padding_desktop >= 96
     return Philosophy(
         statement=(
@@ -69,7 +73,7 @@ def default_philosophy(theme: ThemePreset, spatial: SpatialSystem, palette: Pale
             f"Nhịp không gian: section cách nhau {spatial.section_padding_desktop}px, mọi khoảng cách thuộc lưới 8pt.",
             f"Một điểm nhấn: màu accent ({palette.get('accent').css}) chỉ dành cho "
             f"{cta or 'Primary CTA'} và trạng thái đang chọn.",
-            f"Chữ dẫn dắt: {theme.heading_font} cho tiêu đề, {theme.body_font} cho nội dung, dòng chữ 45–72ch.",
+            f"Chữ dẫn dắt: {fonts[0]} cho tiêu đề, {fonts[1]} cho nội dung, dòng chữ 45–72ch.",
         ],
     )
 
@@ -110,7 +114,8 @@ def build_design_spec(inp: DesignInputs) -> DesignSpec:
         ratio = theme.landing_ratio
     else:
         ratio = Ratio.MINOR_THIRD if inp.density is not Density.DENSE else Ratio.MAJOR_SECOND
-    typography = build_scale(inp.base_font_px, ratio, theme.heading_font, theme.body_font, theme.mono_font)
+    typography = build_scale(inp.base_font_px, ratio, inp.heading_font or theme.heading_font,
+                             inp.body_font or theme.body_font, theme.mono_font)
 
     radius = {"sm": theme.radius_sm, "md": theme.radius_md, "lg": theme.radius_lg}
     elevation = theme.elevation
@@ -128,7 +133,8 @@ def build_design_spec(inp: DesignInputs) -> DesignSpec:
         if dna.motion_median_ms:
             duration = int(min(600, max(120, dna.motion_median_ms)))
 
-    philosophy = inp.philosophy or default_philosophy(theme, spatial, palette, inp.primary_cta)
+    philosophy = inp.philosophy or default_philosophy(theme, spatial, palette, inp.primary_cta,
+                                                      (typography.heading_font, typography.body_font))
     return DesignSpec(inputs=inp, philosophy=philosophy, theme=theme, layout=layout, palette=palette,
                       typography=typography, spatial=spatial, radius=radius, elevation=elevation,
                       motion_easing=easing, motion_duration_ms=duration, dna_rules=dna_rules,
