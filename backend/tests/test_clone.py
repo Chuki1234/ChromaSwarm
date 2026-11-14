@@ -6,6 +6,7 @@ from pathlib import Path
 from chromaswarm.agents.planner import Interactive, Section, page_sections
 from chromaswarm.clone.reader import CloneAnalysis, analyse, classify, sections_from_blocks
 from chromaswarm.developer.content import build_copy
+from chromaswarm.developer.photos import CDN
 from chromaswarm.state_machine.graph import Deps, PipelineRunner
 from chromaswarm.state_machine.pipeline_state import Step
 
@@ -133,7 +134,9 @@ def test_owned_clone_uses_the_sites_own_copy_and_photos(tmp_path):
 def test_not_owned_clone_keeps_the_users_own_copy(tmp_path):
     runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=fake_reader({"site_title": "X", "sections": {}})))
     p = asyncio.run(drive(runner, "c5", ["clone", {"url": "https://gom-moc.vn", "prompt": PROMPT, "owned": False}]))["pipeline"]
-    assert p.clone.content is None and build_copy(p).images == []
+    # nothing is read from a site that is not theirs: only topic-matched stock photos
+    assert p.clone.content is None
+    assert all(u.startswith(CDN) for u in build_copy(p).images)
 
 
 def test_unclear_domain_is_asked_not_guessed_in_clone_mode(tmp_path):

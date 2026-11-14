@@ -31,7 +31,7 @@ async def drive(runner, sid, answers):
 HAPPY = [
     "Mình muốn làm web bán đồ nội thất tối giản",  # B1
     "landing",  # B2
-    "editorial-luxury", "visual-first", "warm-paper #8a3b12", "airy",  # B3 pillars 1-4
+    "editorial-luxury", "flat", "visual-first", "warm-paper #8a3b12", "airy",  # B3 pillars 1-4
     "Người 30-45 tuổi, xem trên điện thoại, muốn họ bấm Đặt lịch xem showroom",  # B3 scope
     {"assets": [{"kind": "logo", "path_or_text": "logo.svg"}], "references": [], "done": True},  # B4
 ]
@@ -42,12 +42,12 @@ def test_happy_path_reaches_approval_and_writes_artifacts(runner, tmp_path):
     first, last = trace[0], trace[-1]
     assert first["question"]["step"] == "B1" and first["question"]["key"] == "mode"
     assert trace[1]["question"]["key"] == "raw_prompt"  # after choosing Creative
-    assert [t["question"]["step"] for t in trace[2:7]] == ["B2", "B3", "B3", "B3", "B3"]
-    assert trace[3]["question"]["key"] == "theme" and trace[6]["question"]["key"] == "margins"
+    assert [t["question"]["step"] for t in trace[2:8]] == ["B2", "B3", "B3", "B3", "B3", "B3"]
+    assert [t["question"]["key"] for t in trace[3:8]] == ["theme", "surface", "layout", "color", "margins"]
     assert last["pipeline"].step is Step.B7_APPROVAL
     assert last["question"]["kind"] == "approval"
     p = last["pipeline"]
-    assert p.pillars.clarity_score == 1.0
+    assert p.pillars.clarity_score == 1.0 and p.pillars.surface == "flat"  # material never counts toward clarity
     assert "Playfair Display" in p.design_md and "FAIL" not in p.design_md
     assert "data-swarm-section" in p.plan_md and "`cta-primary`" in p.plan_md
     for name in ("DESIGN.md", "PRODUCT.md", "PLAN.md", "tokens.css"):

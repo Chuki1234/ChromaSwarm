@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 from chromaswarm.engines.design_spec import Philosophy
 from chromaswarm.engines.palette import Mode
-from chromaswarm.engines.presets import LAYOUTS, THEMES, Layout, Theme
+from chromaswarm.engines.presets import LAYOUTS, SURFACE_WORDS, SURFACES, THEMES, Layout, Surface, Theme
 from chromaswarm.engines.spacing import Density
 from chromaswarm.state_machine.pipeline_state import Domain, Pillars, SitemapPage
 
@@ -144,6 +144,29 @@ PILLAR_QUESTIONS: dict[str, tuple[str, list[Option]]] = {
         [],
     ),
 }
+
+SURFACE_QUESTION = (
+    "Bạn muốn các khối trên trang (thẻ, nút, thanh menu) trông như chất liệu gì?",
+    [Option(value=s.value, label=p.label_vi, hint=p.hint) for s, p in SURFACES.items()],
+)
+
+
+def surface_question() -> Question:
+    text, options = SURFACE_QUESTION
+    return Question(step="B3", kind="choice", key="surface", text=text, options=options)
+
+
+def surface_in_text(text: str) -> str | None:
+    """A material named explicitly in free text ('làm kiểu liquid glass', 'đổi sang viền đậm')."""
+    return _match(text or "", {k.value: v for k, v in SURFACE_WORDS.items()})
+
+
+def interpret_surface(answer: str) -> str | None:
+    answer = (answer or "").strip()
+    if answer in {s.value for s in Surface}:
+        return answer
+    return surface_in_text(answer)
+
 
 THEME_WORDS = {
     Theme.EDITORIAL_LUXURY: ["sang trọng", "cao cấp", "luxury", "tĩnh lặng", "tối giản", "showroom", "editorial"],

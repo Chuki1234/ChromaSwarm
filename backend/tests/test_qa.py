@@ -14,10 +14,15 @@ DEFECTS = (Path(__file__).parents[1] / "chromaswarm/qa/fixtures/qa_defects.html"
 SEEDED = {
     "no-hover", "no-state-change", "console-error", "no-focus-visible",  # test 1
     "sticky-legibility", "stuck-hidden", "broken-image",                 # test 2
-    "overflow-x", "collision", "tap-target",                             # test 3
+    "overflow-x", "collision", "tap-target", "tap-spacing",              # test 3
     "slop-1-gradient", "slop-3-centered", "slop-5-shadow", "slop-6-copy",  # test 4
+    "control-border", "placeholder-as-label", "required-red", "link-underline",  # test 4, chapters 6-7
+    "disabled-control", "generic-label", "long-text", "font-weights", "number-format",
+    "card-row-ragged", "accent-area",
 }
-UNPATCHABLE = {"no-state-change", "console-error", "broken-image", "collision", "slop-6-copy"}
+UNPATCHABLE = {"no-state-change", "console-error", "broken-image", "collision", "slop-6-copy",
+               "placeholder-as-label", "disabled-control", "generic-label", "font-weights", "number-format",
+               "card-row-ragged", "accent-area"}
 
 
 async def qa_on(url: str, heal: bool = False):

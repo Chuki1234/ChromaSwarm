@@ -109,6 +109,21 @@ function QaPanel({ state }: { state: PipelineState }) {
           </li>
         ))}
       </ul>
+      {state.design_score != null && (
+        <div className="flex flex-col gap-2 border-t border-line pt-3">
+          <div className="flex items-baseline justify-between gap-4">
+            <h4 className="text-sm font-medium">Chấm thẩm mỹ</h4>
+            <span className="font-mono text-sm">{state.design_score.toFixed(1)}/10</span>
+          </div>
+          {(state.design_critique?.length ?? 0) > 0 && (
+            <ul className="flex flex-col gap-1 text-xs text-fg-2">
+              {state.design_critique.slice(0, 6).map((c, i) => (
+                <li key={i}>— {c}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
       {loops > 0 && (
         <p className="text-xs text-fg-3">
           {loops} vòng tự sửa · Dev đã vá {state.heal_rules?.length ?? 0} điểm CSS trong heal.css

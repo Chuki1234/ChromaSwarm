@@ -12,6 +12,7 @@ import re
 from pydantic import BaseModel
 
 from chromaswarm.agents.consultant import extract_cta, project_title
+from chromaswarm.developer.photos import stock_photos
 from chromaswarm.state_machine.pipeline_state import Domain, PipelineState
 
 
@@ -200,4 +201,10 @@ def build_copy(state: PipelineState) -> PageCopy:
     clone = state.clone
     if state.selected_page == "clone" and clone and clone.owned and clone.content:
         return owned_clone_copy(copy, clone.content)
+    # No photos of their own: free-license stock photos picked by topic (§1.3, never grey boxes)
+    if photos := stock_photos(f"{state.raw_prompt or ''} {brand} {state.pillars.scope or ''}", state.domain):
+        copy = copy.model_copy(update={
+            "images": photos,
+            "footer_line": f"© {brand}. Nội dung và ảnh minh hoạ (Unsplash) là mẫu — thay bằng thông tin thật ở bước bàn giao.",
+        })
     return copy

@@ -73,6 +73,9 @@ class Pillars(BaseModel):
     color: str | None = None
     margins: str | None = None
     scope: str | None = None
+    # Optional material (presets.Surface), asked right after the theme. Not one of the 5 pillars:
+    # it never counts toward the Clarity Score and defaults to the theme's own flat surfaces.
+    surface: str | None = None
 
     ORDERED_FIELDS: ClassVar[tuple[str, ...]] = ("theme", "layout", "color", "margins", "scope")
 
@@ -195,6 +198,8 @@ class PipelineState(BaseModel):
     qa_failures: list[str] = Field(default_factory=list)  # human-readable, latest run
     heal_rules: list[str] = Field(default_factory=list)  # Developer CSS patches -> app/heal.css
     heal_contrast: list[dict] = Field(default_factory=list)  # colour pairs for the Design department
+    design_score: float | None = None  # B11 design critic (vision model), 1-10; None = no critic
+    design_critique: list[str] = Field(default_factory=list)  # "where: problem → fix"
 
     # B12
     handover_closed: bool = False  # user chose "finish": no further page in this session
@@ -366,6 +371,8 @@ class PipelineState(BaseModel):
         self.qa_failures = []
         self.heal_rules = []
         self.heal_contrast = []
+        self.design_score = None
+        self.design_critique = []
 
 
 class GateError(RuntimeError):

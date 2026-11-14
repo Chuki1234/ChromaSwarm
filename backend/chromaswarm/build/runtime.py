@@ -27,6 +27,7 @@ from chromaswarm.mcp_motion.server import pick_effect
 from chromaswarm.developer.workspace import TOKENS_PATH, DevServer, Workspace
 from chromaswarm.engines.design_spec import DesignSpec
 from chromaswarm.playwright_engine.swarm import Agent, ColorReading, Finding, SwarmOverlay, design_pass
+from chromaswarm.qa.critic import Critique, critique
 from chromaswarm.qa.master import QaReport, run_master_qa
 from chromaswarm.state_machine.pipeline_state import Step
 
@@ -63,6 +64,7 @@ class BuildRuntime(Protocol):
     async def integrate(self, session: str, planned: list[str]) -> IntegrationReport: ...
     async def heal(self, session: str, rules: list[str], contrast: list[dict]) -> list[TokenChange]: ...
     async def master_qa(self, session: str, spec: DesignSpec) -> QaReport: ...
+    # optional: async def critique(self, session: str, context: str = "") -> Critique | None
     async def close(self, session: str) -> None: ...
 
 
@@ -269,6 +271,21 @@ class LocalBuildRuntime:
         report = await run_master_qa(s.page, s.overlay, spec.typography, errors=s.console_errors,
                                      instant=not self.headed)
         return report
+
+    async def critique(self, session: str, context: str = "") -> Critique | None:
+        """Design critic on a clean tab: the build tab carries the swarm overlay, which must not be graded."""
+        s = self._s(session)
+        if not (s.browser and s.page):
+            return None
+        page = await s.browser.new_page(viewport={"width": 1440, "height": 900})
+        try:
+            await page.goto(s.page.url, wait_until="networkidle")
+            return await critique(page, context=context)
+        except Exception as e:  # noqa: BLE001 — the critic never stops a build
+            log.warning("critique failed: %s", e)
+            return None
+        finally:
+            await page.close()
 
     # -------------------------------------------------------------- B12
     async def handover(self, session: str, options: list[dict]) -> None:

@@ -119,7 +119,7 @@ def test_pipeline_runs_b1_to_b7_with_llm_consultant(tmp_path):
     async def go():
         await runner.start("q1")
         for a in ["creative", "Mình muốn mở tiệm gốm thủ công trên mạng", "landing", "yên tĩnh, sang, kiểu tạp chí",
-                  "visual-first", "giấy kem, màu nâu đất", "airy",
+                  "flat", "visual-first", "giấy kem, màu nâu đất", "airy",
                   "Người 30-45 tuổi, xem trên điện thoại, muốn họ bấm Đặt hàng",
                   {"assets": [], "references": [], "done": True}]:
             snap = await runner.answer("q1", a)

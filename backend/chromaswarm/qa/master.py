@@ -4,9 +4,11 @@
                           keyboard focus-visible, no console errors
 2. Scroll choreography — sticky header stays legible, nothing stuck at opacity 0, images load
 3. 4-breakpoint audit  — 1440/1024/768/375: no horizontal overflow, no text collisions,
-                          mobile margins >= 16px, tap targets >= 40px
+                          mobile margins >= 16px, tap targets >= 48px, side-by-side targets >= 8px apart
 4. DESIGN.md + anti-slop — fonts match, contrast on every text block, the automatable
-                          rules of the 10-point blacklist
+                          rules of the 10-point blacklist, and the measurable rules of
+                          chapters 6-7 (control borders, labels, links, disabled controls,
+                          generic labels, long text, font weights, number format)
 
 The probe (qa_probe.js) only measures; verdicts are computed here. Each failure
 carries a `heal` CSS rule when the Developer can patch it deterministically
@@ -17,6 +19,7 @@ Design department can repair it in tokens.css; otherwise it is reported as is.
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 from playwright.async_api import Page
@@ -28,8 +31,17 @@ from chromaswarm.playwright_engine.swarm import Agent, ColorReading, Rect, Swarm
 
 PROBE_JS = Path(__file__).with_name("qa_probe.js").read_text(encoding="utf-8")
 BREAKPOINTS = [(1440, 900, "Desktop"), (1024, 768, "Laptop"), (768, 1024, "Tablet"), (375, 812, "Mobile")]
-MIN_TAP = 40
+MIN_TAP = 48  # §5 test 1: 48px (8pt grid), above WCAG's 44px recommendation
+MIN_TAP_GAP = 8
 MOBILE_MARGIN = 16
+CONTROL_BORDER_MIN = 3.0  # §2.1 --border-strong
+LONG_TEXT_CHARS = 200     # a "long paragraph" for §2.2 / pillar 5 (~3 lines at 65ch)
+ACCENT_AREA_MAX = 0.10    # 9/10 modern references keep saturated colour under 5% of the page
+# §7.2: link/button labels that say nothing about the destination or action
+GENERIC_LABELS = {"xem thêm", "tìm hiểu thêm", "đọc thêm", "bấm vào đây", "nhấn vào đây", "click here",
+                  "learn more", "read more", "more", "ok", "here"}
+# §7.1: 5+ digit numbers without a thousands separator (4 digits are skipped: years)
+BARE_NUMBER = re.compile(r"(?<![\d.,:/@#\-])[1-9]\d{4,}(?![\d.,:/@\-])")
 CLICKABLE_ROLES = {"button", "tab", "filter-tab", "modal-trigger"}
 GENERIC_COPY = ["lorem ipsum", "john doe", "nâng tầm trải nghiệm", "khám phá tiềm năng vô hạn",
                 "giải pháp đột phá hàng đầu", "trải nghiệm đẳng cấp", "elevate your", "unlock the power"]
@@ -158,7 +170,7 @@ async def test_scroll(page: Page, swarm: SwarmOverlay) -> QaTest:
         if stop["bg_alpha"] < 0.6 and not stop["blur"]:
             fails.append(QaFailure(test=2, rule="sticky-legibility", selector=stop["selector"],
                                    detail="header dính không có nền hoặc blur, chữ chìm vào nội dung",
-                                   heal=f"{stop['selector']} {{ background: color-mix(in oklch, var(--bg-primary) 88%, transparent); "
+                                   heal=f"{stop['selector']} {{ background: color-mix(in srgb, var(--bg-primary) 88%, transparent); "
                                         "backdrop-filter: blur(12px); }"))
             break
         if stop["h"] > r["viewport_h"] * 0.2:
@@ -199,7 +211,13 @@ async def test_breakpoints(page: Page, swarm: SwarmOverlay) -> QaTest:
             for t in await _probe(page, "tapTargets", MIN_TAP):
                 fails.append(QaFailure(test=3, rule="tap-target", selector=t["selector"], viewport=w,
                                        detail=f"vùng bấm “{t['label']}” {t['w']}×{t['h']}px (cần ≥ {MIN_TAP}px)",
-                                       heal=f"@media (max-width: 767px) {{ {t['selector']} {{ min-height: 44px; min-width: 44px; }} }}"))
+                                       heal=f"@media (max-width: 767px) {{ {t['selector']} {{ display: inline-flex; "
+                                            f"align-items: center; justify-content: center; "
+                                            f"min-height: {MIN_TAP}px; min-width: {MIN_TAP}px; }} }}"))
+        for g in await _probe(page, "tapSpacing", MIN_TAP_GAP):
+            fails.append(QaFailure(test=3, rule="tap-spacing", selector=g["a"], viewport=w,
+                                   detail=f"cách {g['b']} chỉ {g['gap']}px (cần ≥ {MIN_TAP_GAP}px)",
+                                   heal=f"{g['a']} {{ margin-inline-end: {MIN_TAP_GAP}px; }}"))
     await page.set_viewport_size({"width": 1440, "height": 900})
     # one finding per (rule, element): a collision seen at 4 widths is one defect
     unique: dict[tuple[str, str], QaFailure] = {}
@@ -220,7 +238,7 @@ def _purple_pink(stops: list[str]) -> bool:
 
 
 async def test_design_compliance(page: Page, swarm: SwarmOverlay, scale: TypeScale | None) -> QaTest:
-    await swarm.hud("Master Cursor · Bài 4: đối chiếu DESIGN.md & 10 điều cấm")
+    await swarm.hud("Master Cursor · Bài 4: đối chiếu DESIGN.md, 10 điều cấm & chuẩn thành phần")
     await page.mouse.move(0, 0)
     fails: list[QaFailure] = []
     fonts = await _probe(page, "fonts")
@@ -275,7 +293,85 @@ async def test_design_compliance(page: Page, swarm: SwarmOverlay, scale: TypeSca
     for d in slop["distorted"]:
         fails.append(QaFailure(test=4, rule="slop-8-image-ratio", selector=d["selector"],
                                detail=f"ảnh bị méo {d['drift'] * 100:.0f}%", heal=f"{d['selector']} {{ object-fit: cover; }}"))
-    return QaTest(test=4, name=TEST_NAMES[4], checked=len(texts) + len(slop["gradients"]) + slop["headings"], failures=fails)
+    comp = await _probe(page, "components", LONG_TEXT_CHARS)
+    fails += component_failures(comp, slop["text"])
+    checked = len(texts) + len(slop["gradients"]) + slop["headings"] + len(comp["controls"]) + len(comp["labels"])
+    return QaTest(test=4, name=TEST_NAMES[4], checked=checked, failures=fails)
+
+
+def _contrast(a: str, b: str) -> float:
+    ca, cb = parse_css_color(a), parse_css_color(b)
+    return wcag_contrast(ca[0], cb[0]) if ca and cb else 21.0
+
+
+def _is_red(color: str) -> bool:
+    c = parse_css_color(color)
+    return bool(c) and c[0].c > 0.08 and (c[0].h >= 345 or c[0].h <= 40)
+
+
+def component_failures(comp: dict, page_text: str) -> list[QaFailure]:
+    """Verdicts for the measurable rules of FRONTEND_STANDARDS chapters 6-7."""
+    fails: list[QaFailure] = []
+    for c in comp["controls"]:
+        if c["native"]:
+            continue  # browser-drawn checkbox/radio: the UA owns its contrast
+        edge = _contrast(c["border"], c["outside"]) if c["border_w"] > 0 else 1.0
+        fill = _contrast(c["bg"], c["outside"])
+        if max(edge, fill) < CONTROL_BORDER_MIN:
+            fails.append(QaFailure(test=4, rule="control-border", selector=c["selector"],
+                                   detail=f"viền ô nhập chỉ đạt {max(edge, fill):.2f}:1 (cần ≥ 3:1, §2.1 --border-strong)",
+                                   heal=f"{c['selector']} {{ border: 1px solid var(--border-strong, currentColor); }}"))
+        if c["placeholder"] and not c["visible_label"] and not (c["type"] == "search" and c["aria_label"]):
+            fails.append(QaFailure(test=4, rule="placeholder-as-label", selector=c["selector"],
+                                   detail=f"ô nhập chỉ có placeholder “{c['placeholder'][:30]}”, không có nhãn hiển thị (§6.1)"))
+    for a in comp["asterisks"]:
+        if _is_red(a["color"]):
+            fails.append(QaFailure(test=4, rule="required-red", selector=a["selector"],
+                                   detail="dấu * bắt buộc tô đỏ (đỏ là màu lỗi, §6.1)",
+                                   heal=f"{a['selector']} {{ color: inherit; }}"))
+    for link in comp["links"]:
+        if not link["underline"]:
+            fails.append(QaFailure(test=4, rule="link-underline", selector=link["selector"],
+                                   detail="link trong đoạn văn không gạch chân, chỉ khác chữ thường bằng màu (§2.7)",
+                                   heal=f"{link['selector']} {{ text-decoration: underline; text-underline-offset: 3px; }}"))
+    for d in comp["disabled"]:
+        if not d["explained"]:
+            fails.append(QaFailure(test=4, rule="disabled-control", selector=d["selector"],
+                                   detail="nút/ô bị vô hiệu hoá mà không có dòng giải thích (§6.4)"))
+    for lb in comp["labels"]:
+        if lb["text"] in GENERIC_LABELS:
+            fails.append(QaFailure(test=4, rule="generic-label", selector=lb["selector"],
+                                   detail=f"chữ “{lb['text']}” không mô tả đích đến/hành động (§7.2)"))
+    for t in comp["long"]:
+        problems, fixes = [], []
+        if t["font_size"] < 18:
+            problems.append(f"cỡ {t['font_size']:g}px < 18px")
+            fixes.append("font-size: 1.125rem;")
+        if t["line_height"] < 1.5:
+            problems.append(f"line-height {t['line_height']:g} < 1.5")
+            fixes.append("line-height: 1.6;")
+        if t["align"] == "justify":
+            problems.append("căn đều hai bên")
+            fixes.append("text-align: left;")
+        if problems:
+            fails.append(QaFailure(test=4, rule="long-text", selector=t["selector"],
+                                   detail=f"đoạn văn dài {t['chars']} ký tự: {', '.join(problems)} (§2.2)",
+                                   heal=f"{t['selector']} {{ {' '.join(fixes)} }}"))
+    for family, weights in comp["weights"].items():
+        if len(weights) > 2:
+            fails.append(QaFailure(test=4, rule="font-weights", selector="body",
+                                   detail=f"phông “{family}” dùng {len(weights)} độ đậm {weights} (tối đa 2, §2.2)"))
+    for r in comp.get("ragged", []):
+        fails.append(QaFailure(test=4, rule="card-row-ragged", selector=r["selector"],
+                               detail=f"thẻ cùng hàng có ảnh cao lệch nhau {r['heights']}px (§6.6: mép thẻ phải thẳng hàng)"))
+    if comp.get("accent_share", 0) > ACCENT_AREA_MAX:
+        fails.append(QaFailure(test=4, rule="accent-area", selector="body",
+                               detail=f"nền màu bão hoà chiếm {comp['accent_share'] * 100:.0f}% trang "
+                                      f"(tối đa {ACCENT_AREA_MAX * 100:.0f}%, màu nhấn dành cho hành động, §2.1)"))
+    if m := BARE_NUMBER.search(page_text):
+        fails.append(QaFailure(test=4, rule="number-format", selector="body",
+                               detail=f"số “{m.group()}” thiếu dấu phân cách hàng nghìn (§7.1)"))
+    return fails
 
 
 # ------------------------------------------------------------------ runner

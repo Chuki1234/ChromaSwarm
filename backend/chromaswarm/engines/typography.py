@@ -8,6 +8,9 @@ from pydantic import BaseModel
 
 VIEWPORT_MIN, VIEWPORT_MAX = 375, 1440
 FLUID_FROM_PX = 32  # sizes >= 32px get clamp() and negative tracking
+# Modern hero headlines run ~64-96px on desktop (knowledge-base/MODERN_UI_REFERENCES.md,
+# pattern 6). A small ratio would leave display at ~60px, so desktop display is floored.
+DISPLAY_MIN_DESKTOP_PX = 72
 
 
 class Ratio(float, Enum):
@@ -54,6 +57,8 @@ def build_scale(base_px: int, ratio: Ratio, heading_font: str, body_font: str,
     steps = []
     for name, n in LEVELS:
         px = base_px * ratio.value ** n
+        if name == "display":
+            px = max(px, DISPLAY_MIN_DESKTOP_PX)
         px_min = base_px * mobile_ratio ** n if n > 0 else px
         if px - px_min >= 1:
             css = _fluid(round(px_min, 1), round(px, 1))

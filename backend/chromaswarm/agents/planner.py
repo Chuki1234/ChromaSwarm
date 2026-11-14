@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from chromaswarm.agents.consultant import base_font_for, extract_cta, split_color
 from chromaswarm.engines.design_spec import DesignInputs, DesignSpec
-from chromaswarm.engines.presets import Layout, Theme
+from chromaswarm.engines.presets import Layout, Surface, Theme
 from chromaswarm.engines.spacing import Density
 from chromaswarm.engines.style_dna import StyleDNA
 from chromaswarm.state_machine.pipeline_state import PipelineState
@@ -30,6 +30,7 @@ class Section(BaseModel):
     content: str
     interactive: list[Interactive] = []
     effect: str | None = None  # B8.1 candidate
+    surface: str | None = None  # "alt": tinted band (bg-surface) for rhythm between sections
 
 
 def _i(id_: str, role: str, behavior: str) -> Interactive:
@@ -103,7 +104,7 @@ BLUEPRINTS: dict[str, list[Section]] = {
                 content="Image gallery 4:5, title, price, variant pickers, stock",
                 interactive=[_i("gallery-thumb", "button", "switch main image"),
                              _i("variant-picker", "tab", "select size/color, update price & stock"),
-                             _i("add-to-cart", "button", "disabled until variant chosen, then open cart drawer")]),
+                             _i("add-to-cart", "button", "always enabled; explains a missing variant, then adds to cart")]),
         Section(id="product-details", name="Details", structure="tabs",
                 content="Description / Materials / Shipping",
                 interactive=[_i("details-tab", "tab", "switch panel")]),
@@ -133,14 +134,45 @@ def page_sections(state: PipelineState) -> list[Section]:
     """Sections of the page being built: read from the reference in Clone mode, blueprints otherwise."""
     if state.selected_page == CLONE_PAGE and state.clone and state.clone.sections:
         return [Section.model_validate(s) for s in state.clone.sections]
-    return sections_for(state.selected_page or "", Layout(state.pillars.layout))
+    theme = Theme(state.pillars.theme) if state.pillars.theme else None
+    surface = Surface(state.pillars.surface) if state.pillars.surface in {x.value for x in Surface} else None
+    return sections_for(state.selected_page or "", Layout(state.pillars.layout), theme, surface)
 
 
-def sections_for(slug: str, layout: Layout) -> list[Section]:
+# Landing hero by layout pillar (knowledge-base/MODERN_UI_REFERENCES.md): a varied repertoire
+# instead of one split hero for every site.
+#   catalog      -> split-7-5        compact, products follow right away
+#   narrative    -> hero-editorial   very large headline across the page, wide image below (Linear)
+#   visual-first -> hero-overlay     full-bleed photo with scrim and copy on it (Chamberlain, Marou)
+#                   hero-centered    for precision-tech: product centred on a quiet panel (Apple)
+# Liquid Glass needs something behind the glass: visual-first always gets the photo hero,
+# with the copy on a frosted panel over it.
+def hero_structure(layout: Layout, theme: Theme | None, surface: Surface | None = None) -> str:
+    if layout is Layout.NARRATIVE:
+        return "hero-editorial"
+    if layout is Layout.VISUAL_FIRST:
+        if surface is Surface.GLASS:
+            return "hero-overlay"
+        return "hero-centered" if theme is Theme.PRECISION_TECH else "hero-overlay"
+    return "split-7-5"
+
+
+FULL_WIDTH = {"sticky-bar", "footer-columns", "full-bleed-band", "full-bleed-image", "hero-overlay"}
+
+
+def sections_for(slug: str, layout: Layout, theme: Theme | None = None,
+                 surface: Surface | None = None) -> list[Section]:
     sections = [s.model_copy(deep=True) for s in BLUEPRINTS.get(slug, GENERIC)]
     if layout is Layout.CATALOG and slug == "landing":
         # Catalog-first landing: surface products earlier.
         sections.insert(2, sections.pop(4))
+    if slug == "landing":
+        hero = next(s for s in sections if s.id == "hero")
+        hero.structure = hero_structure(layout, theme, surface)
+    # Rhythm: content sections after the hero alternate plain / tinted background bands.
+    body = [s for s in sections[1:] if s.structure not in FULL_WIDTH and s.id != "hero"]
+    for n, s in enumerate(body):
+        s.surface = "alt" if n % 2 == 0 and len(body) > 1 else None
     for a, b in zip(sections, sections[1:]):
         assert a.structure != b.structure, f"rhythm violation: {a.id} -> {b.id}"
     return sections
@@ -154,7 +186,8 @@ def design_inputs(state: PipelineState, project_name: str, dna: StyleDNA | None 
     effects = [s.effect for s in page_sections(state) if s.effect]
     clone = state.clone if state.selected_page == CLONE_PAGE else None
     return DesignInputs(
-        project_name=project_name, page=page, theme=theme, layout=Layout(p.layout), density=Density(p.margins),
+        project_name=project_name, page=page, theme=theme, layout=Layout(p.layout),
+        surface=Surface(p.surface) if p.surface in {x.value for x in Surface} else Surface.FLAT, density=Density(p.margins),
         mode=mode, seed_color=seed, page_kind="app" if state.selected_page in ("dashboard", "workspace") else "landing",
         base_font_px=base_font_for(p.scope or ""), persona=p.scope or "", primary_cta=extract_cta(p.scope or "") or "",
         motion_effects=effects, style_dna=dna,

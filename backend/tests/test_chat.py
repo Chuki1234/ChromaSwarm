@@ -78,7 +78,7 @@ def test_revise_changes_an_earlier_pillar_and_keeps_the_pending_question(tmp_pat
 
     async def go():
         await runner.start("r")
-        for a in ["creative", "Mình muốn làm web bán đồ nội thất tối giản", "landing", "editorial-luxury", "visual-first"]:
+        for a in ["creative", "Mình muốn làm web bán đồ nội thất tối giản", "landing", "editorial-luxury", "flat", "visual-first"]:
             await runner.answer("r", a)
         return await runner.answer("r", {"revise": "theme", "text": "thân thiện ấm áp"})
 

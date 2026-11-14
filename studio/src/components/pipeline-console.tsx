@@ -40,6 +40,8 @@ export type PipelineState = {
   qa_passed: boolean;
   qa_summary: string | null;
   qa_failures: string[];
+  design_score: number | null;
+  design_critique: string[];
   heal_history: { iteration: number; failures: string[] }[];
   heal_rules: string[];
   escalated_to_user: boolean;

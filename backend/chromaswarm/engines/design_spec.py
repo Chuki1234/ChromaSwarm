@@ -12,7 +12,9 @@ import re
 from pydantic import BaseModel, Field
 
 from chromaswarm.engines.palette import Mode, Palette, generate_palette
-from chromaswarm.engines.presets import ANTI_SLOP_RULES, LAYOUTS, THEMES, Layout, LayoutPreset, Theme, ThemePreset
+from chromaswarm.engines.presets import (
+    ANTI_SLOP_RULES, LAYOUTS, SURFACES, THEMES, Layout, LayoutPreset, Surface, SurfacePreset, Theme, ThemePreset,
+)
 from chromaswarm.engines.spacing import DENSITY_PRESETS, Density, SpatialSystem, snap
 from chromaswarm.engines.style_dna import ANTI_CLONING_BOUNDARY, StyleDNA
 from chromaswarm.engines.typography import Ratio, TypeScale, build_scale
@@ -28,6 +30,7 @@ class DesignInputs(BaseModel):
     page: str
     theme: Theme
     layout: Layout
+    surface: Surface = Surface.FLAT
     density: Density
     mode: Mode
     seed_color: str
@@ -48,6 +51,7 @@ class DesignSpec(BaseModel):
     philosophy: Philosophy
     theme: ThemePreset
     layout: LayoutPreset
+    surface: SurfacePreset
     palette: Palette
     typography: TypeScale
     spatial: SpatialSystem
@@ -84,7 +88,7 @@ def philosophy_facts(spec: DesignSpec) -> dict:
     return {
         "project": i.project_name, "page": i.page, "persona_and_goal": i.persona,
         "primary_cta": i.primary_cta or "Primary CTA",
-        "style": spec.theme.label_vi, "layout": spec.layout.label_vi, "reading_pattern": spec.layout.reading_pattern,
+        "style": spec.theme.label_vi, "surface": spec.surface.label_vi, "layout": spec.layout.label_vi, "reading_pattern": spec.layout.reading_pattern,
         "mode": spec.palette.mode.value, "accent": spec.palette.get("accent").css,
         "heading_font": spec.typography.heading_font, "body_font": spec.typography.body_font,
         "section_padding_px": spec.spatial.section_padding_desktop, "grid": "8pt", "line_length": "45-72ch", "color_rule": "60-30-10",
@@ -133,9 +137,15 @@ def build_design_spec(inp: DesignInputs) -> DesignSpec:
         if dna.motion_median_ms:
             duration = int(min(600, max(120, dna.motion_median_ms)))
 
+    surface = SURFACES[inp.surface]
+    if surface.radius is not None:  # the material's shape wins over the theme's and the reference's radii
+        radius = dict(zip(("sm", "md", "lg"), surface.radius))
+    if surface.elevation:
+        elevation = surface.elevation
+
     philosophy = inp.philosophy or default_philosophy(theme, spatial, palette, inp.primary_cta,
                                                       (typography.heading_font, typography.body_font))
-    return DesignSpec(inputs=inp, philosophy=philosophy, theme=theme, layout=layout, palette=palette,
+    return DesignSpec(inputs=inp, philosophy=philosophy, theme=theme, layout=layout, surface=surface, palette=palette,
                       typography=typography, spatial=spatial, radius=radius, elevation=elevation,
                       motion_easing=easing, motion_duration_ms=duration, dna_rules=dna_rules,
                       anti_slop=ANTI_SLOP_RULES + inp.extra_rules)
@@ -196,7 +206,11 @@ def render_design_md(spec: DesignSpec) -> str:
         f"- Luật gần kề: {s.inline_gap} < {s.card_padding} < {s.section_padding_desktop} ✓",
         f"- Thang 8pt duy nhất được phép: 4, 8, 12, 16, 24, 32, 48, 64, 80, 96, 128",
         f"- Bo góc: sm {spec.radius['sm']}px · md {spec.radius['md']}px · lg {spec.radius['lg']}px · nút {spec.theme.button_radius}",
+        f"- Chất liệu bề mặt: **{spec.surface.label_vi}** ({spec.surface.hint})",
         f"- Elevation: {spec.elevation}",
+        "- Đổ bóng (đúng 3 mức): " + " · ".join(f"{k} `{v}`" for k, v in shadow_tokens(spec).items()),
+        ("- Màu hành động: **gần đen** (`--text-primary`) — giao diện trung tính, màu sắc đến từ ảnh"
+         if spec.inputs.theme in NEUTRAL_ACTION_THEMES else "- Màu hành động: màu nhấn thương hiệu (`--accent`)"),
         f"- Bố cục: {spec.layout.label_vi} — {spec.layout.reading_pattern}; {spec.layout.grid}; tỷ lệ ảnh {', '.join(spec.layout.image_ratios)}",
         "",
         "## 6. Chuyển động & Hiệu ứng 2D/3D (B8.1)",
@@ -212,11 +226,57 @@ def render_design_md(spec: DesignSpec) -> str:
     return "\n".join(lines)
 
 
+def shadow_tokens(spec: DesignSpec) -> dict[str, str]:
+    """Exactly three elevation levels (§2.6): light from above, tinted with the
+    text hue instead of pure black, low alpha (anti-slop #5)."""
+    h = spec.palette.get("text-primary").h
+    tint = lambda a: f"oklch(0.2 0.02 {h:g} / {a})"  # noqa: E731
+    surface = spec.inputs.surface
+    if surface is Surface.BRUTAL:  # hard offset, no blur: the ink shadow is part of the shape
+        return {"sm": "2px 2px 0 var(--text-primary)", "md": "4px 4px 0 var(--text-primary)",
+                "lg": "8px 8px 0 var(--text-primary)"}
+    if surface is Surface.CLAY:  # puffy: soft drop + light from the top edge + shade at the bottom edge
+        inner = f"inset 0 2px 4px oklch(1 0 0 / 0.55), inset 0 -4px 8px {tint(0.08)}"
+        return {"sm": f"0 4px 8px {tint(0.08)}, {inner}",
+                "md": f"0 8px 24px {tint(0.10)}, {inner}",
+                "lg": f"0 16px 40px {tint(0.14)}, {inner}"}
+    if surface is Surface.GLASS:  # wide, soft and low: glass floats, it does not cast hard shadows
+        rim = "inset 0 1px 0 oklch(1 0 0 / 0.45)"
+        return {"sm": f"{rim}, 0 2px 8px {tint(0.06)}",
+                "md": f"{rim}, 0 8px 24px {tint(0.08)}",
+                "lg": f"{rim}, 0 16px 48px {tint(0.12)}"}
+    return {
+        "sm": f"0 1px 2px {tint(0.06)}",
+        "md": f"0 1px 2px {tint(0.04)}, 0 4px 12px {tint(0.08)}",
+        "lg": f"0 2px 4px {tint(0.04)}, 0 12px 32px {tint(0.10)}",
+    }
+
+
+# Luxury and warm brands keep the UI chrome neutral and let photography carry the colour:
+# 9 of 10 reference sites give the accent <= 5% of the page and use near-black actions
+# (knowledge-base/MODERN_UI_REFERENCES.md, pattern 2). Still one colour for every action (§2.1).
+NEUTRAL_ACTION_THEMES = {Theme.EDITORIAL_LUXURY, Theme.WARM_ORGANIC}
+
+
+def action_tokens(spec: DesignSpec) -> dict[str, str]:
+    if spec.inputs.theme in NEUTRAL_ACTION_THEMES:
+        return {"action": "var(--text-primary)", "action-fg": "var(--bg-primary)",
+                "action-hover": "color-mix(in srgb, var(--text-primary) 82%, var(--bg-primary))",
+                "action-ink": "var(--text-primary)",
+                # on the dark closing band the neutral action inverts to the page background
+                "band-action": "var(--bg-primary)", "band-action-fg": "var(--text-primary)"}
+    # Brand-coloured actions keep their colour on the dark band: a white button there reads as disabled.
+    return {"action": "var(--accent)", "action-fg": "var(--accent-fg)", "action-hover": "var(--accent-hover)",
+            "action-ink": "var(--accent-ink)", "band-action": "var(--accent)", "band-action-fg": "var(--accent-fg)"}
+
+
 def render_tokens_css(spec: DesignSpec) -> str:
     """CSS variables for the generated workspace (Design department writes back here)."""
     out = [":root {"]
     out += [f"  --{tk.name}: {tk.css};" for tk in spec.palette.tokens]
+    out += [f"  --{k}: {v};" for k, v in action_tokens(spec).items()]
     out += [f"  --radius-{k}: {v}px;" for k, v in spec.radius.items()]
+    out += [f"  --shadow-{k}: {v};" for k, v in shadow_tokens(spec).items()]
     out += [f"  --font-heading: '{spec.typography.heading_font}', serif;" if spec.inputs.theme is Theme.EDITORIAL_LUXURY
             else f"  --font-heading: '{spec.typography.heading_font}', system-ui, sans-serif;",
             f"  --font-body: '{spec.typography.body_font}', system-ui, sans-serif;"]

@@ -16,6 +16,54 @@ class Theme(StrEnum):
     NEO_BRUTALIST = "neo-brutalist"
 
 
+class Surface(StrEnum):
+    """How surfaces are drawn (cards, buttons, nav, panels), on top of any Theme.
+
+    A separate axis from Theme: Theme sets colour mood, fonts and rhythm; Surface sets the
+    material. Only styles that can meet the standards are offered: Neumorphism (low-contrast
+    controls, fails WCAG 1.4.11) and aurora gradients (anti-slop #1) are left out on purpose."""
+
+    FLAT = "flat"  # the theme's own surfaces (hairlines / soft shadows)
+    GLASS = "liquid-glass"  # frosted translucent layers over soft brand-hue light
+    CLAY = "clay"  # puffy rounded blocks, soft outer + inner shadows
+    BRUTAL = "brutal"  # thick ink borders, hard offset shadows, square corners
+
+
+class SurfacePreset(BaseModel):
+    surface: Surface
+    label_vi: str
+    hint: str
+    radius: tuple[int, int, int] | None  # sm, md, lg override (None = keep the theme's)
+    elevation: str
+
+
+SURFACES: dict[Surface, SurfacePreset] = {
+    Surface.FLAT: SurfacePreset(
+        surface=Surface.FLAT, label_vi="Phẳng, tinh gọn", hint="mặc định của phong cách đã chọn",
+        radius=None, elevation=""),
+    Surface.GLASS: SurfacePreset(
+        surface=Surface.GLASS, label_vi="Kính mờ trong suốt (Liquid Glass)", hint="lớp kính mờ, viền sáng, bo góc lớn",
+        radius=(12, 24, 32),
+        elevation="frosted glass: translucent surface (>= 72% opaque behind text) + backdrop blur, 1px light rim, "
+                  "soft diffuse shadow; page lit by <= 12% brand-hue glows"),
+    Surface.CLAY: SurfacePreset(
+        surface=Surface.CLAY, label_vi="Mềm mại như đất sét (Claymorphism)", hint="khối tròn đầy, bóng mềm hai lớp",
+        radius=(16, 32, 48),
+        elevation="clay: soft outer shadow + inner top highlight and bottom shade, no borders on cards"),
+    Surface.BRUTAL: SurfacePreset(
+        surface=Surface.BRUTAL, label_vi="Viền đậm, bóng cứng (Neo-brutalism)", hint="viền 2px, bóng lệch, góc vuông",
+        radius=(0, 0, 0),
+        elevation="neo-brutal: 2px ink borders + hard offset shadow (4px 4px 0, no blur)"),
+}
+
+SURFACE_WORDS: dict[Surface, list[str]] = {
+    Surface.GLASS: ["liquid glass", "glassmorphism", "glass", "kính mờ", "hiệu ứng kính", "mờ kính"],
+    Surface.CLAY: ["claymorphism", "clay", "đất sét"],
+    Surface.BRUTAL: ["neo-brutalism", "neo brutalism", "brutalism", "brutal", "viền đậm", "bóng cứng"],
+    Surface.FLAT: ["phẳng", "flat", "tinh gọn"],
+}
+
+
 class Layout(StrEnum):
     VISUAL_FIRST = "visual-first"  # A
     NARRATIVE = "narrative"  # B
@@ -59,12 +107,12 @@ THEMES: dict[Theme, ThemePreset] = {
         theme=Theme.PRECISION_TECH, label_vi="Hiện đại & chuẩn xác",
         heading_font="Geist", body_font="Inter", mono_font="Geist Mono",
         radius_sm=4, radius_md=8, radius_lg=12, button_radius="8px",
-        border="1px solid color-mix(in oklch, var(--text-primary) 10%, transparent)",
+        border="1px solid color-mix(in srgb, var(--text-primary) 10%, transparent)",
         elevation="layered low-opacity shadows (0.03-0.06) only on floating UI",
         motion_duration_ms=200, motion_easing="cubic-bezier(0.22, 1, 0.36, 1)", landing_ratio=Ratio.MAJOR_THIRD),
     Theme.WARM_ORGANIC: ThemePreset(
         theme=Theme.WARM_ORGANIC, label_vi="Thân thiện & ấm áp",
-        heading_font="Lexend", body_font="Be Vietnam Pro", mono_font=None,
+        heading_font="Fraunces", body_font="Be Vietnam Pro", mono_font=None,
         radius_sm=12, radius_md=16, radius_lg=24, button_radius="9999px", border="1px solid var(--border-subtle)",
         elevation="soft diffused shadows tinted with the background hue",
         motion_duration_ms=300, motion_easing="cubic-bezier(0.22, 1, 0.36, 1)", landing_ratio=Ratio.MAJOR_THIRD),

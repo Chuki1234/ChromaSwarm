@@ -183,11 +183,103 @@
       return out.slice(0, 20);
     },
 
-    tapTargets(min = 40) {
+    tapTargets(min = 48) {
       return this.interactives().filter(i => !i.inline_link).map(i => {
         const r = document.querySelector(i.selector).getBoundingClientRect();
         return { ...i, w: Math.round(r.width), h: Math.round(r.height) };
       }).filter(i => i.w < min || i.h < min);
+    },
+
+    /** Side-by-side targets (sharing a row) closer than `min` px. Stacked full-width rows
+        such as accordions are a separate, conventional pattern and are not measured. */
+    tapSpacing(min = 8) {
+      const els = this.interactives().filter(i => !i.inline_link).map(i => document.querySelector(i.selector))
+        .filter(el => el && !inHScroller(el));
+      const out = [];
+      for (let i = 0; i < els.length && out.length < 20; i++) {
+        for (let j = i + 1; j < els.length && out.length < 20; j++) {
+          const a = els[i], b = els[j];
+          if (a.contains(b) || b.contains(a)) continue;
+          const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+          const rowOverlap = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top);
+          if (rowOverlap <= Math.min(ra.height, rb.height) / 2) continue;  // not on the same row
+          const gap = Math.max(rb.left - ra.right, ra.left - rb.right);
+          if (gap >= -0.5 && gap < min - 0.5) out.push({ a: cssPath(a), b: cssPath(b), gap: Math.round(gap) });
+        }
+      }
+      return out;
+    },
+
+    /** Chapter 6-7 measurements (Test 4). */
+    components(longText = 200) {
+      const controls = [], links = [], disabled = [], labels = [], asterisks = [], long = [];
+      const weights = {};
+      for (const el of document.querySelectorAll("input, select, textarea")) {
+        if (!visible(el) || /^(hidden|submit|button|reset|image|range|color|file)$/.test(el.type)) continue;
+        const cs = getComputedStyle(el);
+        const native = /^(checkbox|radio)$/.test(el.type) && cs.appearance !== "none";
+        const visibleLabel = [...(el.labels || [])].some(visible) || !!el.getAttribute("aria-labelledby");
+        controls.push({
+          selector: cssPath(el), type: el.type || el.tagName.toLowerCase(), native,
+          border: rgb(rgba(cs.borderTopColor).slice(0, 3)), border_w: px(cs.borderTopWidth),
+          bg: rgb(effectiveBg(el)), outside: rgb(effectiveBg(el.parentElement)),
+          placeholder: el.getAttribute("placeholder") || "", visible_label: visibleLabel,
+          aria_label: !!el.getAttribute("aria-label"),
+        });
+      }
+      for (const el of document.querySelectorAll("a[href]")) {
+        if (!visible(el) || !/^(P|LI|SPAN|LABEL|DD|TD)$/.test(el.parentElement?.tagName ?? "")) continue;
+        links.push({ selector: cssPath(el), underline: getComputedStyle(el).textDecorationLine.includes("underline") });
+      }
+      for (const el of document.querySelectorAll("button, input, select, textarea, [aria-disabled=true]")) {
+        if (!visible(el) || !(el.disabled || el.getAttribute("aria-disabled") === "true")) continue;
+        disabled.push({ selector: cssPath(el), explained: !!el.getAttribute("aria-describedby") });
+      }
+      for (const el of document.querySelectorAll("a[href], button")) {
+        if (!visible(el)) continue;
+        labels.push({ selector: cssPath(el), text: (el.innerText || "").trim().replace(/\s+/g, " ").toLowerCase() });
+      }
+      for (const el of textBlocks()) {
+        const cs = getComputedStyle(el);
+        if (ownText(el) === "*") asterisks.push({ selector: cssPath(el), color: rgb(rgba(cs.color).slice(0, 3)) });
+        const family = cs.fontFamily.split(",")[0].trim().replace(/^["']|["']$/g, "");
+        (weights[family] ??= new Set()).add(px(cs.fontWeight) || 400);
+        if (/^(P|LI|DD|BLOCKQUOTE)$/.test(el.tagName) && el.innerText.trim().length >= longText) {
+          const fs = px(cs.fontSize);
+          long.push({ selector: cssPath(el), chars: el.innerText.trim().length, font_size: fs,
+                      line_height: +((px(cs.lineHeight) || fs * 1.2) / fs).toFixed(2), align: cs.textAlign });
+        }
+      }
+      // Cards sharing a row whose images differ in height (the "ragged bento" defect).
+      const ragged = [], byParent = new Map();
+      for (const card of document.querySelectorAll("[data-swarm-role=card]")) {
+        if (!visible(card) || inHScroller(card)) continue;
+        if (!byParent.has(card.parentElement)) byParent.set(card.parentElement, []);
+        byParent.get(card.parentElement).push(card);
+      }
+      for (const [parent, cards] of byParent) {
+        const rows = new Map();
+        for (const c of cards) {
+          const top = Math.round(c.getBoundingClientRect().top / 4);
+          const img = c.querySelector("img");
+          if (img) (rows.get(top) ?? rows.set(top, []).get(top)).push(Math.round(img.getBoundingClientRect().height));
+        }
+        for (const hs of rows.values())
+          if (hs.length > 1 && Math.max(...hs) - Math.min(...hs) > 8) { ragged.push({ selector: cssPath(parent), heights: hs }); break; }
+      }
+      // Share of the page painted with saturated background colour (accent discipline).
+      const de = document.documentElement, pageArea = de.scrollWidth * de.scrollHeight;
+      let accentArea = 0;
+      for (const el of document.body.querySelectorAll("*")) {
+        if (/^(IMG|SVG|VIDEO|CANVAS|PICTURE)$/i.test(el.tagName) || !visible(el)) continue;
+        const [r, g, b, a] = rgba(getComputedStyle(el).backgroundColor);
+        if (a < 0.9 || Math.max(r, g, b) - Math.min(r, g, b) <= 40) continue;
+        const rect = el.getBoundingClientRect();
+        accentArea += Math.min(rect.width, de.scrollWidth) * rect.height;
+      }
+      return { controls, links, disabled, labels, asterisks, long, ragged,
+               accent_share: +(accentArea / pageArea).toFixed(3),
+               weights: Object.fromEntries(Object.entries(weights).map(([k, v]) => [k, [...v].sort()])) };
     },
 
     async scrollAudit() {

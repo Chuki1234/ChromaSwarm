@@ -23,6 +23,16 @@
   .ghost { opacity: 0; }
   .overlap { position: relative; }
   .overlap span { position: absolute; left: 0; top: 0; }
+  /* buttons in .buttons sit ~4px apart (inline whitespace): tap spacing < 8px */
+  .faint { min-height: 48px; padding: 12px; border: 1px solid #eee; background: #fff; }  /* control border < 3:1 */
+  .req { color: #c00; }                                               /* red required asterisk */
+  .light { font-weight: 300; }                                         /* third font weight */
+  .long { font-size: 14px; line-height: 1.2; text-align: justify; }    /* long text too small, tight, justified */
+  .plain { text-decoration: none; color: #1d4ed8; }                    /* inline link without underline */
+  button:disabled { color: #111; }
+  .cards { display: flex; gap: 24px; align-items: flex-start; }
+  .cards img { width: 120px; object-fit: cover; }                      /* row of cards with ragged image heights */
+  .loud { height: 480px; background: #e11d48; }                        /* saturated block > 10% of the page */  /* keep the disabled seed to one defect (UA grey text would also fail contrast) */
 </style>
 </head>
 <body>
@@ -43,6 +53,22 @@
     <div class="ghost">Kẹt ẩn</div>
     <div class="overlap"><p>Chữ thứ nhất</p><span>Chữ đè lên</span></div>
     <img src="/missing-image.png" alt="ảnh hỏng" width="120" height="80">
+  </section>
+  <section data-swarm-section="form">
+    <span class="light">Chữ mảnh</span>
+    <p>Họ tên <span class="req">*</span></p>
+    <input class="faint" type="text" placeholder="Tên của bạn">
+    <button disabled>Gửi</button>
+    <p class="long">Đoạn mô tả sản phẩm dài này được viết ở cỡ chữ nhỏ, dòng sát nhau và căn đều hai bên, khiến người đọc
+      khó theo dõi từ dòng này sang dòng tiếp theo. Sản phẩm đã bán 12500 chiếc trong năm qua và được đánh giá cao
+      về độ bền. <a href="#more" class="plain">Xem thêm</a></p>
+  </section>
+  <section data-swarm-section="cards">
+    <div class="cards">
+      <article data-swarm-role="card" data-swarm-id="card-a"><img src="data:image/svg+xml;utf8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22%3E%3Crect width=%22100%22 height=%22100%22 fill=%22%23ccc%22/%3E%3C/svg%3E" alt="a" style="height:100px"><p>Thẻ A</p></article>
+      <article data-swarm-role="card" data-swarm-id="card-b"><img src="data:image/svg+xml;utf8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22%3E%3Crect width=%22100%22 height=%22100%22 fill=%22%23ccc%22/%3E%3C/svg%3E" alt="b" style="height:180px"><p>Thẻ B</p></article>
+    </div>
+    <div class="loud"></div>
   </section>
 </body>
 </html>

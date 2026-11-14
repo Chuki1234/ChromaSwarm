@@ -1,8 +1,13 @@
 """OKLCH 60-30-10 palette generator (FRONTEND_STANDARDS.md §2.1).
 
 seed color -> brand hue -> neutrals tinted with that hue (60%), 3-tier text
-and border (30%), accent + semantic states (10%). The accent's lightness is
+and two borders (30%), accent + semantic states (10%). The accent's lightness is
 searched so its on-color text meets WCAG >= 4.5:1 AND APCA |Lc| >= 60.
+
+Two borders (§2.1): `border-subtle` is decorative; `border-strong` outlines
+controls (inputs, checkboxes, secondary buttons) and must reach 3:1.
+`accent-ink` is the accent shifted away from the page background until it reads
+as text (links, secondary-button labels) on bg-primary and bg-surface.
 """
 
 from __future__ import annotations
@@ -78,23 +83,25 @@ WARM_NEUTRAL_HUE = 75.0
 NEUTRALS = {
     Mode.LIGHT: {
         "bg-primary": (0.985, 0.005), "bg-surface": (0.96, 0.008), "bg-elevated": (0.995, 0.003),
-        "text-primary": (0.15, 0.015), "text-secondary": (0.42, 0.015), "text-muted": (0.58, 0.015),
-        "border-subtle": (0.90, 0.010),
+        "text-primary": (0.15, 0.015), "text-secondary": (0.42, 0.015), "text-muted": (0.53, 0.015),
+        "border-subtle": (0.90, 0.010), "border-strong": (0.60, 0.012),
     },
     Mode.WARM_PAPER: {
         "bg-primary": (0.97, 0.012), "bg-surface": (0.945, 0.014), "bg-elevated": (0.99, 0.006),
-        "text-primary": (0.18, 0.015), "text-secondary": (0.42, 0.015), "text-muted": (0.56, 0.015),
-        "border-subtle": (0.88, 0.014),
+        "text-primary": (0.18, 0.015), "text-secondary": (0.42, 0.015), "text-muted": (0.52, 0.015),
+        "border-subtle": (0.88, 0.014), "border-strong": (0.59, 0.014),
     },
     Mode.DARK: {
         "bg-primary": (0.13, 0.010), "bg-surface": (0.16, 0.012), "bg-elevated": (0.18, 0.015),
         "text-primary": (0.96, 0.015), "text-secondary": (0.78, 0.015), "text-muted": (0.68, 0.015),
-        "border-subtle": (0.24, 0.015),
+        "border-subtle": (0.24, 0.015), "border-strong": (0.52, 0.015),
     },
 }
 # Deviation from §2.1 (dark mode): text-secondary L=72% gives APCA |Lc| ~53 and
 # text-muted L=52% gives ~24 on bg L=13% — both under the 60 / 45 floors used
 # here. Minimum passing values are ~77% and ~68%; we use 78% / 68%.
+# Light / warm text-muted is 53% / 52% (not 58%): small text must reach 4.5:1
+# on bg-surface too (§2.1 contrast floor), and 58% only reaches ~4.1:1.
 
 SEMANTIC_HUES = {"success": 150.0, "warning": 75.0, "danger": 27.0}
 
@@ -103,8 +110,13 @@ REQUIRED = [
     ("text-primary", "bg-primary", 75, 7.0),
     ("text-primary", "bg-surface", 75, 7.0),
     ("text-secondary", "bg-primary", 60, 4.5),
-    ("text-muted", "bg-primary", 45, 3.0),
+    ("text-muted", "bg-primary", 45, 4.5),
+    ("text-muted", "bg-surface", 45, 4.5),
+    ("border-strong", "bg-primary", 15, 3.0),  # APCA 15 = floor for non-text elements
+    ("border-strong", "bg-surface", 15, 3.0),
     ("accent-fg", "accent", 60, 4.5),
+    ("accent-ink", "bg-primary", 60, 4.5),
+    ("accent-ink", "bg-surface", 60, 4.5),
 ]
 
 
@@ -127,6 +139,19 @@ def _search_accent(seed: OKLCH, light_fg: OKLCH, dark_fg: OKLCH) -> tuple[OKLCH,
     raise ValueError(f"No accessible accent found for seed {seed.css()}")
 
 
+def _search_ink(accent: OKLCH, backgrounds: list[OKLCH], dark: bool) -> OKLCH:
+    """The accent's hue and chroma at the first lightness, moving away from the
+    page background, that reads as text on every given background."""
+    step = 0.005 if dark else -0.005
+    l = accent.l
+    while 0.0 <= l <= 1.0:
+        cand = gamut_map(OKLCH(l, accent.c, accent.h))
+        if all(_fits(cand, bg, 60, 4.5) for bg in backgrounds):
+            return cand
+        l += step
+    raise ValueError(f"No readable accent ink for {accent.css()}")
+
+
 def generate_palette(seed: str | OKLCH, mode: Mode = Mode.LIGHT) -> Palette:
     seed_color = parse_css_color(seed)[0] if isinstance(seed, str) else seed  # type: ignore[index]
     brand_h = seed_color.h
@@ -146,6 +171,8 @@ def generate_palette(seed: str | OKLCH, mode: Mode = Mode.LIGHT) -> Palette:
         Token.of("accent-hover", Role.ACCENT, accent.with_(l=accent.l + hover_dl)),
         Token.of("accent-fg", Role.ACCENT, accent_fg),
     ]
+    page_bgs = [OKLCH(*NEUTRALS[mode][n], neutral_h) for n in ("bg-primary", "bg-surface")]
+    tokens.append(Token.of("accent-ink", Role.ACCENT, _search_ink(accent, page_bgs, mode is Mode.DARK)))
     for name, h in SEMANTIC_HUES.items():
         sem, _ = _search_accent(OKLCH(accent.l, 0.16, h), light_fg, dark_fg)
         tokens.append(Token.of(name, Role.ACCENT, sem))

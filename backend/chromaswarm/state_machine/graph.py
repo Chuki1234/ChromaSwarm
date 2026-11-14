@@ -26,16 +26,21 @@ from pydantic import BaseModel
 from chromaswarm.agents.consultant import (
     ConsultantAgent,
     PILLAR_QUESTIONS,
+    SURFACE_QUESTION,
     Option,
     Question,
     RuleBasedConsultant,
+    interpret_surface,
     project_title,
     split_color,
+    surface_in_text,
+    surface_question,
 )
 from chromaswarm.agents.planner import CLONE_PAGE, Section, design_inputs, page_sections, render_plan_md, render_product_md
 from chromaswarm.clone.reader import analyse as analyse_reference
 from chromaswarm.build.runtime import SectionCheck
 from chromaswarm.developer.content import build_copy
+from chromaswarm.qa.critic import render_markdown
 from chromaswarm.qa.master import heal_css
 from chromaswarm.engines.design_spec import (
     build_design_spec,
@@ -79,14 +84,15 @@ class Deps(BaseModel):
     build: Any = None  # BuildRuntime for B8-B10; None stops after approval (B1-B7 only)
 
 
-PILLAR_LABELS = {"theme": "Phong cách", "layout": "Bố cục", "color": "Màu sắc", "margins": "Khoảng cách"}
+PILLAR_LABELS = {"theme": "Phong cách", "layout": "Bố cục", "color": "Màu sắc", "margins": "Khoảng cách",
+                 "surface": "Chất liệu"}
 
 
 def feedback_notice(changes: dict[str, str]) -> str:
     if not changes:
         return ("Đã ghi góp ý vào DESIGN.md (mục quy tắc) để đội Dev làm theo. "
                 "Các lựa chọn phong cách, bố cục, màu và khoảng cách giữ nguyên.")
-    labels = {o.value: o.label for q in PILLAR_QUESTIONS.values() for o in q[1]}
+    labels = {o.value: o.label for q in [*PILLAR_QUESTIONS.values(), SURFACE_QUESTION] for o in q[1]}
 
     def show(pillar: str, value: str) -> str:
         if pillar == "color":
@@ -96,6 +102,14 @@ def feedback_notice(changes: dict[str, str]) -> str:
 
     done = "; ".join(f"{PILLAR_LABELS[k]} → {show(k, v)}" for k, v in changes.items())
     return f"Đã cập nhật: {done}. Tài liệu đã được tạo lại, bạn xem và duyệt nhé."
+
+
+def feedback_changes(agent, fb: str, pillars: Pillars) -> dict[str, str]:
+    """Pillar changes from B7/B12 feedback, plus a material named explicitly ('đổi sang kính mờ')."""
+    changes = agent.interpret_feedback(fb, pillars)
+    if (surface := surface_in_text(fb)) and surface != (pillars.surface or "flat"):
+        changes["surface"] = surface
+    return changes
 
 
 def _copy(state: GraphState) -> PipelineState:
@@ -237,6 +251,20 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             if p.can_advance():
                 p.advance()
                 return {"pipeline": p, "notice": "Đã lấy 4 trụ cột từ trang mẫu và đối tượng từ mô tả của bạn."}
+        if p.pillars.theme and not p.pillars.surface:
+            # Material, right after the theme; skipped when the first message already named one.
+            if named := surface_in_text(p.raw_prompt or ""):
+                p.pillars.surface = named  # returned (not followed by an interrupt) so the value is persisted
+                return {"pipeline": p, "notice": state.notice}
+            else:
+                sq = surface_question()
+                sq.note = state.notice
+                answer = interrupt(sq.model_dump())
+                value = None if isinstance(answer, dict) else interpret_surface(str(answer))
+                if value is None:
+                    return {"pipeline": p, "notice": "Mình chưa hiểu rõ — bạn chọn một chất liệu trong danh sách nhé."}
+                p.pillars.surface = value
+                return {"pipeline": p, "notice": None}
         pillar = p.pillars.next_question()
         q = agent.pillar_question(pillar)
         q.note = state.notice
@@ -367,7 +395,7 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         fb = (data.get("feedback") or "").strip()
         if not fb:
             return {"pipeline": p, "notice": "Bạn ghi rõ điều muốn đổi giúp mình nhé (ví dụ: đổi sang tông tối)."}
-        changes = agent.interpret_feedback(fb, p.pillars)
+        changes = feedback_changes(agent, fb, p.pillars)
         for pillar, value in changes.items():
             setattr(p.pillars, pillar, value)
         p.plan_feedback.append(fb)
@@ -494,8 +522,17 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         p.qa_failures = [f"[Bài {f.test}] {f.detail}" + (f" ({f.viewport}px)" if f.viewport else "") for f in report.failures]
         if report.passed:
             p.qa_passed = True
+            notice = "B11 · Master Cursor: 100% PASSED — cả 4 bài kiểm tra đều đạt."
+            # Design critic (vision model): QA proves the page is not wrong, this grades how good it looks.
+            if critic := getattr(deps.build, "critique", None):
+                context = f"{p.raw_prompt or ''} · trang {p.selected_page or ''} · phong cách {p.pillars.theme}"
+                if c := await critic(p.session_id, context):
+                    p.design_score = c.overall
+                    p.design_critique = [f"{i.where}: {i.problem} → {i.fix}" for i in c.issues]
+                    write_artifact(p, "CRITIQUE.md", render_markdown(c))
+                    notice += f" Chấm thẩm mỹ: {c.overall:.1f}/10."
             p.advance()
-            return {"pipeline": p, "notice": "B11 · Master Cursor: 100% PASSED — cả 4 bài kiểm tra đều đạt."}
+            return {"pipeline": p, "notice": notice}
         new_rules = [r for r in heal_css(report.failures) if r not in p.heal_rules]
         contrast = [f.reading.model_dump() for f in report.failures if f.reading]
         if not new_rules and not contrast:
@@ -547,7 +584,7 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         fb = (data.get("feedback") or "").strip()
         if not fb:
             return {"pipeline": p, "notice": "Bạn ghi rõ điều muốn tinh chỉnh trong Studio giúp mình nhé (ví dụ: đổi sang tông tối)."}
-        changes = agent.interpret_feedback(fb, p.pillars)
+        changes = feedback_changes(agent, fb, p.pillars)
         for pillar, value in changes.items():
             setattr(p.pillars, pillar, value)
         p.plan_feedback.append(fb)

@@ -17,7 +17,7 @@ from chromaswarm.state_machine.pipeline_state import GateError, Step
 
 HAPPY = [
     "Mình muốn làm web bán đồ nội thất tối giản", "landing",
-    "editorial-luxury", "visual-first", "warm-paper #8a3b12", "airy",
+    "editorial-luxury", "flat", "visual-first", "warm-paper #8a3b12", "airy",
     "Người 30-45 tuổi, xem trên điện thoại, muốn họ bấm Đặt lịch xem showroom",
     {"assets": [], "references": [], "done": True},
 ]
@@ -43,7 +43,7 @@ class FakeBuild:
         assert ":root" in tokens_css
         self.log.append("tokens-keep" if keep_existing else "tokens")
 
-    async def start_app(self, session, project, spec, route="/"):
+    async def start_app(self, session, project, spec, route="/", photos=None):
         self.log.append(f"start:{route}")
         return "http://localhost:3999" + (route if route != "/" else "")
 
@@ -260,6 +260,7 @@ def test_end_to_end_real_next_app(tmp_path):
     assert p.step is Step.B12_HANDOVER and p.integrated
     assert set(p.sections_checked) == set(p.sections_planned)
     assert p.qa_passed, p.qa_failures  # the generated page passes all 4 Master QA tests
+    assert not p.heal_history, p.heal_history  # ...on the first pass: codegen itself meets the standard
     assert any("qua MCP" in m for m in p.motion_effects)  # B8.1 ran through the Motion MCP server
     p2 = second["pipeline"]
     assert p2.build_error is None, p2.build_error
