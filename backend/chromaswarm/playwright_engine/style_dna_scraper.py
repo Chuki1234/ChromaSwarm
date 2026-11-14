@@ -72,6 +72,33 @@ COLLECT_JS = r"""
 """
 
 
+SETTLE_JS = """async () => {
+  // Scroll through the page so lazy images load and scroll-revealed content becomes visible,
+  // then return to the top. Bounded: at most ~40 steps.
+  const step = Math.max(400, innerHeight * 0.8);
+  for (let y = 0, n = 0; y < document.documentElement.scrollHeight && n < 40; y += step, n++) {
+    scrollTo(0, y);
+    await new Promise(r => setTimeout(r, 120));
+  }
+  scrollTo(0, document.documentElement.scrollHeight);
+  await new Promise(r => setTimeout(r, 400));
+  scrollTo(0, 0);
+  await new Promise(r => setTimeout(r, 300));
+}"""
+
+
+async def open_settled(page: Page, url: str, timeout_ms: int = 45_000) -> None:
+    """Open a page robustly: wait for `load`, give the network a short chance to go idle (pages with
+    analytics, video or live connections never do), then scroll through it once."""
+    import contextlib
+
+    await page.goto(url, wait_until="load", timeout=timeout_ms)
+    with contextlib.suppress(Exception):
+        await page.wait_for_load_state("networkidle", timeout=8_000)
+    with contextlib.suppress(Exception):
+        await page.evaluate(SETTLE_JS)
+
+
 async def collect(page: Page, source_url: str | None = None) -> RawStyleSample:
     data = await page.evaluate(COLLECT_JS)
     data["source_url"] = source_url
@@ -83,7 +110,7 @@ async def scrape_url(url: str, screenshot_to: Path | None = None, width: int = 1
         browser = await pw.chromium.launch()
         try:
             page = await browser.new_page(viewport={"width": width, "height": height})
-            await page.goto(url, wait_until="networkidle", timeout=45_000)
+            await open_settled(page, url)
             if screenshot_to:
                 await page.screenshot(path=str(screenshot_to), full_page=True)
             return analyze(await collect(page, url))

@@ -41,6 +41,7 @@ class PageCopy(BaseModel):
     images: list[str] = []  # Clone mode, owned site: the reference's own photos (used before tonal placeholders)
     quotes: list[tuple[str, str]] = []  # (quote, who) — sample testimonials, clearly marked as samples
     cards: list[Item] = []  # bento cards: products for shops / projects for portfolios, features otherwise
+    rows: list[tuple[str, str]] = []  # list rows: (entry, meta) — posts with dates, work history with periods
 
 
 DEFAULTS: dict[Domain, dict] = {
@@ -202,7 +203,7 @@ def owned_clone_copy(copy: PageCopy, content: dict) -> PageCopy:
     """Clone mode on the user's own site: their real text and images replace the sample copy."""
     secs: dict[str, dict] = content.get("sections", {})
     by_kind = lambda *kinds: [v for v in secs.values() if v.get("structure") in kinds]  # noqa: E731
-    hero = next(iter(by_kind("split-7-5", "full-bleed-image")), {})
+    hero = next(iter(by_kind("split-7-5", "full-bleed-image", "hero-text")), {})
     header = next(iter(by_kind("sticky-bar")), {})
     updates: dict = {}
     brand = header.get("logo") or content.get("site_title")
@@ -234,6 +235,9 @@ def owned_clone_copy(copy: PageCopy, content: dict) -> PageCopy:
     facts = [(i["title"], i.get("note", "")) for i in metrics.get("items", []) if i.get("title")]
     if len(facts) >= 2:
         updates["facts"] = facts[:4]
+    rows = [tuple(r) for v in by_kind("list-rows") for r in v.get("rows", []) if r and r[0]]
+    if rows:
+        updates["rows"] = rows[:10]
     band = next(iter(by_kind("full-bleed-band")), {})
     if band.get("heading"):
         updates["closing"] = band["heading"]
@@ -262,6 +266,7 @@ def build_copy(state: PipelineState) -> PageCopy:
         quotes=[(q, QUOTE_NOTE) for q in QUOTES.get(state.domain or Domain.OTHER, QUOTES[Domain.ECOMMERCE])],
         cards=([Item(name=t, note=n) for t, n in FEATURES[state.domain]] if state.domain in FEATURES else d["items"]),
         items=d["items"], categories=d["categories"], faqs=d["faqs"],
+        rows=sample_rows(STORY.get(state.domain or Domain.OTHER, STORY[Domain.ECOMMERCE])),
         closing=f"Sẵn sàng bắt đầu? {cta} chỉ mất một phút.",
         footer_line=f"© {brand}. Nội dung mẫu — thay bằng thông tin thật ở bước bàn giao.",
         tabs=[("Mô tả", "Thông tin tổng quan về sản phẩm và cách sử dụng."),
@@ -274,19 +279,28 @@ def build_copy(state: PipelineState) -> PageCopy:
     return copy
 
 
+# Neutral meta for sample list rows (posts with dates): replaced by the real list at handover.
+ROW_META = ["12 Th3", "28 Th2", "15 Th2", "02 Th2", "20 Th1", "08 Th1", "18 Th12", "05 Th12"]
+
+
+def sample_rows(story: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    return [(title, ROW_META[i % len(ROW_META)]) for i, (title, _) in enumerate(story)]
+
+
 def _rot(xs: list, k: int) -> list:
     return xs[k % len(xs):] + xs[:k % len(xs)] if xs else xs
 
 
 # How much of each copy pool a section structure shows (so the next section continues after it).
 USES = {
-    "story": {"alternating-z": 3, "split-5-7": 1, "feature-showcase": 1, "text-cards": 3},
+    "story": {"alternating-z": 3, "split-5-7": 1, "feature-showcase": 1, "text-cards": 3, "gallery": 1},
     "items": {"grid-4": 8, "sidebar-grid-4": 8},
     "cards": {"bento": 4},
     "quotes": {"testimonials": 2},
     "categories": {"horizontal-scroller": 4},
     "faqs": {"accordion": 5},
     "tabs": {"tabs": 3},
+    "rows": {"list-rows": 6},
 }
 
 
@@ -298,6 +312,9 @@ def copy_for(structure: str, earlier: list[str], copy: PageCopy) -> PageCopy:
         if structure not in uses:
             continue
         offset = sum(uses.get(prev, 0) for prev in earlier)
-        if offset:
-            updates[pool] = _rot(getattr(copy, pool), offset)
+        values = getattr(copy, pool)
+        if offset and values:
+            # When the pool is smaller than what the page shows, shift by one more each full pass,
+            # so a repeated section at least shows a different order instead of an identical copy.
+            updates[pool] = _rot(values, offset + offset // len(values))
     return copy.model_copy(update=updates) if updates else copy

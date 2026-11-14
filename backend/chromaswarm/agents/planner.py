@@ -30,6 +30,8 @@ class Section(BaseModel):
     content: str
     interactive: list[Interactive] = []
     effect: str | None = None  # B8.1 candidate
+    count: int = 0  # Clone mode: how many items the reference shows (e.g. images in a gallery)
+    sources: list[int] = []  # Clone mode: indices of the reference blocks this section rebuilds
 
 
 def _i(id_: str, role: str, behavior: str) -> Interactive:
@@ -160,6 +162,7 @@ def design_inputs(state: PipelineState, project_name: str, dna: StyleDNA | None 
         motion_effects=effects, style_dna=dna,
         heading_font=clone.heading_font if clone else None, body_font=clone.body_font if clone else None,
         clone_level=("full" if clone.owned else "structure") if clone else None,
+        content_width=clone.content_width if clone else None,
         extra_rules=[f"User feedback (B7): {f}" for f in state.plan_feedback],
     )
 

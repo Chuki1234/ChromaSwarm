@@ -40,6 +40,7 @@ class DesignInputs(BaseModel):
     philosophy: Philosophy | None = None
     extra_rules: list[str] = Field(default_factory=list)
     clone_level: str | None = None  # Clone mode: "structure" | "full" (§2.5); None = Creative (§2.4 applies)
+    content_width: int | None = None  # Clone mode: the reference's measured column width (narrow single column)
     heading_font: str | None = None  # Clone mode: the reference's font, when it ships Vietnamese
     body_font: str | None = None
 
@@ -123,6 +124,8 @@ def build_design_spec(inp: DesignInputs) -> DesignSpec:
     theme = THEMES[inp.theme]
     layout = LAYOUTS[inp.layout]
     spatial = DENSITY_PRESETS[inp.density]
+    if inp.content_width:  # the container's max-width includes its gutters (border-box)
+        spatial = spatial.model_copy(update={"container_max": inp.content_width + 2 * spatial.page_gutter_desktop})
     palette = generate_palette(inp.seed_color, inp.mode)
 
     if inp.page_kind == "landing":
@@ -208,7 +211,8 @@ def render_design_md(spec: DesignSpec) -> str:
         "",
         f"## 5. Không gian & Lề ({s.density})",
         "",
-        f"- Container max-width: **{s.container_max}px**; gutter {s.page_gutter_mobile}px (mobile) / {s.page_gutter_desktop}px (desktop)",
+        f"- Container max-width: **{s.container_max}px**"
+        + (f" (cột nội dung {i.content_width}px đo từ trang mẫu + 2 gutter)" if i.content_width else "") + "; gutter {s.page_gutter_mobile}px (mobile) / {s.page_gutter_desktop}px (desktop)",
         f"- Section padding: **{s.section_padding_desktop}px** desktop / {s.section_padding_mobile}px mobile",
         f"- Grid gap {s.grid_gap}px · Card padding {s.card_padding}px · Inline gap {s.inline_gap}px",
         f"- Luật gần kề: {s.inline_gap} < {s.card_padding} < {s.section_padding_desktop} ✓",
