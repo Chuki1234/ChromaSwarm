@@ -252,7 +252,7 @@ def _z_rows(s: Section, c: PageCopy) -> str:
 
 
 def _bento(s: Section, c: PageCopy) -> str:
-    items = [i.model_dump() for i in c.items[:4]]
+    items = [i.model_dump() for i in (c.cards or c.items)[:4]]
     inner = '''        <div className="section-head"><p className="eyebrow">Bộ sưu tập</p><h2 className="t-h2">Những mẫu được chọn nhiều nhất</h2></div>
         <div className="bento">
           {ITEMS.map((it, i) => (
@@ -383,6 +383,22 @@ def _hero_centered(s: Section, c: PageCopy) -> str:
           <div className="hero-panel"><Art label={{{_js(c.brand)}}} ratio="16 / 9" sizes="(min-width: 1024px) 80vw, 100vw" /></div>
         </div>'''
     return _component(s, _root(s, "s-hero-centered", inner), client=True, body="  const [sent, setSent] = useState(false);\n")
+
+
+def _full_image(s: Section, c: PageCopy) -> str:
+    # Headline first (readable above the fold), the wide product visual right under it.
+    inner = f'''        <div className="hero-image">
+          <div className="hero-image-copy stack">
+            <h1 className="t-display">{{{_js(c.headline)}}}</h1>
+            <p className="t-lead">{{{_js(c.subhead)}}}</p>
+            <div className="row">
+              <button type="button" className="btn btn-primary" data-swarm-id="cta-primary" data-swarm-role="button"
+                onClick={{() => setSent(true)}}>{{sent ? "Đã ghi nhận, chúng tôi sẽ liên hệ" : {_js(c.cta)}}}</button>
+            </div>
+          </div>
+          <Art label={{{_js(c.brand)}}} ratio="16 / 8" />
+        </div>'''
+    return _component(s, _root(s, "s-hero-image", inner), client=True, body="  const [sent, setSent] = useState(false);\n")
 
 
 SECTION_TITLES_VI = {"categories": "Danh mục", "related": "Sản phẩm liên quan", "collection": "Nổi bật"}
@@ -538,13 +554,55 @@ def _pdp_main(s: Section, c: PageCopy) -> str:
                            '  const [added, setAdded] = useState(false);\n  const [missing, setMissing] = useState(false);\n')
 
 
+def _showcase(s: Section, c: PageCopy) -> str:
+    """Feature showcase: heading left, explanation right, a wide product visual underneath."""
+    title, text = c.story[0]
+    inner = f'''        <div className="split split-5-7">
+          <h2 className="t-h2">{{{_js(title)}}}</h2>
+          <div className="stack">
+            <p className="t-lead">{{{_js(text)}}}</p>
+            <a href="#" className="link-arrow" data-swarm-id="{s.id}-more" data-swarm-role="link">Tìm hiểu thêm <span aria-hidden>→</span></a>
+          </div>
+        </div>
+        <div className="showcase-media"><Art label={{{_js(title)}}} ratio="16 / 7" tone={{1}} /></div>'''
+    return _component(s, _root(s, "s-showcase", inner))
+
+
+def _testimonials(s: Section, c: PageCopy) -> str:
+    inner = '''        <h2 className="t-h2">Khách hàng nói gì</h2>
+        <div className="quotes">
+          {QUOTES.map(([quote, who], i) => (
+            <figure key={i} className="card quote">
+              <blockquote className="t-h4">“{quote}”</blockquote>
+              <figcaption className="t-caption muted">{who}</figcaption>
+            </figure>
+          ))}
+        </div>'''
+    return _component(s, _root(s, "s-quotes", inner), prelude=f"\nconst QUOTES = {_js(c.quotes[:2] or [('Chưa có đánh giá', 'Thêm đánh giá thật ở bước bàn giao')])};\n")
+
+
+def _text_cards(s: Section, c: PageCopy) -> str:
+    """A row of text cards (changelog, feature list) when the reference shows no visuals."""
+    inner = '''        <div className="text-cards">
+          {ROWS.map(([title, text], i) => (
+            <article key={title} className="text-card">
+              <span className="t-caption muted">{String(i + 1).padStart(2, "0")}</span>
+              <h3 className="t-h4">{title}</h3>
+              <p className="t-body muted">{text}</p>
+            </article>
+          ))}
+        </div>'''
+    return _component(s, _root(s, "s-text-cards", inner), prelude=f"\nconst ROWS = {_js(c.story[:3])};\n")
+
+
 BY_ID = {"site-header": _nav, "site-footer": _footer, "auth": _auth, "product-main": _pdp_main}
 BY_STRUCTURE = {
     "sticky-bar": _nav, "split-7-5": _hero_split, "inline-metrics": _metrics, "alternating-z": _z_rows,
     "bento": _bento, "accordion": _accordion, "full-bleed-band": _band, "footer-columns": _footer,
-    "full-bleed-image": _hero_overlay, "hero-overlay": _hero_overlay,
+    "full-bleed-image": _full_image, "hero-overlay": _hero_overlay,
     "hero-editorial": _hero_editorial, "hero-centered": _hero_centered, "horizontal-scroller": _scroller, "grid-4": _grid4, "split-5-7": _split_story,
     "title-with-count": _title_count, "sidebar-grid-4": _sidebar_grid, "inline-controls": _load_more, "tabs": _tabs,
+    "feature-showcase": _showcase, "testimonials": _testimonials, "text-cards": _text_cards,
 }
 
 
@@ -710,6 +768,15 @@ a.card:hover, article.card:hover { border-color: var(--text-secondary); transfor
 .hero-panel { width: 100%; margin-top: 24px; padding: clamp(16px, 4vw, 48px); background: var(--bg-surface);
   border-radius: var(--radius-lg); }
 @media (max-width: 767px) { .hero-centered { align-items: flex-start; text-align: left; } .hero-centered .row { justify-content: flex-start; } }
+.hero-image { display: flex; flex-direction: column; gap: var(--grid-gap); }
+.hero-image-copy { align-items: flex-start; }
+.showcase-media { margin-top: var(--grid-gap); }
+.quotes { display: grid; gap: 24px; margin-top: 32px; }
+@media (min-width: 768px) { .quotes { grid-template-columns: repeat(2, 1fr); } }
+.quote blockquote { margin: 0; line-height: 1.35; }
+.text-cards { display: grid; gap: var(--grid-gap); }
+@media (min-width: 768px) { .text-cards { grid-template-columns: repeat(3, 1fr); } }
+.text-card { display: flex; flex-direction: column; gap: 8px; padding-top: 24px; border-top: 1px solid var(--border-subtle); }
 .scroller { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(240px, 1fr); gap: 24px; overflow-x: auto;
   margin-top: 32px; padding-bottom: 8px; scroll-snap-type: x mandatory; }
 .scroller-item { scroll-snap-align: start; }

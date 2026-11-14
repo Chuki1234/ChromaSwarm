@@ -62,6 +62,7 @@ Người dùng không có chuyên môn sẽ không hiểu các khái niệm như
 2. **Quy tắc Vàng khi người dùng gửi Ảnh chụp màn hình (Screenshot Reference):**
    - **Bắt buộc khuyến nghị gửi kèm URL:** *"Bạn có thể gửi kèm thêm đường dẫn (Link URL) của trang web trong bức ảnh này không? Khi có cả Ảnh + Link, mình sẽ dùng Playwright đọc được chính xác 100% phông chữ, thông số lề và hiệu ứng mượt mà của họ để chắt lọc vào thiết kế riêng cho bạn!"*
    - **Cam kết Chống Sao chép (Anti-Cloning Rule):** Chỉ trích xuất *Triết lý Thiết kế & Thông số Thẩm mỹ* (xem Mục 2.4), tuyệt đối không sao chép nguyên xi bố cục và nội dung của ảnh.
+   - **Ngoại lệ duy nhất: Clone mode** (người dùng chọn ở Bước 1). Quy tắc chống sao chép ở trên chỉ áp dụng cho **Creative mode**. Ở Clone mode, model được phép dựng lại trang mẫu y hệt theo mức người dùng cho phép — xem Mục 2.5.
 
 ---
 
@@ -123,18 +124,29 @@ Các model AI thông thường chọn màu trong hệ RGB/HEX dẫn đến màu 
    - Trong bất kỳ khối (Card / Section) nào, khoảng cách giữa các phần tử có liên quan bên trong ($d_{\text{internal}}$) **bắt buộc phải nhỏ hơn** khoảng cách từ nội dung ra mép viền thẻ ($d_{\text{padding}}$), và nhỏ hơn khoảng cách giữa các Section với nhau ($d_{\text{section-margin}}$):
      $$d_{\text{inline-elements}} (8\text{px}–12\text{px}) < d_{\text{card-padding}} (24\text{px}–32\text{px}) < d_{\text{section-gap}} (64\text{px}–128\text{px})$$
 
-### 2.4. Giải thuật Học Đặc trưng Thiết kế từ Ảnh + URL (Chống Sao chép 100% — Dùng ở Bước 5)
+### 2.4. Giải thuật Học Đặc trưng Thiết kế từ Ảnh + URL (Chống Sao chép 100% — Creative mode, Dùng ở Bước 5)
 Khi nhận được **Ảnh chụp màn hình** (và **Link URL** do người dùng gửi kèm), Agent thực hiện bộ lọc **Tách Bố cục – Giữ Triết lý (Style-Structure Decoupling)**:
 
 | Thành phần ĐƯỢC PHÉP học và đưa vào `DESIGN.md` (Style DNA) | Thành phần BỊ CẤM SAO CHÉP tuyệt đối (Anti-Cloning) |
 | :--- | :--- |
 | 1. **Mối quan hệ màu sắc:** Độ chênh lệch sáng tối giữa nền và thẻ, cách dùng màu nhấn (tiết chế hay rực rỡ), nhiệt độ màu (ấm hay lạnh).<br>2. **Cấu trúc Typography:** Sự tương phản giữa độ dày tiêu đề và chữ nội dung, cách viết hoa nhãn nhỏ (`uppercase tracking-widest`).<br>3. **Xử lý bề mặt (Surface Treatment):** Cách bo góc (`0px`, `8px`, hay `24px`), cách phân tách khối (dùng đường kẻ `1px` mờ, dùng khoảng trắng lớn, hay dùng đổ bóng nhiều lớp).<br>4. **Nhịp điệu chuyển động (nếu có URL):** Tốc độ hover, hiệu ứng lướt chữ hoặc làm mờ kính (`backdrop-filter`). | 1. **Cây cấu trúc DOM & Thứ tự khối y hệt trang mẫu** (Không được bê nguyên khung HTML của trang mẫu sang).<br>2. **Văn bản, câu chữ, tên thương hiệu, logo và hình ảnh gốc** bên trong ảnh chụp màn hình.<br>3. **Số lượng và vị trí chính xác từng nút bấm** nếu nó không phục vụ đúng mục đích (`Scope`) mà người dùng đã trả lời ở Bước 3. |
 
-### 2.5. Lưới Bố cục 12 Cột (Layout Grid)
-1. **Cột:** `12` cột trên Desktop/Laptop ($\ge 1024\text{px}$), `8` cột trên Tablet, `4` cột trên Mobile ($< 768\text{px}$). Cột rộng linh hoạt theo `%`/`fr`. Chỉ **khung chính** (khối nội dung, card, cột ảnh) phải khớp cột; phần tử nhỏ bên trong dùng thang khoảng cách §2.3.
-2. **Gutter (khe giữa cột):** cố định, luôn để trống, hẹp hơn cột — `32px` Desktop → `24px` Tablet → `16px` Mobile (Pillar 4 *Cô đọng* được dùng `16px` ở mọi kích thước).
-3. **Lề ngoài (Container Margin):** lớn dần theo màn hình — tối thiểu `16px` Mobile (khớp Bài test 3), `32px` Tablet, `48px–80px` Desktop; nội dung không bao giờ chạm mép màn hình.
-4. Ví dụ quy đổi: 3 card × `col-span-4` trên Desktop → xếp chồng `col-span-4` (toàn bộ 4 cột) trên Mobile.
+> [!NOTE]
+> Bảng trên là luật của **Creative mode**. Ở **Clone mode**, các thành phần trong cột "Bị cấm" được mở khóa theo Mục 2.5.
+
+### 2.5. Clone mode — Dựng lại y hệt trang mẫu (Ngoại lệ của Mục 2.4, Dùng ở Bước 1 → Bước 6)
+Clone mode là chế độ duy nhất cho phép model sao chép trang mẫu. Người dùng phải **chủ động chọn Clone mode ở Bước 1** và gửi **Link URL + mô tả trang web của họ**. Mức sao chép phụ thuộc vào việc người dùng có xác nhận đó là trang web của chính họ hay không:
+
+| Mức | Điều kiện | Model được sao chép |
+| :--- | :--- | :--- |
+| **Clone cấu trúc** (mặc định) | Người dùng KHÔNG đánh dấu “Đây là trang web của tôi” | Thứ tự khối và kiểu bố cục của từng section y hệt trang mẫu, hệ màu, nhiệt độ màu, mật độ khoảng cách, phông chữ (nếu có bộ chữ tiếng Việt), cách xử lý bề mặt. **Văn bản, tên thương hiệu, logo và hình ảnh** dùng nội dung của người dùng — không lấy từ trang mẫu. |
+| **Clone 100%** | Người dùng đánh dấu “Đây là trang web của tôi” (ví dụ chuyển web cũ của họ sang Next.js) | Toàn bộ cột “Bị cấm” ở Mục 2.4: cấu trúc và thứ tự khối, văn bản, tên thương hiệu, logo, hình ảnh gốc. |
+
+Quy tắc bắt buộc ở cả hai mức:
+1. Xác nhận quyền sở hữu do **người dùng tự đánh dấu**; model không bao giờ tự suy ra một trang là của người dùng.
+2. Khi không có xác nhận, bộ đọc trang **không lấy bất kỳ nội dung chữ hay ảnh nào** ra khỏi trang mẫu — chỉ số đo bố cục và phong cách.
+3. Clone mode **vẫn qua đủ các cổng chặn**: duyệt kế hoạch ở Bước 7, chuẩn màu – chữ – lưới 8pt ở Chương 2, và 4 bài kiểm thử của Cursor Lớn Nhất ở Chương 5. Trang dựng lại phải đạt chuẩn như một trang Creative.
+4. Section nào trang mẫu có mà hệ thống chưa dựng được, model dựng bằng kiểu gần nhất và ghi rõ trong `PLAN.md`.
 
 ### 2.5b. Kho bố cục Hero & Nhịp Section
 1. **Hero chọn theo Trụ cột 2 (và 1)**, không dùng một kiểu cho mọi trang:
@@ -144,6 +156,12 @@ Khi nhận được **Ảnh chụp màn hình** (và **Link URL** do người d�
 2. **Nhịp nền:** các section nội dung sau hero xen kẽ nền thường / nền tô nhạt (`--bg-surface`); dải CTA cuối dùng nền tối trung tính.
 3. **Hàng kể chuyện (Z):** ảnh luôn chiếm cột rộng, tỷ lệ ảnh đổi giữa các hàng (`3:2` ↔ `4:5`) để không lặp.
 4. **Ảnh trong một trang:** mỗi section lấy ảnh nối tiếp section trước, không bắt đầu lại từ ảnh đầu; hạn chế lặp ảnh ở gần nhau.
+
+### 2.5c. Lưới Bố cục 12 Cột (Layout Grid)
+1. **Cột:** `12` cột trên Desktop/Laptop ($\ge 1024\text{px}$), `8` cột trên Tablet, `4` cột trên Mobile ($< 768\text{px}$). Cột rộng linh hoạt theo `%`/`fr`. Chỉ **khung chính** (khối nội dung, card, cột ảnh) phải khớp cột; phần tử nhỏ bên trong dùng thang khoảng cách §2.3.
+2. **Gutter (khe giữa cột):** cố định, luôn để trống, hẹp hơn cột — `32px` Desktop → `24px` Tablet → `16px` Mobile (Pillar 4 *Cô đọng* được dùng `16px` ở mọi kích thước).
+3. **Lề ngoài (Container Margin):** lớn dần theo màn hình — tối thiểu `16px` Mobile (khớp Bài test 3), `32px` Tablet, `48px–80px` Desktop; nội dung không bao giờ chạm mép màn hình.
+4. Ví dụ quy đổi: 3 card × `col-span-4` trên Desktop → xếp chồng `col-span-4` (toàn bộ 4 cột) trên Mobile.
 
 ### 2.6. Độ sâu, Đổ bóng & Bo góc (Elevation & Radius)
 1. **Phân cấp bằng độ sâu:** phần tử càng quan trọng hoặc càng "nổi" (header dính, thanh CTA dính đáy, dropdown, modal) càng ở tầng cao. Ưu tiên tạo độ sâu bằng **chênh lệch nền** (bề mặt sáng hơn nằm trên nền tối hơn trông nổi lên mà không cần bóng) — khớp Anti-slop #5.

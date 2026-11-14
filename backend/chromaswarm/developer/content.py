@@ -40,6 +40,8 @@ class PageCopy(BaseModel):
     footer_line: str
     tabs: list[tuple[str, str]]
     images: list[str] = []  # Clone mode, owned site: the reference's own photos (used before tonal placeholders)
+    quotes: list[tuple[str, str]] = []  # (quote, who) — sample testimonials, clearly marked as samples
+    cards: list[Item] = []  # bento cards: products for shops / projects for portfolios, features otherwise
 
 
 DEFAULTS: dict[Domain, dict] = {
@@ -111,6 +113,74 @@ DEFAULTS[Domain.PORTFOLIO] = dict(
 )
 DEFAULTS[Domain.OTHER] = DEFAULTS[Domain.ECOMMERCE]
 
+# Sample story rows / feature points per domain (marked as sample content at B12; replaced by real copy).
+STORY: dict[Domain, list[tuple[str, str]]] = {
+    Domain.ECOMMERCE: [("Chọn vật liệu trước, thiết kế sau", "Mỗi lựa chọn bắt đầu từ vật liệu bền và an toàn, rồi mới đến hình dáng."),
+                       ("Làm ít mẫu, làm thật kỹ", "Danh mục gọn để mỗi sản phẩm được kiểm tra kỹ trước khi đến tay bạn."),
+                       ("Ở lại sau khi bán", "Bảo hành, bảo trì và tư vấn sau mua là một phần của sản phẩm."),
+                       ("Giao tận nơi, lắp đặt tận tay", "Đội giao hàng của cửa hàng lắp đặt và hướng dẫn sử dụng ngay tại nhà."),
+                       ("Giá rõ ràng từ đầu", "Giá niêm yết đã gồm thuế và phí giao nội thành, không phát sinh khi thanh toán."),
+                       ("Đổi ý vẫn kịp", "Trong 30 ngày, sản phẩm còn nguyên vẹn được đổi hoặc hoàn tiền.")],
+    Domain.SAAS: [("Lên kế hoạch trong vài phút", "Tạo dự án, chia việc và đặt hạn cho cả nhóm từ một màn hình."),
+                  ("Mọi việc ở cùng một chỗ", "Yêu cầu, lỗi và ý tưởng đổ về một hàng đợi; không còn tìm trong chat."),
+                  ("Theo dõi tiến độ không cần họp", "Bảng tiến độ tự cập nhật khi từng việc chuyển trạng thái."),
+                  ("Tự động hóa việc lặp lại", "Quy tắc tự gán người, đổi trạng thái và nhắc hạn thay cho thao tác tay."),
+                  ("Kết nối công cụ đang dùng", "Đồng bộ với lịch, email và kho mã nguồn qua tích hợp có sẵn."),
+                  ("Báo cáo cho quản lý", "Số liệu tuần được tổng hợp sẵn, xuất ra bảng tính bằng một nút.")],
+    Domain.BOOKING: [("Đặt lịch trong 30 giây", "Chọn dịch vụ, chọn giờ trống và xác nhận, không cần gọi điện."),
+                     ("Nhắc lịch tự động", "Tin nhắn nhắc trước một ngày và trước hai giờ để không lỡ hẹn."),
+                     ("Kỹ thuật viên có chứng chỉ", "Mỗi người phụ trách đều qua đào tạo và có chứng chỉ hành nghề."),
+                     ("Không gian riêng tư", "Phòng riêng, khử khuẩn sau mỗi lượt khách."),
+                     ("Bảng giá công khai", "Giá từng dịch vụ hiển thị rõ trước khi đặt."),
+                     ("Đổi lịch linh hoạt", "Đổi miễn phí trước hai giờ ngay trong tin nhắn xác nhận.")],
+    Domain.EDTECH: [("Học theo lộ trình", "Bài học sắp theo thứ tự, mỗi bài có mục tiêu và bài tập riêng."),
+                    ("Thực hành trên dự án thật", "Mỗi chương kết thúc bằng một sản phẩm bạn tự làm."),
+                    ("Giảng viên chấm bài 1:1", "Nhận nhận xét chi tiết cho từng bài nộp trong 48 giờ."),
+                    ("Học mọi lúc", "Xem lại bài giảng trên điện thoại hay máy tính, không giới hạn."),
+                    ("Cộng đồng học viên", "Hỏi bài và chia sẻ dự án với các bạn cùng khóa."),
+                    ("Chứng chỉ hoàn thành", "Nhận chứng chỉ sau khi nộp đủ bài tập của khóa.")],
+    Domain.PORTFOLIO: [("Bắt đầu từ vấn đề", "Mỗi dự án mở đầu bằng câu hỏi khách hàng cần trả lời."),
+                       ("Thử nhanh, sửa nhanh", "Bản mẫu được thử với người dùng thật trước khi hoàn thiện."),
+                       ("Bàn giao trọn vẹn", "Tài liệu, mã nguồn và hướng dẫn được giao đầy đủ."),
+                       ("Làm việc minh bạch", "Tiến độ cập nhật hằng tuần, có bảng theo dõi chung."),
+                       ("Đo kết quả", "Mỗi dự án có chỉ số đo được trước và sau khi ra mắt."),
+                       ("Đồng hành sau ra mắt", "Hỗ trợ điều chỉnh trong 30 ngày đầu.")],
+}
+STORY[Domain.OTHER] = STORY[Domain.ECOMMERCE]
+# Feature cards for bento rows where the domain's "items" are not things to show as cards (plans, services).
+FEATURES: dict[Domain, list[tuple[str, str]]] = {
+    Domain.SAAS: [("Chu kỳ làm việc", "Chia việc theo chu kỳ hai tuần, tự chuyển việc dở sang chu kỳ sau."),
+                  ("Lộ trình sản phẩm", "Kéo thả các mốc lớn, thấy ngay việc nào đang chặn việc nào."),
+                  ("Phân quyền theo nhóm", "Mỗi nhóm thấy đúng dự án của mình; khách chỉ xem được phần được chia sẻ."),
+                  ("Ứng dụng di động", "Duyệt việc và trả lời bình luận ngay trên điện thoại."),
+                  ("Tìm kiếm tức thì", "Gõ vài chữ là ra việc, tài liệu hay người phụ trách."),
+                  ("API mở", "Kết nối hệ thống nội bộ qua API và webhook có tài liệu đầy đủ.")],
+    Domain.BOOKING: [("Chọn kỹ thuật viên", "Xem lịch trống của từng người và chọn người quen."),
+                     ("Thanh toán trước", "Giữ chỗ bằng chuyển khoản hoặc ví điện tử."),
+                     ("Thẻ thành viên", "Tích điểm sau mỗi lần đến, đổi lấy buổi miễn phí."),
+                     ("Quà tặng", "Mua thẻ quà theo dịch vụ hoặc theo giá trị."),
+                     ("Đánh giá sau buổi", "Góp ý trực tiếp cho từng kỹ thuật viên."),
+                     ("Nhắc tái khám", "Lời nhắc theo liệu trình bạn đang theo.")],
+    Domain.EDTECH: [("Video ngắn", "Mỗi bài dưới 15 phút, có phụ đề tiếng Việt."),
+                    ("Bài tập tự chấm", "Chạy thử và nhận kết quả ngay trong trình duyệt."),
+                    ("Lộ trình cá nhân", "Gợi ý bài tiếp theo theo điểm của bạn."),
+                    ("Hỏi đáp trực tiếp", "Buổi hỏi đáp với giảng viên mỗi tuần."),
+                    ("Tài liệu tải về", "Slide và mã nguồn của từng bài."),
+                    ("Theo dõi tiến độ", "Biểu đồ số giờ học và bài đã hoàn thành.")],
+}
+
+QUOTE_NOTE = "Lời khách hàng mẫu — thay bằng đánh giá thật ở bước bàn giao"
+QUOTES: dict[Domain, list[str]] = {
+    Domain.ECOMMERCE: ["Hàng giao đúng hẹn, lắp đặt gọn gàng, dùng mấy tháng vẫn như mới.",
+                       "Tư vấn kỹ, không ép mua, giá đúng như trên web."],
+    Domain.SAAS: ["Nhóm mình bỏ được hai cuộc họp mỗi tuần vì tiến độ đã hiện sẵn.",
+                  "Cài đặt trong một buổi chiều, cả nhóm dùng được ngay hôm sau."],
+    Domain.BOOKING: ["Đặt lịch nhanh, đến nơi không phải chờ.", "Nhân viên nhẹ nhàng, phòng sạch, giá rõ ràng."],
+    Domain.EDTECH: ["Bài tập sát thực tế, giảng viên chấm rất kỹ.", "Học xong mình làm được dự án đầu tiên cho công ty."],
+    Domain.PORTFOLIO: ["Làm việc rõ ràng, đúng hạn, kết quả vượt mong đợi.", "Hiểu vấn đề nhanh và đề xuất đúng thứ chúng tôi cần."],
+}
+QUOTES[Domain.OTHER] = QUOTES[Domain.ECOMMERCE]
+
 _SLOGAN = re.compile(r"^\s*(?:slogan|thông điệp|tagline)\s*[:\-]\s*(.+)$", re.I)
 
 
@@ -153,6 +223,7 @@ def owned_clone_copy(copy: PageCopy, content: dict) -> PageCopy:
     items = [i for v in by_kind("bento", "grid-4", "horizontal-scroller") for i in v.get("items", []) if i.get("title")]
     if len(items) >= 2:
         updates["items"] = [Item(name=i["title"][:60], note=i.get("note", "")[:140], price=i.get("price", "")) for i in items[:8]]
+        updates["cards"] = updates["items"]
     faqs = [tuple(f) for v in by_kind("accordion") for f in v.get("faqs", []) if f and f[0]]
     if faqs:
         updates["faqs"] = faqs[:8]
@@ -188,9 +259,9 @@ def build_copy(state: PipelineState) -> PageCopy:
     copy = PageCopy(
         brand=brand, headline=headline, subhead=subhead, cta=cta, cta_secondary="Xem chi tiết",
         nav=d["nav"], nav_links=nav_links(state, d["nav"]), facts=d["facts"],
-        story=[("Chọn vật liệu trước, thiết kế sau", "Mỗi lựa chọn bắt đầu từ vật liệu bền và an toàn, rồi mới đến hình dáng."),
-               ("Làm ít mẫu, làm thật kỹ", "Danh mục gọn để mỗi sản phẩm được kiểm tra kỹ trước khi đến tay bạn."),
-               ("Ở lại sau khi bán", "Bảo hành, bảo trì và tư vấn sau mua là một phần của sản phẩm.")],
+        story=STORY.get(state.domain or Domain.OTHER, STORY[Domain.ECOMMERCE]),
+        quotes=[(q, QUOTE_NOTE) for q in QUOTES.get(state.domain or Domain.OTHER, QUOTES[Domain.ECOMMERCE])],
+        cards=([Item(name=t, note=n) for t, n in FEATURES[state.domain]] if state.domain in FEATURES else d["items"]),
         items=d["items"], categories=d["categories"], faqs=d["faqs"],
         closing=f"Sẵn sàng bắt đầu? {cta} chỉ mất một phút.",
         footer_line=f"© {brand}. Nội dung mẫu — thay bằng thông tin thật ở bước bàn giao.",
@@ -208,3 +279,32 @@ def build_copy(state: PipelineState) -> PageCopy:
             "footer_line": f"© {brand}. Nội dung và ảnh minh hoạ (Unsplash) là mẫu — thay bằng thông tin thật ở bước bàn giao.",
         })
     return copy
+
+
+def _rot(xs: list, k: int) -> list:
+    return xs[k % len(xs):] + xs[:k % len(xs)] if xs else xs
+
+
+# How much of each copy pool a section structure shows (so the next section continues after it).
+USES = {
+    "story": {"alternating-z": 3, "split-5-7": 1, "feature-showcase": 1, "text-cards": 3},
+    "items": {"grid-4": 8, "sidebar-grid-4": 8},
+    "cards": {"bento": 4},
+    "quotes": {"testimonials": 2},
+    "categories": {"horizontal-scroller": 4},
+    "faqs": {"accordion": 5},
+    "tabs": {"tabs": 3},
+}
+
+
+def copy_for(structure: str, earlier: list[str], copy: PageCopy) -> PageCopy:
+    """Copy for one section: each pool continues where the earlier sections of the page stopped,
+    so two sections never show the same sample text until the pool runs out."""
+    updates = {}
+    for pool, uses in USES.items():
+        if structure not in uses:
+            continue
+        offset = sum(uses.get(prev, 0) for prev in earlier)
+        if offset:
+            updates[pool] = _rot(getattr(copy, pool), offset)
+    return copy.model_copy(update=updates) if updates else copy

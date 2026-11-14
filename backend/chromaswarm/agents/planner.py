@@ -192,6 +192,7 @@ def design_inputs(state: PipelineState, project_name: str, dna: StyleDNA | None 
         base_font_px=base_font_for(p.scope or ""), persona=p.scope or "", primary_cta=extract_cta(p.scope or "") or "",
         motion_effects=effects, style_dna=dna,
         heading_font=clone.heading_font if clone else None, body_font=clone.body_font if clone else None,
+        clone_level=("full" if clone.owned else "structure") if clone else None,
         extra_rules=[f"User feedback (B7): {f}" for f in state.plan_feedback],
     )
 
@@ -220,8 +221,16 @@ def render_product_md(state: PipelineState, project_name: str, seed_note: str | 
     else:
         lines.append("- Chưa có ảnh sản phẩm: dùng ảnh chất lượng cao đúng chủ đề (Unsplash/Pexels hoặc tạo ảnh), "
                      "không để khung xám trống.")
+    clone = state.clone if state.selected_page == CLONE_PAGE else None
     for r in state.references:
-        lines.append(f"- Tham khảo: {r.url or r.screenshot_path} — chỉ học Design DNA, không sao chép bố cục.")
+        if clone and r.url == clone.url:
+            level = ("Clone 100% — người dùng xác nhận đây là trang của họ: sao chép cấu trúc, chữ, ảnh"
+                     if clone.owned else "Clone cấu trúc — thứ tự và bố cục section y hệt; chữ, ảnh là của người dùng")
+            lines.append(f"- Trang mẫu (Clone mode, FRONTEND_STANDARDS §2.5): {r.url} — {level}.")
+        else:
+            lines.append(f"- Tham khảo: {r.url or r.screenshot_path} — chỉ học Design DNA, không sao chép bố cục.")
+    if clone:
+        lines += [f"- Ghi chú khi đọc trang mẫu: {n}" for n in clone.notes]
     if seed_note:
         lines += ["", f"> {seed_note}"]
     lines += [

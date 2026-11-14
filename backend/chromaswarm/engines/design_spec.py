@@ -42,8 +42,23 @@ class DesignInputs(BaseModel):
     style_dna: StyleDNA | None = None
     philosophy: Philosophy | None = None
     extra_rules: list[str] = Field(default_factory=list)
+    clone_level: str | None = None  # Clone mode: "structure" | "full" (§2.5); None = Creative (§2.4 applies)
     heading_font: str | None = None  # Clone mode: the reference's font, when it ships Vietnamese
     body_font: str | None = None
+
+
+CLONE_POLICY = {
+    "structure": [
+        "Section order and the layout type of each section reproduce the reference page.",
+        "Palette tone, accent, spacing density and type feel follow the reference, rebuilt on the engines above.",
+        "Copy, brand name, logo and images are the user's own; none were read from the reference.",
+    ],
+    "full": [
+        "Clone 100%: the user confirmed the reference is their own site.",
+        "Section order, layout, copy, brand name, logo and images reproduce the reference.",
+        "Colours, type scale and spacing are rebuilt on the engines above so the page passes B11.",
+    ],
+}
 
 
 class DesignSpec(BaseModel):
@@ -169,8 +184,11 @@ def render_design_md(spec: DesignSpec) -> str:
     ]
     if spec.dna_rules:
         src = i.style_dna.source_url if i.style_dna and i.style_dna.source_url else "screenshot"
-        lines += [f"Nguồn: {src}", "", *[f"- {r}" for r in spec.dna_rules], "", "**Ranh giới chống sao chép:**", ""]
-        lines += [f"- {r}" for r in ANTI_CLONING_BOUNDARY]
+        lines += [f"Nguồn: {src}", "", *[f"- {r}" for r in spec.dna_rules], ""]
+        if i.clone_level:
+            lines += ["**Clone mode (FRONTEND_STANDARDS §2.5):**", "", *[f"- {r}" for r in CLONE_POLICY[i.clone_level]]]
+        else:
+            lines += ["**Ranh giới chống sao chép:**", "", *[f"- {r}" for r in ANTI_CLONING_BOUNDARY]]
     else:
         lines.append("_Không có ảnh/URL tham khảo — thiết kế dựa hoàn toàn trên câu trả lời 5 trụ cột._")
     lines += [

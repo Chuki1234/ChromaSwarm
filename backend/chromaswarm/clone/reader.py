@@ -63,20 +63,33 @@ def classify(block: dict, index: int, total: int) -> str:
         return "horizontal-scroller"
     if f["columns"] >= 3 and f["numeric_items"] >= 3 and f["images"] == 0:
         return "inline-metrics"
-    if f["columns"] >= 3 and (f["prices"] >= 2 or f["columns"] >= 4) and f["images"] >= 3:
-        return "grid-4"
+    if f["columns"] >= 6 and max(f["card_widths"] or [0]) <= 200:
+        return "inline-metrics"  # a strip of many small items (logos, stats): closest buildable strip
+    if f.get("quotes", 0) >= 2:
+        return "testimonials"
     widths = f["card_widths"]
     uneven = bool(widths) and max(widths) > 1.6 * min(widths)
-    cards = f.get("row_items_with_img", 0) >= 2  # several items in one row each carry an image
-    if f["columns"] >= 2 and cards and uneven and f["images"] >= 3:
+    with_visual = f.get("row_items_with_img", 0)  # items in one row that carry an image / illustration
+    # A row of 3+ cards with visuals: a product grid when it shows prices, feature cards (bento) otherwise.
+    if f["columns"] >= 3 and (f["images"] >= 3 or with_visual >= 3):
+        return "grid-4" if f["prices"] >= 2 else "bento"
+    if f["columns"] >= 2 and with_visual >= 2 and uneven and f["images"] >= 3:
         return "bento"
-    if f["columns"] >= 3 and f["images"] >= 2:
-        return "grid-4"
     if f["bg_differs"] and f["buttons"] >= 1 and f["text_len"] < 300:
         return "full-bleed-band"
+    actions = f["buttons"] + f["links"]
+    if index >= total - 3 and f["headings"] >= 1 and f["text_len"] < 300 and 1 <= actions <= 6 and f["height"] < 500:
+        return "full-bleed-band"  # a short closing call to action near the end, even without its own colour
     if f["columns"] == 2 and f["images"] >= 2:
         return "alternating-z"
-    return "split-5-7"
+    if f["headings"] >= 1 and f["height"] >= 700 and with_visual < 3:
+        return "feature-showcase"  # a tall section built around one heading and a large visual / mockup
+    if f["columns"] >= 3 and f["images"] == 0 and with_visual == 0 and f["text_len"] >= 200:
+        return "text-cards"
+    return FALLBACK
+
+
+FALLBACK = "split-5-7"  # no closer buildable structure: a plain content block
 
 
 SECTION_IDS = {"sticky-bar": "site-header", "footer-columns": "site-footer", "accordion": "faq",
@@ -85,7 +98,8 @@ NAMES = {"sticky-bar": "Header / Navbar", "split-7-5": "Hero", "full-bleed-image
          "inline-metrics": "Dải số liệu", "alternating-z": "Câu chuyện xen kẽ", "bento": "Lưới nổi bật",
          "grid-4": "Lưới sản phẩm", "horizontal-scroller": "Dải danh mục", "accordion": "Hỏi đáp",
          "full-bleed-band": "Dải kêu gọi hành động", "footer-columns": "Footer", "split-5-7": "Khối nội dung",
-         "tabs": "Tabs", "auth": "Đăng nhập"}
+         "tabs": "Tabs", "auth": "Đăng nhập", "feature-showcase": "Khối tính năng", "testimonials": "Lời khách hàng",
+         "text-cards": "Hàng thẻ chữ"}
 INTERACTIVE = {
     "sticky-bar": [("nav-logo", "link", "go to home"), ("nav-menu-toggle", "button", "open mobile menu ≤768px")],
     "split-7-5": [("cta-primary", "button", "primary conversion"), ("cta-secondary", "link", "scroll to details")],
@@ -99,6 +113,7 @@ INTERACTIVE = {
                        ("footer-newsletter-submit", "button", "success / error state")],
     "tabs": [("main-tab", "tab", "switch panel")],
     "auth": [("email-input", "input", "validate"), ("submit-login", "button", "loading + error states")],
+    "feature-showcase": [("more", "link", "learn more")],
 }
 
 
@@ -116,7 +131,9 @@ def sections_from_blocks(blocks: list[dict]) -> list[Section]:
         used.add(sid)
         sections.append(Section(
             id=sid, name=NAMES[structure], structure=structure,
-            content=f"Dựng lại từ section #{i + 1} của trang mẫu ({block['features']['height']}px cao)",
+            content=(f"Dựng lại từ section #{i + 1} của trang mẫu ({block['features']['height']}px cao)"
+                     + (" — chưa có mẫu đúng kiểu, dựng bằng khối nội dung gần nhất (§2.5 quy tắc 4)"
+                        if structure == FALLBACK else "")),
             interactive=[Interactive(id=a, role=b, behavior=c) for a, b, c in INTERACTIVE.get(structure, [])]))
     if not any(s.structure == "sticky-bar" for s in sections):
         sections.insert(0, Section(id="site-header", name="Header / Navbar", structure="sticky-bar",

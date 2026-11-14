@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from chromaswarm.agents.planner import Section
 from chromaswarm.design.dept import TokenChange, TokenFile, fix_contrast, repair
-from chromaswarm.developer.content import PageCopy
+from chromaswarm.developer.content import PageCopy, copy_for
 from chromaswarm.developer.nextjs import WorkspaceFile, heal_file, motion_file, page_file, render_section, scaffold
 from chromaswarm.mcp_motion.client import MotionEffect, build_effects
 from chromaswarm.mcp_motion.server import pick_effect
@@ -175,7 +175,8 @@ class LocalBuildRuntime:
     async def write_section(self, session: str, written: list[Section], copy: PageCopy,
                             page: str = "", route: str = "/") -> None:
         s = self._s(session)
-        s.workspace.write(Step.B9_DEVELOP, render_section(written[-1], copy, page))
+        section_copy = copy_for(written[-1].structure, [w.structure for w in written[:-1]], copy)
+        s.workspace.write(Step.B9_DEVELOP, render_section(written[-1], section_copy, page))
         s.workspace.write(Step.B9_DEVELOP, page_file(written, page, route))
 
     async def refresh_shared(self, session: str, section: Section, copy: PageCopy, pages: list[str]) -> None:
