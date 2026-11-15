@@ -80,7 +80,10 @@ def guard(turn: ChatTurn, question: dict | None, message: str) -> ChatTurn:
         return ChatTurn(intent="answer", reply=turn.reply, answer={"approve": False, "feedback": feedback})
     if kind == "choice" and question.get("step") == "B3":
         # Pillar questions accept free text: interpret() (rules or LLM) decides, and re-asks if unclear.
-        value = turn.answer if turn.answer in {o["value"] for o in question.get("options", [])} else message
+        # The model sometimes returns a structured answer ({"mode": .., "hex": ..}); interpret() reads the
+        # user's own words instead, which always works for pillar questions.
+        offered = {o["value"] for o in question.get("options", [])}
+        value = turn.answer if isinstance(turn.answer, str) and turn.answer in offered else message
         return ChatTurn(intent="answer", reply=turn.reply, answer=value)
     if kind in ("choice", "mode"):
         value = turn.answer if isinstance(turn.answer, str) else None

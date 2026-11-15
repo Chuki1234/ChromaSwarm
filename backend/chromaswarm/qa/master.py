@@ -122,13 +122,17 @@ async def test_interactions(page: Page, swarm: SwarmOverlay, errors: list[str], 
                                         f"{_sel(sel)}:hover {{ filter: brightness(0.92); }}"))
         is_button = it["tag"] == "button" or (it["role"] in CLICKABLE_ROLES and it["tag"] != "a")
         if is_button:
+            # Clicking the tab / option that is already selected rightly changes nothing.
+            selected = await page.evaluate(
+                "(s) => { const e = document.querySelector(s); return !!e && ['aria-selected', 'aria-checked', "
+                "'aria-pressed'].some((a) => e.getAttribute(a) === 'true'); }", sel)
             before = await _probe(page, "domSig")
             errors_before = len(errors)
             await swarm.pulse()
             await page.mouse.click(pos["x"], pos["y"])
             await page.wait_for_timeout(120 + pause)
             after = await _probe(page, "domSig")
-            if before == after:
+            if before == after and not selected:
                 fails.append(QaFailure(test=1, rule="no-state-change", selector=sel,
                                        detail=f"bấm “{it['label']}” nhưng giao diện không phản hồi"))
             if len(errors) > errors_before:

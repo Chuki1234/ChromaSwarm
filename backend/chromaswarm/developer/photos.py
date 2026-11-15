@@ -73,6 +73,11 @@ TOPICS: dict[str, tuple[list[str], list[str]]] = {
     "hotel": (["khách sạn", "homestay", "resort", "hotel", "villa", "phòng nghỉ", "du lịch"],
               ["photo-1611892440504-42a792e24d32", "photo-1618773928121-c32242e63f39", "photo-1781572725438-ac8c41476752",
                "photo-1782890790046-2aefb0b503cb", "photo-1765547090903-348b711f0eee", "photo-1551882547-ff40c63fe5fa"]),
+    "candle": (["nến thơm", "nến", "candle", "sáp thơm", "tinh dầu"],
+               # checked by eye 2026-11-14 (license=free). Pillar candles first: the subject fills the frame, so
+               # the 21:9 hero crop still shows candles (the amber-jar photo cropped to an empty wall).
+               ["photo-1613068431228-8cb6a1e92573", "photo-1612293905607-b003de9e54fb", "photo-1605651202774-7d573fd3f12d",
+                "photo-1772915022472-ffc1df2d6051", "photo-1572726729207-a78d6feb18d7", "photo-1759262151253-375c311347c7"]),
     "flowers": (["hoa", "điện hoa", "florist", "flower", "bó hoa"],
                 ["photo-1572454591674-2739f30d8c40", "photo-1561848355-890d054dc55a", "photo-1523694576729-dc99e9c0f9b4",
                  "photo-1487530811176-3780de880c2d", "photo-1778101410311-6cca527142d6", "photo-1762969217496-32d784e7e557"]),
@@ -85,8 +90,9 @@ TOPICS: dict[str, tuple[list[str], list[str]]] = {
 }
 
 # No keyword hit: a topic that matches the domain's default sample copy.
+# A shop selling something we have no photos for gets neutral placeholders, never another product's
+# photos: a candle shop full of sofas scored worse with the critic than plain tonal frames.
 DOMAIN_TOPIC: dict[Domain, str] = {
-    Domain.ECOMMERCE: "furniture",  # default ecommerce copy is furniture rooms (Phòng khách, Phòng ngủ...)
     Domain.SAAS: "office",
     Domain.BOOKING: "spa",
     Domain.EDTECH: "education",
@@ -108,19 +114,30 @@ def _find(word: str, text: str, folded: str) -> re.Match | None:
     return None
 
 
+# Phrases that contain a topic keyword but are not about it: "thương mại điện tử" (e-commerce)
+# is not electronics, "ứng dụng" in "ứng dụng thanh toán" is not an app product, etc.
+NOT_TOPICS = re.compile(r"thương mại điện tử|thuong mai dien tu|e-?commerce|sàn điện tử|ví điện tử|hóa đơn điện tử|"
+                        r"hoá đơn điện tử|chữ ký điện tử|thư điện tử|giao diện|màn hình điện thoại", re.I)
+
+
 def pick_topic(text: str, domain: Domain | None) -> str | None:
-    """The topic whose keyword appears earliest in what the user said; domain fallback otherwise."""
+    """The topic the user talks about most (keyword hits); the earliest mention breaks a tie.
+    Domain fallback when nothing matches."""
+    text = NOT_TOPICS.sub(" ", text)
     low, folded = text.lower(), fold(text)
-    best: tuple[int, int, str] | None = None
+    scores: dict[str, list] = {}
     for topic, (words, _) in TOPICS.items():
         for w in words:
-            if m := _find(w, low, folded):
-                # earliest mention wins; on a tie the longer (more specific) keyword
-                key = (m.start(), -len(w), topic)
-                if best is None or key < best:
-                    best = key
-    if best:
-        return best[2]
+            hits = list(re.finditer(rf"\b{re.escape(w.lower())}\b", low)) or (
+                [m] if (m := _find(w, low, folded)) else [])
+            if hits:
+                s = scores.setdefault(topic, [0, len(low), 0])
+                s[0] += len(hits)
+                s[1] = min(s[1], hits[0].start())
+                s[2] = max(s[2], len(w))
+    if scores:
+        # most hits, then earliest mention, then the longer (more specific) keyword
+        return min(scores, key=lambda t: (-scores[t][0], scores[t][1], -scores[t][2]))
     return DOMAIN_TOPIC.get(domain) if domain else None
 
 

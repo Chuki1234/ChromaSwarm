@@ -279,8 +279,19 @@ class LocalBuildRuntime:
         if not (s.browser and s.page):
             return None
         page = await s.browser.new_page(viewport={"width": 1440, "height": 900})
+        url = (s.base_url or s.page.url).rstrip("/") + (s.route if s.route != "/" else "")
         try:
-            await page.goto(s.page.url, wait_until="networkidle")
+            # The build tab may still be re-compiling (dev server HMR) and abort the first load: retry once.
+            for attempt in (1, 2):
+                try:
+                    await page.goto(url, wait_until="load", timeout=45000)
+                    await page.wait_for_load_state("networkidle", timeout=15000)
+                    break
+                except Exception as e:  # noqa: BLE001
+                    if attempt == 2:
+                        raise
+                    log.info("critic page load retried after: %s", e)
+                    await page.wait_for_timeout(2000)
             return await critique(page, context=context)
         except Exception as e:  # noqa: BLE001 — the critic never stops a build
             log.warning("critique failed: %s", e)

@@ -310,14 +310,26 @@ def split_color(value: str, theme: Theme) -> tuple[Mode, str, bool]:
     return mode, DEFAULT_SEED_BY_THEME[theme], False
 
 
-_CTA = re.compile(r"(?:bấm|nhấn|click|chọn|hành động(?: chính)?(?: là)?)\s*[:\-]?\s*[\"“']?([^,.;\"”'\n]{3,48})", re.I)
+_CTA = re.compile(r"(?:bấm|nhấn|click|chọn|hành động(?:\s+(?:chính|quan trọng nhất|quan trọng))?(?:\s+là)?)"
+                  r"\s*[:\-]?\s*[\"“']?([^,.;\"”'\n]{3,48})", re.I)
 _FILLER = re.compile(r"^\s*(?:mình|tôi|em|anh|chị)?\s*(?:muốn|cần)?\s*(?:làm|xây dựng|tạo)?\s*(?:cho mình|cho tôi)?\s*(?:một|1)?\s*", re.I)
 
 
+_CTA_VERB = re.compile(r"^\s*((?:mua|đặt|đăng ký|liên hệ|tư vấn|kiểm tra|nhận|tải|gọi|xem|thêm vào giỏ|khám phá|"
+                       r"dùng thử|đăng nhập|bắt đầu)\b[^,.;\n]{0,40})", re.I)
+
+
 def extract_cta(scope: str) -> str | None:
-    """'... muốn họ bấm Đặt lịch xem showroom' -> 'Đặt lịch xem showroom'."""
+    """'... muốn họ bấm Đặt lịch xem showroom' -> 'Đặt lịch xem showroom'.
+    Also a part that is just the action, as when the answer came in pieces: '18-30 tuổi; Mua ngay'."""
     m = _CTA.search(scope or "")
-    return m.group(1).strip().rstrip("!?") if m else None
+    if m:
+        return m.group(1).strip().rstrip("!?")
+    for part in re.split(r"[;\n]", scope or ""):
+        if v := _CTA_VERB.match(part):
+            text = v.group(1).strip().rstrip("!?")
+            return text[:1].upper() + text[1:]
+    return None
 
 
 def project_title(prompt: str, limit: int = 48) -> str:

@@ -7,11 +7,14 @@
   --bg-surface: oklch(96% 0.008 var(--h));
   --text-primary: oklch(15% 0.015 var(--h));
   --text-secondary: oklch(42% 0.015 var(--h));
-  --text-muted: oklch(58% 0.015 var(--h));
+  --text-muted: oklch(50% 0.015 var(--h));  /* >= 4.5:1 on bg-primary */
   --border-subtle: oklch(90% 0.01 var(--h));
   --accent: oklch(52% 0.17 155);
   --accent-fg: oklch(98.5% 0.005 155);
   --danger: oklch(55% 0.19 27);
+  --bg-elevated: oklch(100% 0 0);
+  --sheet-line: oklch(15% 0.015 var(--h) / 0.12);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -20,11 +23,13 @@
     --bg-surface: oklch(18% 0.015 var(--h));
     --text-primary: oklch(96% 0.015 var(--h));
     --text-secondary: oklch(72% 0.015 var(--h));
-    --text-muted: oklch(52% 0.015 var(--h));
+    --text-muted: oklch(64% 0.015 var(--h));  /* >= 4.5:1 on bg-primary */
     --border-subtle: oklch(24% 0.015 var(--h));
     --accent: oklch(72% 0.16 155);
     --accent-fg: oklch(15% 0.02 155);
     --danger: oklch(68% 0.17 27);
+    --bg-elevated: oklch(21% 0.015 var(--h));
+    --sheet-line: oklch(96% 0.015 var(--h) / 0.10);
   }
 }
 
@@ -42,7 +47,101 @@
   --font-mono: var(--font-geist-mono);
 }
 
+html, body { overflow-x: clip; }  /* the 3D scene may poke past the viewport edge; never scroll sideways */
 body {
   background: var(--bg-primary);
   color: var(--text-primary);
+}
+
+/* ------------------------------------------------------------ backdrop
+   A quiet dotted grid fading out from the top, plus one soft glow in the accent hue (<= 12%). */
+.backdrop { position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background-image: radial-gradient(circle at 1px 1px, var(--sheet-line) 1px, transparent 0);
+  background-size: 24px 24px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 30%, transparent 75%); }
+.backdrop::after { content: ""; position: absolute; inset: -20% 10% auto auto; width: 60vw; height: 60vw;
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 12%, transparent), transparent 65%); }
+
+/* ------------------------------------------------------------ entrance */
+@keyframes rise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+.rise { animation: rise 700ms var(--ease-out) both; animation-delay: var(--d, 0ms); }
+
+/* ------------------------------------------------------------ 3D scene */
+.scene { position: relative; aspect-ratio: 1 / 0.86; perspective: 1400px; }
+.scene-glow { position: absolute; inset: 15%; border-radius: 50%; filter: blur(48px);
+  background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.scene-stage { position: absolute; inset: 0; transform-style: preserve-3d;
+  transform: rotateX(calc(52deg + var(--tilt-x, 0deg))) rotateZ(calc(-32deg + var(--tilt-y, 0deg)));
+  transition: transform 600ms var(--ease-out); }
+/* Exploded view: each section of the page is lifted above the one below it. */
+.sheet { --z: calc((4 - var(--i)) * 30px); position: absolute; left: 10%; right: 10%; height: 21%; padding: 12px 14px;
+  border-radius: 12px; top: calc(6% + var(--i) * 17%); transform: translateZ(var(--z));
+  background: color-mix(in srgb, var(--bg-elevated) 92%, transparent); border: 1px solid var(--sheet-line);
+  box-shadow: 0 1px 0 var(--sheet-line), 0 24px 40px -20px oklch(10% 0.02 250 / 0.45);
+  transform-style: preserve-3d;
+  animation: assemble 1100ms var(--ease-out) both, hover 6s ease-in-out infinite;
+  animation-delay: calc(var(--i) * 140ms + 200ms), calc(var(--i) * -1.1s); }
+.sheet-hero, .sheet-story { height: 27%; }
+.sheet-hero { top: 18%; } .sheet-cards { top: 40%; } .sheet-story { top: 58%; } .sheet-footer { top: 81%; height: 13%; }
+.sheet-hero { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+@keyframes assemble { from { opacity: 0; transform: translateZ(calc(var(--z) + 180px)); } to { opacity: 1; transform: translateZ(var(--z)); } }
+@keyframes hover { 0%, 100% { translate: 0 0 0; } 50% { translate: 0 0 14px; } }
+.sheet-tag { position: absolute; top: -10px; right: 12px; padding: 2px 8px; border-radius: 999px;
+  font: 500 10px/1.6 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase;
+  background: var(--bg-primary); color: var(--text-secondary); border: 1px solid var(--sheet-line); }
+.sk { display: block; height: 8px; border-radius: 4px; background: color-mix(in srgb, var(--text-primary) 14%, transparent); }
+.sk-title { height: 12px; background: color-mix(in srgb, var(--text-primary) 30%, transparent); }
+.sk-btn { width: 56px; height: 16px; border-radius: 6px; background: var(--accent); }
+.sk-photo { display: block; flex: 1; min-height: 100%; border-radius: 8px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 30%, var(--bg-surface)), var(--bg-surface)); }
+.sk-row { display: flex; align-items: center; gap: 8px; height: 100%; }
+.sk-gap { flex: 1; }
+.sk-col { display: flex; flex-direction: column; justify-content: center; gap: 8px; flex: 1.2; }
+.sk-hero, .sk-cards { display: flex; gap: 10px; height: 100%; }
+.w-8 { width: 32px; } .w-16 { width: 64px; } .w-20 { width: 80px; } .w-24 { width: 96px; } .w-28 { width: 112px; }
+.w-32 { width: 128px; } .w-36 { width: 144px; } .w-40 { width: 160px; }
+.sk.w-28, .sk.w-32, .sk.w-36, .sk.w-40 { max-width: 100%; }
+
+/* Agent cursors gliding over the layers (the swarm at work) */
+.swarm-cursor { position: absolute; display: flex; align-items: flex-start; gap: 2px; transform: translateZ(150px);
+  font: 600 10px/1 var(--font-mono); white-space: nowrap; animation: roam 9s ease-in-out infinite; }
+.swarm-cursor span { padding: 3px 6px; border-radius: 6px; background: var(--cursor); color: oklch(15% 0.02 250); }
+.swarm-cursor svg { color: var(--cursor); }
+.c-layout { --cursor: oklch(78% 0.14 220); top: 22%; left: 30%; animation-delay: 0s; }
+.c-color { --cursor: oklch(80% 0.15 85); top: 46%; left: 62%; animation-delay: -2.2s; }
+.c-type { --cursor: oklch(78% 0.13 320); top: 64%; left: 24%; animation-delay: -4.5s; }
+.c-master { --cursor: var(--accent); top: 34%; left: 52%; animation-delay: -6.7s; scale: 1.2; }
+@keyframes roam {
+  0%, 100% { translate: 0 0; } 25% { translate: 48px 18px; } 50% { translate: 20px 52px; } 75% { translate: -30px 24px; } }
+
+/* ------------------------------------------------------------ mode cards (3D tilt) */
+.mode-card { position: relative; display: grid; grid-template-columns: auto 1fr auto; gap: 16px; align-items: start;
+  padding: 24px; border-radius: 16px; border: 1px solid var(--border-subtle); background: var(--bg-surface);
+  text-align: left; cursor: pointer; transform-style: preserve-3d;
+  transform: perspective(900px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
+  transition: transform 300ms var(--ease-out), border-color 200ms, box-shadow 300ms var(--ease-out); }
+.mode-card::before { content: ""; position: absolute; inset: 0; border-radius: inherit; opacity: 0; pointer-events: none;
+  background: radial-gradient(320px circle at var(--mx, 50%) var(--my, 50%), color-mix(in srgb, var(--accent) 14%, transparent), transparent 60%);
+  transition: opacity 300ms; }
+.mode-card:hover { border-color: color-mix(in srgb, var(--accent) 60%, var(--border-subtle));
+  box-shadow: 0 24px 48px -24px oklch(10% 0.02 250 / 0.5); }
+.mode-card:hover::before { opacity: 1; }
+.mode-card:active { scale: 0.99; }
+.mode-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.mode-card:disabled { opacity: 0.6; cursor: progress; }
+.mode-card-primary { border-color: color-mix(in srgb, var(--accent) 45%, var(--border-subtle)); }
+.mode-icon { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 12px;
+  color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); transform: translateZ(24px); }
+.mode-go { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 999px; color: var(--text-secondary);
+  border: 1px solid var(--border-subtle); transition: transform 300ms var(--ease-out), color 200ms, background-color 200ms; }
+.mode-card:hover .mode-go { transform: translateX(4px); color: var(--accent-fg); background: var(--accent); border-color: var(--accent); }
+
+/* ------------------------------------------------------------ step tracker */
+@keyframes pulse-dot { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); }
+  100% { box-shadow: 0 0 0 8px transparent; } }
+.dot-live { animation: pulse-dot 1.6s ease-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .rise, .sheet, .swarm-cursor, .dot-live { animation: none !important; }
+  .scene-stage, .mode-card { transition: none; }
 }

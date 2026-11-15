@@ -12,6 +12,7 @@ CASES = [
     ("trang cho quán cafe của tôi", Domain.BOOKING, "coffee"),
     ("shop thời trang nữ", Domain.ECOMMERCE, "fashion"),
     ("tiệm hoa tươi", Domain.ECOMMERCE, "flowers"),
+    ("mình muốn làm web bán nến thơm handmade", Domain.ECOMMERCE, "candle"),
     ("web bán nhẫn cưới", Domain.ECOMMERCE, "jewelry"),
     ("đặt lịch cắt tóc nam", Domain.BOOKING, "salon"),
     ("khóa học tiếng Anh online", Domain.EDTECH, "education"),
@@ -20,7 +21,7 @@ CASES = [
     ("mỹ phẩm thiên nhiên", Domain.ECOMMERCE, "skincare"),
     ("portfolio cho designer", Domain.PORTFOLIO, "studio"),
     # folding short words must not collide: tra~"kiểm tra", nhan~"nhận", hoa~"hóa", vay~"váy"
-    ("kiểm tra hàng trước khi nhận", Domain.ECOMMERCE, "furniture"),
+    ("kiểm tra hàng trước khi nhận", Domain.ECOMMERCE, None),  # unknown product: no other shop's photos
     ("phần mềm quản lý kho, tự động hóa", Domain.SAAS, "office"),
     ("vay vốn nhanh", Domain.SAAS, "office"),
 ]
@@ -41,3 +42,12 @@ def test_every_topic_has_enough_free_unsplash_photos():
 def test_can_be_turned_off(monkeypatch):
     monkeypatch.setenv("CHROMASWARM_STOCK_PHOTOS", "0")
     assert photos.stock_photos("web bán cà phê", Domain.ECOMMERCE) == []
+
+
+def test_ecommerce_wording_is_not_electronics():
+    prompt = "Tôi muốn xây dựng một trang web thương mại điện tử (E-commerce) chuyên bán mỹ phẩm thuần chay"
+    assert photos.pick_topic(prompt, None) == "skincare"
+
+
+def test_topic_mentioned_most_wins():
+    assert photos.pick_topic("web bán laptop, phụ kiện có tai nghe, chuột, laptop gaming", None) == "tech"

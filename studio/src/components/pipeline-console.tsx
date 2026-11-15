@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { BuildPanel } from "@/components/build-panel";
 import { QuestionCard, type Answer, type Question } from "@/components/question-card";
+import { Welcome } from "@/components/welcome";
 
 const BACKEND_WS = process.env.NEXT_PUBLIC_BACKEND_WS ?? "ws://localhost:8100";
 
@@ -134,35 +135,65 @@ export function PipelineConsole() {
   // Creative mode (and the mode choice itself) talks through the chat bar; Clone uses its form.
   const chatEnabled = !!snap && snap.state.mode !== "clone" && !!snap.question && snap.question.kind !== "clone_source";
   const currentIdx = STEPS.findIndex((s) => s.id === current);
+  // B1 before anything was said: the landing view (what Chroma does + the Creative / Clone choice).
+  const welcome = current === "B1" && snap?.question?.kind === "mode" && history.length === 0 && chat.length === 0;
+  const phases = [...new Set(STEPS.map((s) => s.phase))];
+  const statusLabel = { open: "Đã kết nối", connecting: "Đang kết nối", closed: "Mất kết nối" }[status];
 
   return (
     <main className="mx-auto grid w-full max-w-[1360px] flex-1 gap-8 px-4 py-12 md:grid-cols-[240px_1fr] md:px-8 lg:grid-cols-[240px_1fr_280px]">
-      <aside className="flex flex-col gap-4">
-        <div className="flex items-baseline justify-between">
-          <h1 className="text-xl font-semibold tracking-tight">ChromaSwarm</h1>
-          <span className={`font-mono text-xs ${status === "open" ? "text-accent" : "text-fg-3"}`}>● {status}</span>
+      <div className="backdrop" aria-hidden />
+      <aside className="flex flex-col gap-6">
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
+            <Logo />ChromaSwarm
+          </h1>
+          <span className="flex items-center gap-2 whitespace-nowrap text-xs text-fg-2" role="status">
+            <span className={`h-2 w-2 rounded-full ${status === "open" ? "dot-live bg-accent" : status === "closed" ? "bg-danger" : "bg-fg-3"}`} />
+            {statusLabel}
+          </span>
         </div>
-        <ol className="flex flex-col border-l border-line" data-swarm-section="step-tracker">
-          {STEPS.map((s, i) => {
-            const state = i < currentIdx ? "done" : i === currentIdx ? "current" : "todo";
-            return (
-              <li
-                key={s.id}
-                aria-current={state === "current" ? "step" : undefined}
-                className={`-ml-px flex items-center gap-3 border-l-2 py-2 pl-4 text-sm ${
-                  state === "current"
-                    ? "border-accent font-medium text-fg"
-                    : state === "done"
-                      ? "border-transparent text-fg-2"
-                      : "border-transparent text-fg-3"
-                }`}
-              >
-                <span className="w-8 font-mono text-xs">{s.id}</span>
-                <span>{s.label}</span>
-              </li>
-            );
-          })}
-        </ol>
+        <div className="flex flex-col gap-2">
+          <div className="flex justify-between text-xs text-fg-2">
+            <span>Tiến độ</span>
+            <span className="font-mono">{currentIdx + 1}/{STEPS.length}</span>
+          </div>
+          <div className="h-1.5 overflow-hidden rounded-full bg-surface" role="progressbar" aria-label="Tiến độ 12 bước"
+            aria-valuemin={1} aria-valuemax={STEPS.length} aria-valuenow={currentIdx + 1}>
+            <div className="h-full rounded-full bg-accent transition-[width] duration-700 ease-out"
+              style={{ width: `${((currentIdx + 1) / STEPS.length) * 100}%` }} />
+          </div>
+        </div>
+        <nav aria-label="Các bước" className="hidden flex-col gap-4 md:flex" data-swarm-section="step-tracker">
+          {phases.map((phase) => (
+            <div key={phase} className="flex flex-col gap-1">
+              <p className="px-3 font-mono text-[11px] uppercase tracking-[0.16em] text-fg-3">{phase}</p>
+              <ol className="flex flex-col">
+                {STEPS.filter((s) => s.phase === phase).map((s) => {
+                  const i = STEPS.indexOf(s);
+                  const state = i < currentIdx ? "done" : i === currentIdx ? "current" : "todo";
+                  return (
+                    <li key={s.id} aria-current={state === "current" ? "step" : undefined}
+                      className={`flex items-center gap-3 rounded-lg px-3 py-1.5 text-sm transition-colors duration-300 ${
+                        state === "current" ? "bg-surface font-medium text-fg" : state === "done" ? "text-fg-2" : "text-fg-3"}`}>
+                      <span className="grid h-5 w-5 shrink-0 place-items-center" aria-hidden>
+                        {state === "done" ? (
+                          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="text-accent"><path d="m3.5 8.5 3 3 6-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                        ) : state === "current" ? (
+                          <span className="dot-live h-2 w-2 rounded-full bg-accent" />
+                        ) : (
+                          <span className="h-1.5 w-1.5 rounded-full bg-line" />
+                        )}
+                      </span>
+                      <span className="w-8 font-mono text-xs">{s.id}</span>
+                      <span>{s.label}</span>
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
+          ))}
+        </nav>
         <button
           type="button"
           onClick={restart}
@@ -174,7 +205,11 @@ export function PipelineConsole() {
         </button>
       </aside>
 
-      <section className="flex min-w-0 flex-col gap-8" data-swarm-section="conversation">
+      <section className={`flex min-w-0 flex-col gap-8 ${welcome ? "lg:col-span-2" : ""}`} data-swarm-section="conversation">
+        {welcome && snap?.question ? (
+          <Welcome question={snap.question} busy={busy || status !== "open"} onAnswer={answer} />
+        ) : (
+        <>
         <header className="flex flex-col gap-2">
           <p className="font-mono text-xs uppercase tracking-widest text-fg-3">
             {STEPS[currentIdx]?.phase} · {current}
@@ -195,12 +230,6 @@ export function PipelineConsole() {
           </ol>
         )}
 
-        {error && (
-          <p role="alert" className="rounded-lg border border-danger/40 px-4 py-3 text-sm text-danger">
-            {error}
-          </p>
-        )}
-
         {chat.length > 0 && (
           <ol className="flex flex-col gap-3" aria-label="Trò chuyện với Chroma" data-swarm-section="chat-log">
             {chat.map((m, i) => (
@@ -211,6 +240,12 @@ export function PipelineConsole() {
               </li>
             ))}
           </ol>
+        )}
+
+        {error && (  /* next to the question, where the user is looking */
+          <p role="alert" className="rounded-lg border border-danger/40 px-4 py-3 text-sm text-danger">
+            {error} Bạn gửi lại câu trả lời giúp mình nhé.
+          </p>
         )}
 
         {snap?.question?.kind === "handover" && <BuildPanel state={snap.state} notice={null} running={false} />}
@@ -227,8 +262,10 @@ export function PipelineConsole() {
           />
         ) : snap && (snap.running || snap.finished) && currentIdx >= STEPS.findIndex((s) => s.id === "B8") ? (
           <BuildPanel state={snap.state} notice={snap.notice} running={snap.running} />
+        ) : !snap ? (
+          <LoadingSkeleton closed={status === "closed"} />
         ) : (
-          <p className="text-sm text-fg-3">{busy ? "Đang xử lý…" : "Đang kết nối…"}</p>
+          <p className="flex items-center gap-2 text-sm text-fg-2"><span className="dot-live h-2 w-2 rounded-full bg-accent" />Đang xử lý…</p>
         )}
         {chatEnabled && (
           <form
@@ -251,9 +288,11 @@ export function PipelineConsole() {
             </button>
           </form>
         )}
+        </>
+        )}
       </section>
 
-      <aside className="flex flex-col gap-4 md:col-start-2 lg:col-start-auto" data-swarm-section="gates">
+      <aside className={`flex-col gap-4 md:col-start-2 lg:col-start-auto ${welcome ? "hidden" : "flex"}`} data-swarm-section="gates">
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-1">
           <Stat label="Clarity Score (B3)" value={`${Math.round((snap?.clarity_score ?? 0) * 100)}%`} />
           <Stat label="Tool được cấp" value={String(snap?.tools.length ?? "–")} />
@@ -280,6 +319,34 @@ export function PipelineConsole() {
         </Panel>
       </aside>
     </main>
+  );
+}
+
+function Logo() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden className="text-accent">
+      <path d="m12 2 9 5v10l-9 5-9-5V7l9-5Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+      <path d="m3 7 9 5 9-5M12 12v10" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function LoadingSkeleton({ closed }: { closed: boolean }) {
+  if (closed)
+    return (
+      <p role="alert" className="rounded-lg border border-danger/40 px-4 py-3 text-sm text-danger">
+        Không kết nối được tới backend (cổng 8100). Hãy chạy backend rồi tải lại trang.
+      </p>
+    );
+  return (
+    <div className="flex flex-col gap-4" aria-busy="true" aria-label="Đang tải">
+      <div className="h-4 w-40 animate-pulse rounded bg-surface" />
+      <div className="h-12 w-3/4 animate-pulse rounded-lg bg-surface" />
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="h-32 animate-pulse rounded-2xl bg-surface" />
+        <div className="h-32 animate-pulse rounded-2xl bg-surface" />
+      </div>
+    </div>
   );
 }
 

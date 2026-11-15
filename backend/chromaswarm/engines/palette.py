@@ -124,9 +124,11 @@ def _fits(fg: OKLCH, bg: OKLCH, apca: float, wcag: float) -> bool:
     return abs(apca_lc(fg, bg)) >= apca and wcag_contrast(fg, bg) >= wcag
 
 
-def _search_accent(seed: OKLCH, light_fg: OKLCH, dark_fg: OKLCH) -> tuple[OKLCH, OKLCH]:
-    """Closest lightness to the seed for which white-ish or dark text on it passes."""
-    c = min(max(seed.c, ACCENT_C_RANGE[0]), ACCENT_C_RANGE[1])
+def _search_accent(seed: OKLCH, light_fg: OKLCH, dark_fg: OKLCH, exact: bool = False) -> tuple[OKLCH, OKLCH]:
+    """Closest lightness to the seed for which white-ish or dark text on it passes.
+    `exact`: the user gave this colour (a hex in their brief), so its chroma is kept as is —
+    a muted terracotta must not be pushed to a saturated orange."""
+    c = min(seed.c, ACCENT_C_RANGE[1]) if exact else min(max(seed.c, ACCENT_C_RANGE[0]), ACCENT_C_RANGE[1])
     steps = [i / 200 for i in range(0, 61)]  # explore +-30% L in 0.5% steps
     for d in steps:
         for l in (seed.l - d, seed.l + d):
@@ -152,7 +154,7 @@ def _search_ink(accent: OKLCH, backgrounds: list[OKLCH], dark: bool) -> OKLCH:
     raise ValueError(f"No readable accent ink for {accent.css()}")
 
 
-def generate_palette(seed: str | OKLCH, mode: Mode = Mode.LIGHT) -> Palette:
+def generate_palette(seed: str | OKLCH, mode: Mode = Mode.LIGHT, exact: bool = False) -> Palette:
     seed_color = parse_css_color(seed)[0] if isinstance(seed, str) else seed  # type: ignore[index]
     brand_h = seed_color.h
     neutral_h = WARM_NEUTRAL_HUE if mode is Mode.WARM_PAPER else brand_h
@@ -164,7 +166,7 @@ def generate_palette(seed: str | OKLCH, mode: Mode = Mode.LIGHT) -> Palette:
 
     light_fg = OKLCH(0.985, 0.005, brand_h)
     dark_fg = OKLCH(0.15, 0.015, brand_h)
-    accent, accent_fg = _search_accent(seed_color, light_fg, dark_fg)
+    accent, accent_fg = _search_accent(seed_color, light_fg, dark_fg, exact)
     hover_dl = -0.06 if mode is not Mode.DARK else 0.06
     tokens += [
         Token.of("accent", Role.ACCENT, accent),

@@ -28,6 +28,8 @@ from chromaswarm.agents.consultant import RuleBasedConsultant
 from chromaswarm.agents.llm import LLMConfig, OpenAICompatChat
 from chromaswarm.agents.llm_consultant import LLMConsultant
 from chromaswarm.build.runtime import LocalBuildRuntime
+from chromaswarm.agents.brief import build_brief_reader
+from chromaswarm.developer.copywriter import build_copywriter
 from chromaswarm.playwright_engine.style_dna_scraper import scrape_url
 from chromaswarm.state_machine.graph import Deps, PipelineRunner
 from chromaswarm.state_machine.pipeline_state import BuildMode, GateError, Step, tools_for
@@ -87,7 +89,8 @@ def build_chat(env: dict[str, str] | None = None):
 consultant = build_consultant()
 chat_agent = build_chat()
 log.warning("ChromaSwarm consultant: %s", getattr(consultant, "name", "rule-based"))
-runner = PipelineRunner(Deps(consultant=consultant, scrape=scrape_url, build=build))
+runner = PipelineRunner(Deps(consultant=consultant, scrape=scrape_url, build=build, copywriter=build_copywriter(),
+                              brief_reader=build_brief_reader()))
 
 
 def to_message(snap: dict) -> dict:

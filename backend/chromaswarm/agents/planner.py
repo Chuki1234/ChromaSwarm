@@ -7,6 +7,8 @@ the Design cursors (B8) and the Master QA Cursor (B11) will target.
 
 from __future__ import annotations
 
+import re
+
 from pydantic import BaseModel
 
 from chromaswarm.agents.consultant import base_font_for, extract_cta, split_color
@@ -131,12 +133,85 @@ CLONE_PAGE = "clone"  # sitemap slug of the page rebuilt from the Clone-mode ref
 
 
 def page_sections(state: PipelineState) -> list[Section]:
-    """Sections of the page being built: read from the reference in Clone mode, blueprints otherwise."""
+    """Sections of the page being built: read from the reference in Clone mode, from the user's brief
+    when it listed the sections of this page, blueprints otherwise."""
     if state.selected_page == CLONE_PAGE and state.clone and state.clone.sections:
         return [Section.model_validate(s) for s in state.clone.sections]
     theme = Theme(state.pillars.theme) if state.pillars.theme else None
     surface = Surface(state.pillars.surface) if state.pillars.surface in {x.value for x in Surface} else None
+    brief = state.brief or {}
+    first_page = not state.page_routes or state.page_routes.get(state.selected_page or "") == "/"
+    if brief.get("sections") and first_page and state.selected_page in ("landing", "home"):
+        return sections_from_brief(brief, Layout(state.pillars.layout), theme, surface)
     return sections_for(state.selected_page or "", Layout(state.pillars.layout), theme, surface)
+
+
+# A brief's section kinds (agents/brief.SECTION_KINDS) -> buildable sections, with their controls.
+BRIEF_SECTIONS: dict[str, Section] = {
+    "announcement": Section(id="announcement", name="Announcement bar", structure="announcement-bar",
+                            content="One short offer line above the header",
+                            interactive=[_i("announcement-close", "button", "dismiss the bar")]),
+    "usp": Section(id="usp-strip", name="Brand promises", structure="usp-strip",
+                   content="3-4 short promises in the user's words, each with a check mark"),
+    "metrics": Section(id="proof-strip", name="Proof strip", structure="inline-metrics", content="Quantified facts"),
+    "products": Section(id="bestsellers", name="Bestsellers", structure="grid-4",
+                        content="Product grid 4 columns; category tabs filter for real; add to cart",
+                        interactive=[_i("category-tab", "filter-tab", "filter products by category"),
+                                     _i("product-card", "card", "hover"), _i("add-to-cart", "button", "add item, cart count")]),
+    "collection": Section(id="collection", name="Featured collection", structure="bento",
+                          content="Mixed-size tiles with real products",
+                          interactive=[_i("collection-card", "card", "hover lift + quick view"),
+                                       _i("quick-view-trigger", "modal-trigger", "open quick-view modal")]),
+    "categories": Section(id="categories", name="Category rail", structure="horizontal-scroller",
+                          content="Category names with images", interactive=[_i("category-card", "card", "navigate")]),
+    "quiz": Section(id="quiz", name="Interactive picker", structure="picker-recommend",
+                    content="Pick one option (e.g. skin type) -> 3 recommended products appear next to it",
+                    interactive=[_i("quiz-option", "tab", "select an option, recommendations update")]),
+    "story": Section(id="feature-story", name="Story / ingredients", structure="alternating-z",
+                     content="3 alternating text/visual rows", effect="scroll-triggered image parallax"),
+    "feature": Section(id="feature", name="Feature spotlight", structure="feature-showcase",
+                       content="One highlighted feature with a wide visual",
+                       interactive=[_i("feature-more", "link", "learn more")]),
+    "testimonials": Section(id="testimonials", name="Testimonials", structure="testimonials",
+                            content="Customer reviews (sample, replaced at handover)"),
+    "faq": Section(id="faq", name="FAQ", structure="accordion", content="Concrete questions",
+                   interactive=[_i("faq-item", "button", "expand / collapse, aria-expanded")]),
+    "closing": Section(id="closing-cta", name="Closing CTA", structure="full-bleed-band", content="One restated offer",
+                       interactive=[_i("cta-closing", "button", "same action as cta-primary")]),
+}
+
+
+def sections_from_brief(brief: dict, layout: Layout, theme: Theme | None, surface: Surface | None) -> list[Section]:
+    """The page in the order the user described it. Header and footer always frame it; a closing
+    CTA is added when the brief has none; two neighbours never share a structure (rhythm)."""
+    landing = {s.id: s for s in sections_for("landing", layout, theme, surface)}
+    kinds = [b["kind"] for b in brief.get("sections", []) if b.get("kind") in BRIEF_SECTIONS or b.get("kind") == "hero"]
+    notes = {b["kind"]: b.get("note", "") for b in brief.get("sections", [])}
+    if brief.get("announcement") and "announcement" not in kinds:
+        kinds.insert(0, "announcement")
+    if "hero" not in kinds:
+        kinds.insert(1 if kinds[:1] == ["announcement"] else 0, "hero")
+    if "closing" not in kinds:
+        kinds.append("closing")
+    out: list[Section] = []
+    if kinds[0] == "announcement":
+        out.append(BRIEF_SECTIONS["announcement"].model_copy(deep=True))
+        kinds = kinds[1:]
+    out.append(landing["site-header"].model_copy(deep=True))
+    for kind in kinds:
+        sec = landing["hero"].model_copy(deep=True) if kind == "hero" else BRIEF_SECTIONS[kind].model_copy(deep=True)
+        if kind == "hero" and re.search(r"chia đôi|bất đối xứng|split|\d{2}\s*/\s*\d{2}", notes.get("hero", ""), re.I):
+            sec.structure = "split-7-5"  # the user asked for a split hero
+        if notes.get(kind):
+            sec.content = f"{sec.content} — Yêu cầu của bạn: {notes[kind]}"
+        if out and out[-1].structure == sec.structure:
+            continue
+        out.append(sec)
+    out.append(landing["site-footer"].model_copy(deep=True))
+    body = [s for s in out if s.structure not in FULL_WIDTH | {"announcement-bar", "usp-strip"} and s.id != "hero"]
+    for n, s in enumerate(body):
+        s.surface = "alt" if n % 2 == 0 and len(body) > 1 else None
+    return out
 
 
 # Landing hero by layout pillar (knowledge-base/MODERN_UI_REFERENCES.md): a varied repertoire
@@ -181,17 +256,20 @@ def sections_for(slug: str, layout: Layout, theme: Theme | None = None,
 def design_inputs(state: PipelineState, project_name: str, dna: StyleDNA | None = None) -> DesignInputs:
     p = state.pillars
     theme = Theme(p.theme)
-    mode, seed, _ = split_color(p.color or "light", theme)
+    mode, seed, user_seed = split_color(p.color or "light", theme)
+    brief_accent = (state.brief or {}).get("accent")
     page = next((pg.title for pg in state.sitemap if pg.slug == state.selected_page), state.selected_page or "")
     effects = [s.effect for s in page_sections(state) if s.effect]
     clone = state.clone if state.selected_page == CLONE_PAGE else None
     return DesignInputs(
         project_name=project_name, page=page, theme=theme, layout=Layout(p.layout),
         surface=Surface(p.surface) if p.surface in {x.value for x in Surface} else Surface.FLAT, density=Density(p.margins),
-        mode=mode, seed_color=seed, page_kind="app" if state.selected_page in ("dashboard", "workspace") else "landing",
+        mode=mode, seed_color=seed, exact_accent=user_seed,
+        brand_actions=bool(brief_accent and seed == brief_accent), page_kind="app" if state.selected_page in ("dashboard", "workspace") else "landing",
         base_font_px=base_font_for(p.scope or ""), persona=p.scope or "", primary_cta=extract_cta(p.scope or "") or "",
         motion_effects=effects, style_dna=dna,
-        heading_font=clone.heading_font if clone else None, body_font=clone.body_font if clone else None,
+        heading_font=clone.heading_font if clone else (state.brief or {}).get("heading_font"),
+        body_font=clone.body_font if clone else (state.brief or {}).get("body_font"),
         clone_level=("full" if clone.owned else "structure") if clone else None,
         extra_rules=[f"User feedback (B7): {f}" for f in state.plan_feedback],
     )

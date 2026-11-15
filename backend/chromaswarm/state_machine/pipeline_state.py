@@ -198,6 +198,17 @@ class PipelineState(BaseModel):
     qa_failures: list[str] = Field(default_factory=list)  # human-readable, latest run
     heal_rules: list[str] = Field(default_factory=list)  # Developer CSS patches -> app/heal.css
     heal_contrast: list[dict] = Field(default_factory=list)  # colour pairs for the Design department
+    # B3: a detailed first message read as a design brief (agents/brief.py, validated). It pre-fills
+    # pillars, orders the landing sections and feeds the copywriter. None = no brief / not read yet.
+    brief: dict | None = None
+    brief_read: bool = False
+    # B3: scope answered in several messages ("18-30 tuổi", then "điện thoại", then "Mua ngay")
+    # is judged as one answer: earlier unclear parts are kept here until the whole is clear.
+    scope_draft: str | None = None
+    # B9: page copy written once by the LLM copywriter (developer/copywriter.py), validated; keyed by
+    # what it was written from so a B7/B12 change rewrites it. None = rule-based sample copy.
+    page_copy: dict | None = None
+    page_copy_key: str | None = None
     design_score: float | None = None  # B11 design critic (vision model), 1-10; None = no critic
     design_critique: list[str] = Field(default_factory=list)  # "where: problem → fix"
 

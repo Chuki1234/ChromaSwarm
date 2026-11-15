@@ -21,10 +21,12 @@ class Item(BaseModel):
     note: str
     price: str = ""
     tag: str = ""
+    category: str = ""  # for the category tabs of a product grid
 
 
 class PageCopy(BaseModel):
     brand: str
+    eyebrow: str = ""  # small label above the hero headline; the brand when empty
     headline: str
     subhead: str
     cta: str
@@ -41,6 +43,10 @@ class PageCopy(BaseModel):
     tabs: list[tuple[str, str]]
     images: list[str] = []  # Clone mode, owned site: the reference's own photos (used before tonal placeholders)
     quotes: list[tuple[str, str]] = []  # (quote, who) — sample testimonials, clearly marked as samples
+    usp: list[str] = []  # brand promises (brief), shown in the usp strip
+    quiz_options: list[str] = []  # choices of the interactive picker (brief), e.g. skin types
+    announcement: str = ""  # one-line offer above the header
+    shop: bool = False  # a store: header gets search / account / cart, footer gets policy links
     cards: list[Item] = []  # bento cards: products for shops / projects for portfolios, features otherwise
 
 
@@ -258,27 +264,82 @@ def build_copy(state: PipelineState) -> PageCopy:
         "rõ ràng về chất liệu, giá và thời gian nhận hàng ngay trên trang này."
     copy = PageCopy(
         brand=brand, headline=headline, subhead=subhead, cta=cta, cta_secondary="Xem chi tiết",
+        shop=state.domain is Domain.ECOMMERCE,
         nav=d["nav"], nav_links=nav_links(state, d["nav"]), facts=d["facts"],
         story=STORY.get(state.domain or Domain.OTHER, STORY[Domain.ECOMMERCE]),
         quotes=[(q, QUOTE_NOTE) for q in QUOTES.get(state.domain or Domain.OTHER, QUOTES[Domain.ECOMMERCE])],
         cards=([Item(name=t, note=n) for t, n in FEATURES[state.domain]] if state.domain in FEATURES else d["items"]),
         items=d["items"], categories=d["categories"], faqs=d["faqs"],
         closing=f"Sẵn sàng bắt đầu? {cta} chỉ mất một phút.",
-        footer_line=f"© {brand}. Nội dung mẫu — thay bằng thông tin thật ở bước bàn giao.",
+        # The sample-content note lives in PRODUCT.md and the B12 handover, not on the page itself:
+        # a disclaimer in the footer makes every page read as an unfinished mockup (design critic).
+        footer_line=f"© {brand}. Bảo lưu mọi quyền.",
         tabs=[("Mô tả", "Thông tin tổng quan về sản phẩm và cách sử dụng."),
               ("Chất liệu", "Thành phần, nguồn gốc và cách bảo quản."),
               ("Giao hàng", "Thời gian giao, phí vận chuyển và chính sách đổi trả.")],
     )
+    if state.brief:
+        copy = apply_brief(copy, state.brief, state.pillars.scope or "")
     clone = state.clone
     if state.selected_page == "clone" and clone and clone.owned and clone.content:
         return owned_clone_copy(copy, clone.content)
     # No photos of their own: free-license stock photos picked by topic (§1.3, never grey boxes)
     if photos := stock_photos(f"{state.raw_prompt or ''} {brand} {state.pillars.scope or ''}", state.domain):
-        copy = copy.model_copy(update={
-            "images": photos,
-            "footer_line": f"© {brand}. Nội dung và ảnh minh hoạ (Unsplash) là mẫu — thay bằng thông tin thật ở bước bàn giao.",
-        })
+        copy = copy.model_copy(update={"images": photos})
+    if state.page_copy:  # written by the LLM copywriter and validated there
+        copy = apply_written_copy(copy, state.page_copy)
     return copy
+
+
+def apply_brief(copy: PageCopy, brief: dict, scope: str) -> PageCopy:
+    """What the user's brief states in their own words replaces the sample copy."""
+    up: dict = {}
+    if brief.get("brand"):
+        up["brand"] = brief["brand"]
+        up["footer_line"] = f"© {brief['brand']}. Bảo lưu mọi quyền."
+    if brief.get("primary_cta") and not extract_cta(scope):
+        up["cta"] = brief["primary_cta"]
+    if brief.get("secondary_cta"):
+        up["cta_secondary"] = brief["secondary_cta"]
+    cats = [c for c in brief.get("categories") or [] if c.strip().lower() not in ("tất cả", "all")]
+    items = list(copy.items)
+    if brief.get("products"):
+        items = [it.model_copy(update={"name": n}) for it, n in zip(items, brief["products"])] + items[len(brief["products"]):]
+    if cats:
+        up["categories"] = cats
+        items = [it.model_copy(update={"category": cats[i % len(cats)]}) for i, it in enumerate(items)]
+    up["items"] = items
+    if copy.cards and [c.name for c in copy.cards] == [i.name for i in copy.items[:len(copy.cards)]]:
+        up["cards"] = items[:len(copy.cards)]
+    if brief.get("nav"):
+        up["nav"] = brief["nav"]
+        built = [link for link in copy.nav_links if link[1] != "#"]  # real pages first, then the user's menu
+        up["nav_links"] = (built + [(label, "#") for label in brief["nav"]])[:5]
+    if brief.get("usp"):
+        up["usp"] = brief["usp"]
+        up["announcement"] = " · ".join(brief["usp"][:2])
+    if brief.get("quiz_options"):
+        up["quiz_options"] = brief["quiz_options"]
+    return copy.model_copy(update=up)
+
+
+def apply_written_copy(copy: PageCopy, written: dict) -> PageCopy:
+    """Overlay validated copywriter output on the rule-based copy (prices and facts stay the rules')."""
+    updates: dict = {k: written[k] for k in ("eyebrow", "headline", "subhead", "closing", "announcement")
+                     if written.get(k)}
+    if written.get("brand"):
+        updates["brand"] = written["brand"]
+        updates["footer_line"] = f"© {written['brand']}. Bảo lưu mọi quyền."
+    for pool in ("story", "faqs"):
+        if written.get(pool):
+            updates[pool] = [tuple(x) for x in written[pool]]
+    if written.get("categories"):
+        updates["categories"] = written["categories"]
+    for pool in ("items", "cards"):
+        if written.get(pool):
+            base = getattr(copy, pool)
+            updates[pool] = [b.model_copy(update={"name": n, "note": t}) for b, (n, t) in zip(base, written[pool])]
+    return copy.model_copy(update=updates)
 
 
 def _rot(xs: list, k: int) -> list:

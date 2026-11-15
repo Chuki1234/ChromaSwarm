@@ -121,7 +121,8 @@ class JSONChat(Protocol):
 
     model: str
 
-    def complete_json(self, system: str, user: str, images: list[str] | None = None) -> dict[str, Any]: ...
+    def complete_json(self, system: str, user: str, images: list[str] | None = None,
+                      max_tokens: int = 1500) -> dict[str, Any]: ...
 
 
 _THINK = re.compile(r"<think>.*?</think>", re.S)
@@ -178,11 +179,12 @@ class OpenAICompatChat:
         parts = [{"type": "text", "text": user}] + [{"type": "image_url", "image_url": {"url": u}} for u in images]
         return [{"role": "system", "content": system}, {"role": "user", "content": parts}]
 
-    def complete_json(self, system: str, user: str, images: list[str] | None = None) -> dict[str, Any]:
+    def complete_json(self, system: str, user: str, images: list[str] | None = None,
+                      max_tokens: int = 1500) -> dict[str, Any]:
         messages = self._messages(system, user, images)
         resp = None
         for attempt in (1, 2):
-            kwargs: dict[str, Any] = dict(model=self.model, messages=messages, temperature=0, max_tokens=1500,
+            kwargs: dict[str, Any] = dict(model=self.model, messages=messages, temperature=0, max_tokens=max_tokens,
                                           extra_body=self._extra_body())
             if self._json_mode:
                 kwargs["response_format"] = {"type": "json_object"}

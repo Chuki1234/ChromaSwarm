@@ -57,6 +57,7 @@ a.card:hover, article.card:hover { border-color: var(--glass-edge); box-shadow: 
   -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
 .s-hero-overlay .hero-scrim { opacity: 0.6; }
 .s-band { margin-inline: var(--gutter); border-radius: var(--radius-lg); }
+.s-band .band { padding-inline: clamp(0px, 4vw, 48px); }
 /* Accessibility: users who ask for less transparency get solid surfaces. */
 @media (prefers-reduced-transparency: reduce) {
   :root { --glass-fill: var(--bg-elevated); --glass-fill-strong: var(--bg-elevated); }
@@ -91,6 +92,7 @@ a.card:hover, article.card:hover { box-shadow: var(--shadow-lg); }
 .thumb { border-radius: var(--radius-md); overflow: hidden; }
 .s-hero-overlay { margin: 16px var(--gutter) 0; border-radius: var(--radius-lg); }
 .s-band { margin-inline: var(--gutter); border-radius: var(--radius-lg); }
+.s-band .band { padding-inline: clamp(0px, 4vw, 48px); }
 """
 
 BRUTAL = """/* Surface: Neo-brutalism — 2px ink borders, hard offset shadows, square corners. */
@@ -100,9 +102,7 @@ BRUTAL = """/* Surface: Neo-brutalism — 2px ink borders, hard offset shadows, 
 .btn:active { transform: translate(4px, 4px); box-shadow: 0 0 0 var(--text-primary); }
 .btn-ghost { background: var(--bg-elevated); border-color: var(--text-primary); color: var(--text-primary); }
 .btn-ghost:hover { background: var(--bg-elevated); }
-/* On the dark band the ink is the light colour; on photos the offset shadow takes the brand accent. */
-.s-band .btn { border-color: var(--bg-primary); box-shadow: 4px 4px 0 var(--bg-primary); }
-.s-band .btn:hover { box-shadow: 8px 8px 0 var(--bg-primary); }
+/* On photos the offset shadow takes the brand accent. */
 .s-hero-overlay .btn { box-shadow: 4px 4px 0 var(--accent); }
 .s-hero-overlay .btn:hover { box-shadow: 8px 8px 0 var(--accent); }
 .btn-link { box-shadow: none; }
@@ -124,6 +124,17 @@ a.card:hover, article.card:hover { border-color: var(--text-primary); transform:
 .faq-item { border-bottom: 2px solid var(--text-primary); }
 .s-alt { border-block: 2px solid var(--text-primary); }
 .s-footer { border-top: 2px solid var(--text-primary); }
+/* Bolder type: one heavy weight for the heading family, tight tracking (still <= 2 weights per family). */
+.t-display, .t-h1, .t-h2, .t-h3, .t-h4 { font-weight: 700; }
+.t-display { letter-spacing: -0.04em; line-height: 1; }
+.nav-logo { font-weight: 700; }
+/* Colour block: the closing band is the accent itself, its button an ink-bordered light block. */
+.s-band { background: var(--accent); color: var(--accent-fg); border-block: 2px solid var(--text-primary); }
+.s-band .btn, .s-band .btn-inverse { background: var(--bg-primary); color: var(--text-primary);
+  border-color: var(--text-primary); box-shadow: 4px 4px 0 var(--text-primary); }
+.s-band .btn:hover { box-shadow: 8px 8px 0 var(--text-primary); }
+/* Product photos sit in ink frames with a hard shadow from the start. */
+.product > .art { box-shadow: var(--shadow-sm); }
 /* Eyebrows become small accent tags (the accent's own readable ink, a tiny share of the page). */
 .eyebrow { width: fit-content; padding: 4px 8px; background: var(--accent); color: var(--accent-fg);
   letter-spacing: 0.08em; }  /* body font: a mono eyebrow breaks DESIGN.md's body font (QA test 4) */

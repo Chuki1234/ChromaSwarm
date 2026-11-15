@@ -39,7 +39,9 @@ from chromaswarm.agents.consultant import (
 from chromaswarm.agents.planner import CLONE_PAGE, Section, design_inputs, page_sections, render_plan_md, render_product_md
 from chromaswarm.clone.reader import analyse as analyse_reference
 from chromaswarm.build.runtime import SectionCheck
+from chromaswarm.agents.brief import mode_from_background
 from chromaswarm.developer.content import build_copy
+from chromaswarm.developer.copywriter import copy_key
 from chromaswarm.qa.critic import render_markdown
 from chromaswarm.qa.master import heal_css
 from chromaswarm.engines.design_spec import (
@@ -49,7 +51,7 @@ from chromaswarm.engines.design_spec import (
     render_design_md,
     render_tokens_css,
 )
-from chromaswarm.engines.presets import Layout, Theme
+from chromaswarm.engines.presets import SURFACES, Layout, Surface, Theme
 from chromaswarm.engines.style_dna import StyleDNA
 from chromaswarm.state_machine.pipeline_state import (
     Asset,
@@ -82,6 +84,8 @@ class Deps(BaseModel):
     scrape: Any = None  # async (url) -> StyleDNA; None disables URL scraping
     clone_reader: Any = None  # async (url, owned) -> CloneAnalysis; None = real Playwright reader
     build: Any = None  # BuildRuntime for B8-B10; None stops after approval (B1-B7 only)
+    brief_reader: Any = None  # (prompt) -> agents.brief.Brief | None; None = never read a brief
+    copywriter: Any = None  # (state, base PageCopy) -> validated copy dict | None; None = rule-based copy
 
 
 PILLAR_LABELS = {"theme": "Phong cách", "layout": "Bố cục", "color": "Màu sắc", "margins": "Khoảng cách",
@@ -102,6 +106,28 @@ def feedback_notice(changes: dict[str, str]) -> str:
 
     done = "; ".join(f"{PILLAR_LABELS[k]} → {show(k, v)}" for k, v in changes.items())
     return f"Đã cập nhật: {done}. Tài liệu đã được tạo lại, bạn xem và duyệt nhé."
+
+
+def prefill_from_brief(p, brief) -> list[str]:
+    """Pillars the brief answers in the user's own words; returns what was filled (for the notice)."""
+    labels = {o.value: o.label for q in PILLAR_QUESTIONS.values() for o in q[1]}
+    filled: list[str] = []
+    for pillar in ("theme", "layout", "margins"):
+        value = getattr(brief, pillar)
+        if value and not getattr(p.pillars, pillar):
+            setattr(p.pillars, pillar, value)
+            filled.append(f"{PILLAR_LABELS[pillar]} “{labels.get(value, value)}”")
+    mode = brief.mode or (mode_from_background(brief.background) if brief.background else None)
+    if mode and not p.pillars.color:
+        p.pillars.color = f"{mode} {brief.accent}" if brief.accent else mode
+        filled.append(f"Màu “{labels.get(mode, mode)}”")
+    if not p.pillars.surface and (named := surface_in_text(p.raw_prompt or "")):
+        p.pillars.surface = named  # "glassmorphism / backdrop-blur" in the brief
+        filled.append(f"Chất liệu “{SURFACES[Surface(named)].label_vi}”")
+    if (scope := brief.scope()) and not p.pillars.scope:
+        p.pillars.scope = scope
+        filled.append(f"Khách hàng & nút chính “{brief.primary_cta}”")
+    return filled
 
 
 def feedback_changes(agent, fb: str, pillars: Pillars) -> dict[str, str]:
@@ -251,6 +277,19 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             if p.can_advance():
                 p.advance()
                 return {"pipeline": p, "notice": "Đã lấy 4 trụ cột từ trang mẫu và đối tượng từ mô tả của bạn."}
+        if p.mode is not BuildMode.CLONE and not p.brief_read and deps.brief_reader:
+            # A detailed first message is a brief: take every pillar it already answers (user reviews at B7).
+            p.brief_read = True
+            brief = deps.brief_reader(p.raw_prompt or "")
+            if brief is not None:
+                p.brief = brief.model_dump()
+                filled = prefill_from_brief(p, brief)
+                taken = filled + brief.summary()
+                if p.can_advance():
+                    p.advance()
+                return {"pipeline": p, "notice": (
+                    "Mình đã đọc bản mô tả của bạn và lấy sẵn: " + "; ".join(taken) + ". Phần còn thiếu mình hỏi tiếp, "
+                    "và bạn vẫn đổi được mọi thứ ở bước duyệt kế hoạch.") if taken else state.notice}
         if p.pillars.theme and not p.pillars.surface:
             # Material, right after the theme; skipped when the first message already named one.
             if named := surface_in_text(p.raw_prompt or ""):
@@ -279,7 +318,20 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             if p.can_advance():
                 p.advance()
             return {"pipeline": p, "notice": f"Đã đổi {PILLAR_LABELS.get(target, 'đối tượng & CTA')}."}
-        value = agent.interpret(pillar, str(answer))
+        if pillar == "scope":
+            # Audience and main action often come in separate messages: judge them together.
+            new = str(answer).strip()
+            combined = p.scope_draft if p.scope_draft and new in p.scope_draft.split("; ") else \
+                "; ".join(x for x in (p.scope_draft, new) if x)  # a repeated message is not added twice
+            value = agent.interpret("scope", combined)
+            if value is None:
+                p.scope_draft = combined
+                return {"pipeline": p, "notice": (
+                    f"Mình đã ghi lại: “{combined}”. Bạn bổ sung phần còn thiếu nhé "
+                    "(khách hàng chính, hoặc nút QUAN TRỌNG NHẤT bạn muốn họ bấm — ví dụ: Mua ngay, Đặt lịch, Đăng ký).")}
+            p.scope_draft = None
+        else:
+            value = agent.interpret(pillar, str(answer))
         if value is None:
             return {"pipeline": p, "notice": "Mình chưa hiểu rõ câu trả lời — bạn chọn một phương án hoặc mô tả cụ thể hơn nhé."}
         setattr(p.pillars, pillar, value)
@@ -318,7 +370,7 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             return {"pipeline": p, "notice": None}
 
         answer = interrupt(Question(
-            step="B4", kind="assets", key="assets",
+            step="B4", kind="assets", key="assets", note=state.notice,
             text=("Bạn gửi giúp mình các tài nguyên đang có: logo, ảnh sản phẩm thật, slogan/thông điệp chính, "
                   "bảng giá hoặc danh sách sản phẩm. Nếu có trang web bạn thích, gửi ảnh chụp kèm link. "
                   "Chưa có ảnh cũng không sao — bấm “Đã gửi đủ”."),
@@ -435,6 +487,12 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         try:
             slug = p.selected_page or ""
             route = p.page_routes.get(slug, "/")
+            if deps.copywriter and not (p.mode is BuildMode.CLONE and p.clone and p.clone.owned):
+                key = copy_key(p)
+                if p.page_copy_key != key:  # once per page (and again after a B7/B12 change)
+                    base = build_copy(p.model_copy(update={"page_copy": None}))
+                    p.page_copy = await asyncio.to_thread(deps.copywriter, p, base)
+                    p.page_copy_key = key
             if not p.preview_url:
                 photos = build_copy(p).images
                 p.preview_url = await (deps.build.start_app(p.session_id, project, spec, route, photos) if photos

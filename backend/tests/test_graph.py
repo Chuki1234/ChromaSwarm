@@ -174,3 +174,33 @@ def test_cam_giac_is_not_the_colour_orange():
     assert named_color("cảm giác sang trọng") is None
     assert named_color("mau cam dat") == "#e0661b"  # typed without diacritics: folded match allowed
     assert named_color("màu xanh rêu") == "#5b6b2f"
+
+
+def test_scope_in_several_messages_is_judged_together(tmp_path):
+    from chromaswarm.agents.consultant import RuleBasedConsultant, extract_cta
+
+    class Strict(RuleBasedConsultant):  # like the LLM: clear only with an audience AND an action
+        def interpret(self, pillar, answer):
+            if pillar == "scope":
+                return answer if "18" in answer and "mua" in answer.lower() else None
+            return super().interpret(pillar, answer)
+
+    runner = PipelineRunner(Deps(consultant=Strict(), artifacts_root=tmp_path))
+    answers = ["creative", "Web bán mỹ phẩm thuần chay", "landing", "editorial-luxury", "flat", "visual-first",
+               "warm-paper", "airy", "độ tuổi từ 18 -30", "chủ yếu là điện thoại"]
+    snap = run(drive(runner, "sc", answers))
+    p = snap[-1]["pipeline"]
+    assert p.pillars.scope is None and p.scope_draft == "độ tuổi từ 18 -30; chủ yếu là điện thoại"
+    assert "đã ghi lại" in snap[-1]["notice"]
+
+    async def more():
+        return await runner.answer("sc", "Mua ngay")
+    last = run(more())
+    assert last["pipeline"].pillars.scope == "độ tuổi từ 18 -30; chủ yếu là điện thoại; Mua ngay"
+    assert last["pipeline"].scope_draft is None
+    assert extract_cta(last["pipeline"].pillars.scope) == "Mua ngay"
+
+
+def test_cta_after_quan_trong_nhat():
+    from chromaswarm.agents.consultant import extract_cta
+    assert extract_cta("18-50 tuổi, dùng điện thoại. Hành động quan trọng nhất: Mua hàng.") == "Mua hàng"

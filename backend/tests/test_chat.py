@@ -99,3 +99,12 @@ def test_ws_chat_message_answers_the_pending_question():
         ws.send_json({"type": "chat", "text": "Mình muốn làm web bán giày thể thao"})
         assert ws.receive_json()["role"] == "user"
         assert ws.receive_json()["question"]["key"] == "selected_page"
+
+
+def test_structured_model_answer_falls_back_to_the_users_words():
+    from chromaswarm.agents.chat import ChatTurn, guard
+    q = {"step": "B3", "kind": "choice", "key": "color",
+         "options": [{"value": "light", "label": "Sáng"}, {"value": "warm-paper", "label": "Kem"}]}
+    turn = ChatTurn(intent="answer", answer={"mode": "warm-paper", "hex": "#5b6b2f"})
+    out = guard(turn, q, "màu xanh rêu, nền kem ấm")
+    assert out.intent == "answer" and out.answer == "màu xanh rêu, nền kem ấm"

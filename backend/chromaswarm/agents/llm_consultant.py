@@ -134,6 +134,8 @@ class LLMConsultant(RuleBasedConsultant):
     def _interpret_scope(self, answer: str) -> str | None:
         system = (f"{BASE_RULES}\nCâu hỏi đã hỏi: {PILLAR_QUESTIONS['scope'][0]}\n"
                   "Câu trả lời đủ rõ khi nêu được CẢ đối tượng khách hàng LẪN một hành động chính (CTA). "
+                  "Câu trả lời có thể gồm nhiều tin nhắn nối bằng dấu ';' — xét chung tất cả. "
+                  "Đối tượng chỉ cần một đặc điểm (độ tuổi, nghề nghiệp, hay thiết bị hay dùng) là đủ. "
                   'Định dạng: {"clear": true | false}')
         data = self._ask(system, {"cau_tra_loi": answer})
         if data is None:

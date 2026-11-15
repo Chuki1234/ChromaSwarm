@@ -57,7 +57,7 @@ SURFACES: dict[Surface, SurfacePreset] = {
 }
 
 SURFACE_WORDS: dict[Surface, list[str]] = {
-    Surface.GLASS: ["liquid glass", "glassmorphism", "glass", "kính mờ", "hiệu ứng kính", "mờ kính"],
+    Surface.GLASS: ["liquid glass", "glassmorphism", "glass", "kính mờ", "hiệu ứng kính", "mờ kính", "backdrop-blur"],
     Surface.CLAY: ["claymorphism", "clay", "đất sét"],
     Surface.BRUTAL: ["neo-brutalism", "neo brutalism", "brutalism", "brutal", "viền đậm", "bóng cứng"],
     Surface.FLAT: ["phẳng", "flat", "tinh gọn"],

@@ -34,6 +34,8 @@ class DesignInputs(BaseModel):
     density: Density
     mode: Mode
     seed_color: str
+    exact_accent: bool = False  # the user wrote this hex: keep its chroma (palette._search_accent)
+    brand_actions: bool = False  # the user said the accent is for the main buttons: actions use it in every theme
     page_kind: str = "landing"  # landing | app
     base_font_px: int = 16
     persona: str = ""
@@ -127,7 +129,7 @@ def build_design_spec(inp: DesignInputs) -> DesignSpec:
     theme = THEMES[inp.theme]
     layout = LAYOUTS[inp.layout]
     spatial = DENSITY_PRESETS[inp.density]
-    palette = generate_palette(inp.seed_color, inp.mode)
+    palette = generate_palette(inp.seed_color, inp.mode, exact=inp.exact_accent)
 
     if inp.page_kind == "landing":
         ratio = theme.landing_ratio
@@ -228,7 +230,7 @@ def render_design_md(spec: DesignSpec) -> str:
         f"- Elevation: {spec.elevation}",
         "- Đổ bóng (đúng 3 mức): " + " · ".join(f"{k} `{v}`" for k, v in shadow_tokens(spec).items()),
         ("- Màu hành động: **gần đen** (`--text-primary`) — giao diện trung tính, màu sắc đến từ ảnh"
-         if spec.inputs.theme in NEUTRAL_ACTION_THEMES else "- Màu hành động: màu nhấn thương hiệu (`--accent`)"),
+         if neutral_actions(spec) else "- Màu hành động: màu nhấn thương hiệu (`--accent`)"),
         f"- Bố cục: {spec.layout.label_vi} — {spec.layout.reading_pattern}; {spec.layout.grid}; tỷ lệ ảnh {', '.join(spec.layout.image_ratios)}",
         "",
         "## 6. Chuyển động & Hiệu ứng 2D/3D (B8.1)",
@@ -255,14 +257,15 @@ def shadow_tokens(spec: DesignSpec) -> dict[str, str]:
                 "lg": "8px 8px 0 var(--text-primary)"}
     if surface is Surface.CLAY:  # puffy: soft drop + light from the top edge + shade at the bottom edge
         inner = f"inset 0 2px 4px oklch(1 0 0 / 0.55), inset 0 -4px 8px {tint(0.08)}"
-        return {"sm": f"0 4px 8px {tint(0.08)}, {inner}",
-                "md": f"0 8px 24px {tint(0.10)}, {inner}",
-                "lg": f"0 16px 40px {tint(0.14)}, {inner}"}
+        # soft but under the anti-slop ceiling (QA: blur >= 10px needs alpha <= 0.1)
+        return {"sm": f"0 4px 8px {tint(0.07)}, {inner}",
+                "md": f"0 8px 24px {tint(0.08)}, {inner}",
+                "lg": f"0 16px 40px {tint(0.09)}, {inner}"}
     if surface is Surface.GLASS:  # wide, soft and low: glass floats, it does not cast hard shadows
         rim = "inset 0 1px 0 oklch(1 0 0 / 0.45)"
         return {"sm": f"{rim}, 0 2px 8px {tint(0.06)}",
                 "md": f"{rim}, 0 8px 24px {tint(0.08)}",
-                "lg": f"{rim}, 0 16px 48px {tint(0.12)}"}
+                "lg": f"{rim}, 0 16px 48px {tint(0.09)}"}
     return {
         "sm": f"0 1px 2px {tint(0.06)}",
         "md": f"0 1px 2px {tint(0.04)}, 0 4px 12px {tint(0.08)}",
@@ -276,8 +279,12 @@ def shadow_tokens(spec: DesignSpec) -> dict[str, str]:
 NEUTRAL_ACTION_THEMES = {Theme.EDITORIAL_LUXURY, Theme.WARM_ORGANIC}
 
 
+def neutral_actions(spec: DesignSpec) -> bool:
+    return spec.inputs.theme in NEUTRAL_ACTION_THEMES and not spec.inputs.brand_actions
+
+
 def action_tokens(spec: DesignSpec) -> dict[str, str]:
-    if spec.inputs.theme in NEUTRAL_ACTION_THEMES:
+    if neutral_actions(spec):
         return {"action": "var(--text-primary)", "action-fg": "var(--bg-primary)",
                 "action-hover": "color-mix(in srgb, var(--text-primary) 82%, var(--bg-primary))",
                 "action-ink": "var(--text-primary)",

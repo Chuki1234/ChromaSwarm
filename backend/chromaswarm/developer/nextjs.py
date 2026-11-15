@@ -201,6 +201,7 @@ def _nav(s: Section, c: PageCopy) -> str:
         <nav className={{open ? "nav-links is-open" : "nav-links"}} aria-label="Điều hướng chính">
           {{LINKS.map(([label, href]) => <a key={{label}} href={{href}} className="nav-link">{{label}}</a>)}}
         </nav>
+{{actions}}
         <button type="button" className="icon-btn nav-toggle" data-swarm-id="nav-menu-toggle" data-swarm-role="button"
           aria-expanded={{open}} aria-label={{open ? "Đóng menu" : "Mở menu"}} onClick={{() => setOpen(!open)}}>
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
@@ -209,8 +210,50 @@ def _nav(s: Section, c: PageCopy) -> str:
         </button>
       </div>
     </header>'''
-    return _component(s, jsx, client=True, prelude=f"\nconst BRAND = {_js(c.brand)};\nconst LINKS = {_js(c.nav_links)};\n",
-                      body="  const [open, setOpen] = useState(false);\n")
+    body = "  const [open, setOpen] = useState(false);\n"
+    if c.shop:
+        body += SHOP_STATE
+    jsx = jsx.replace("{actions}", SHOP_ACTIONS if c.shop else "")
+    if c.shop:
+        jsx = jsx.replace('className="s-nav"', 'className="s-nav s-nav-shop"', 1)
+    head = 'import { useEffect } from "react";\n' if c.shop else ""
+    return _component(s, jsx, client=True, prelude=f"{head}\nconst BRAND = {_js(c.brand)};\nconst LINKS = {_js(c.nav_links)};\n",
+                      body=body)
+
+
+# Store header: search field, account, cart with a live count (grid "Thêm vào giỏ" dispatches cart:add).
+SHOP_STATE = """  const [search, setSearch] = useState(false);
+  const [cartOpen, setCartOpen] = useState(false);
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    const add = () => setCount((n) => n + 1);
+    window.addEventListener("cart:add", add);
+    return () => window.removeEventListener("cart:add", add);
+  }, []);
+"""
+SHOP_ACTIONS = """        <div className="nav-actions">
+          {search && <input className="input nav-search" type="search" aria-label="Tìm sản phẩm" autoFocus
+            data-swarm-id="nav-search-input" data-swarm-role="input" />}
+          <button type="button" className="icon-btn" aria-label={search ? "Đóng tìm kiếm" : "Tìm kiếm"} aria-expanded={search}
+            data-swarm-id="nav-search" data-swarm-role="button" onClick={() => setSearch(!search)}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
+          </button>
+          <a href="#" className="icon-btn" aria-label="Tài khoản" data-swarm-id="nav-account" data-swarm-role="link">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden><circle cx="12" cy="8.5" r="3.5" /><path d="M5 20c1.2-3.5 4-5 7-5s5.8 1.5 7 5" /></svg>
+          </a>
+          <div className="cart-wrap">
+            <button type="button" className="icon-btn" aria-label={`Giỏ hàng, ${count} sản phẩm`} aria-expanded={cartOpen}
+              data-swarm-id="nav-cart" data-swarm-role="button" onClick={() => setCartOpen(!cartOpen)}>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden><path d="M6 8h12l-1 12H7L6 8Z" /><path d="M9 8a3 3 0 0 1 6 0" /></svg>
+              {count > 0 && <span className="cart-count">{count}</span>}
+            </button>
+            {cartOpen && (
+              <div className="cart-pop" role="status">
+                <p className="t-body">{count ? `Giỏ hàng có ${count} sản phẩm.` : "Giỏ hàng đang trống."}</p>
+              </div>
+            )}
+          </div>
+        </div>"""
 
 
 def _hero_split(s: Section, c: PageCopy) -> str:
@@ -248,7 +291,7 @@ def _z_rows(s: Section, c: PageCopy) -> str:
             </div>
           ))}
         </div>'''
-    return _component(s, _root(s, "s-z", inner), prelude=f"\nconst ROWS = {_js(c.story)};\n")
+    return _component(s, _root(s, "s-z", inner), prelude=f"\nconst ROWS = {_js(c.story[:3])};\n")
 
 
 def _bento(s: Section, c: PageCopy) -> str:
@@ -311,8 +354,15 @@ def _band(s: Section, c: PageCopy) -> str:
 
 
 def _footer(s: Section, c: PageCopy) -> str:
-    inner = f'''        <div className="footer-grid">
-          <div className="stack"><strong className="t-h4">{{{_js(c.brand)}}}</strong><p className="t-caption muted">{{{_js(c.footer_line)}}}</p></div>
+    cols = ""
+    if c.shop:
+        cols = '''
+          <nav className="footer-col" aria-label="Hỗ trợ"><p className="t-body">Hỗ trợ</p>
+            {["Vận chuyển", "Đổi trả", "Câu hỏi thường gặp"].map((l) => <a key={l} href="#" className="footer-link">{l}</a>)}</nav>
+          <nav className="footer-col" aria-label="Chính sách"><p className="t-body">Chính sách</p>
+            {["Bảo mật", "Điều khoản", "Liên hệ"].map((l) => <a key={l} href="#" className="footer-link">{l}</a>)}</nav>'''
+    inner = f'''        <div className={{{_js("footer-grid footer-shop" if c.shop else "footer-grid")}}}>
+          <div className="stack"><strong className="t-h4">{{{_js(c.brand)}}}</strong><p className="t-caption muted">{{{_js(c.footer_line)}}}</p></div>{cols}
           <form className="stack" noValidate onSubmit={{(e) => {{ e.preventDefault(); setState(/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(email) ? "ok" : "error"); }}}}>
             <label htmlFor="newsletter" className="t-body">Nhận tin mới qua email</label>
             {{/* §6.1: messages sit above the field, where autofill menus and the keyboard cannot cover them */}}
@@ -338,7 +388,7 @@ def _hero_overlay(s: Section, c: PageCopy) -> str:
       <Art label={{{_js(c.brand)}}} ratio="auto" sizes="100vw" />
       <div className="hero-scrim" aria-hidden />
       <div className="container hero-overlay-copy"><div className="hero-copy-panel">
-        <p className="eyebrow on-photo">{{{_js(c.brand)}}}</p>
+        <p className="eyebrow on-photo">{{{_js(c.eyebrow or c.brand)}}}</p>
         <h1 className="t-display on-photo">{{{_js(c.headline)}}}</h1>
         <p className="t-lead on-photo">{{{_js(c.subhead)}}}</p>
         <div className="row">
@@ -354,7 +404,7 @@ def _hero_overlay(s: Section, c: PageCopy) -> str:
 def _hero_editorial(s: Section, c: PageCopy) -> str:
     """Very large headline across the page, copy + actions in a row, wide photo below (Linear)."""
     inner = f'''        <div className="hero-editorial">
-          <p className="eyebrow">{{{_js(c.brand)}}}</p>
+          <p className="eyebrow">{{{_js(c.eyebrow or c.brand)}}}</p>
           <h1 className="t-display t-display-wide">{{{_js(c.headline)}}}</h1>
           <div className="hero-editorial-row">
             <p className="t-lead">{{{_js(c.subhead)}}}</p>
@@ -372,7 +422,7 @@ def _hero_editorial(s: Section, c: PageCopy) -> str:
 def _hero_centered(s: Section, c: PageCopy) -> str:
     """Centred short copy above one large product photo on a quiet panel (Apple product pages)."""
     inner = f'''        <div className="hero-centered">
-          <p className="eyebrow">{{{_js(c.brand)}}}</p>
+          <p className="eyebrow">{{{_js(c.eyebrow or c.brand)}}}</p>
           <h1 className="t-display">{{{_js(c.headline)}}}</h1>
           <p className="t-lead">{{{_js(c.subhead)}}}</p>
           <div className="row center">
@@ -419,20 +469,97 @@ def _scroller(s: Section, c: PageCopy) -> str:
 
 def _grid4(s: Section, c: PageCopy) -> str:
     items = [i.model_dump() for i in c.items]
-    inner = '''        <div className="row between align-end"><div className="section-head"><p className="eyebrow">Bán chạy</p><h2 className="t-h2">Khách mua lại nhiều nhất tháng này</h2></div><span className="t-body muted" aria-live="polite">{cart ? `Giỏ hàng: ${cart}` : ""}</span></div>
+    cats = sorted({i.category for i in c.items if i.category}, key=lambda x: c.categories.index(x) if x in c.categories else 99)
+    tabs = ""
+    if cats:  # category tabs filter the grid for real (§ interaction sweep)
+        tabs = '''
+        <div className="tabs" role="tablist" aria-label="Lọc theo danh mục">
+          {["Tất cả", ...CATS].map((cat, i) => (
+            <button key={cat} type="button" role="tab" aria-selected={active === cat} className={`tab${active === cat ? " is-active" : ""}`}
+              data-swarm-id={`category-tab-${i + 1}`} data-swarm-role="tab" onClick={() => setActive(cat)}>{cat}</button>
+          ))}
+        </div>'''
+    inner = '''        <div className="row between align-end"><div className="section-head"><p className="eyebrow">Bán chạy</p><h2 className="t-h2">Khách mua lại nhiều nhất tháng này</h2></div><span className="t-body muted" aria-live="polite">{cart ? `Giỏ hàng: ${cart}` : ""}</span></div>''' + tabs + '''
         <div className="grid-4">
-          {ITEMS.map((it, i) => (
+          {ITEMS.filter((it) => active === "Tất cả" || it.category === active).map((it, i) => (
             <article key={it.name} className="product" data-swarm-id={`product-card-${i + 1}`} data-swarm-role="card">
-              <Art label={it.name} ratio="4 / 5" tone={i + 2} sizes="(min-width: 1024px) 25vw, (min-width: 768px) 50vw, 100vw" />
-              <div className="product-meta"><h3 className="t-h4">{it.name}</h3><span className="t-body price">{it.price || it.note}</span></div>
+              <div className="product-media">
+                <Art label={it.name} ratio="4 / 5" tone={i + 2} sizes="(min-width: 1024px) 25vw, (min-width: 768px) 50vw, 100vw" />
+                {it.tag && <span className="product-tag">{it.tag}</span>}
+              </div>
+              <div className="product-meta"><h3 className="t-h4">{it.name}</h3><span className="t-body price">{it.price}</span></div>
+              {it.note && <p className="t-caption muted">{it.note}</p>}
               {/* §6.2: an action repeated on every card is secondary, never a row of primaries */}
               <button type="button" className="btn btn-ghost" data-swarm-id={`add-to-cart-${i + 1}`} data-swarm-role="button"
-                onClick={() => setCart(cart + 1)}>Thêm vào giỏ</button>
+                onClick={() => { setCart(cart + 1); window.dispatchEvent(new CustomEvent("cart:add")); }}>Thêm vào giỏ</button>
             </article>
           ))}
         </div>'''
-    return _component(s, _root(s, "s-grid", inner), client=True, prelude=f"\nconst ITEMS = {_js(items)};\n",
-                      body="  const [cart, setCart] = useState(0);\n")
+    return _component(s, _root(s, "s-grid", inner), client=True,
+                      prelude=f"\nconst ITEMS = {_js(items)};\nconst CATS = {_js(cats)};\n",
+                      body='  const [cart, setCart] = useState(0);\n  const [active, setActive] = useState("Tất cả");\n')
+
+
+def _announcement(s: Section, c: PageCopy) -> str:
+    text = c.announcement or (" · ".join(c.usp[:2]) if c.usp else f"{c.brand} — {c.cta}")
+    # The wrapper stays when dismissed (section order and QA probes keep finding it); only the bar collapses.
+    jsx = f'''<div data-swarm-section="{s.id}" role="region" aria-label="Thông báo">
+      {{open && (
+        <div className="s-announce">
+          <p className="t-caption">{{{_js(text)}}}</p>
+          <button type="button" className="announce-close" aria-label="Đóng thông báo" data-swarm-id="announcement-close"
+            data-swarm-role="button" onClick={{() => setOpen(false)}}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden><path d="m4 4 8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
+          </button>
+        </div>
+      )}}
+    </div>'''
+    return _component(s, jsx, client=True, body="  const [open, setOpen] = useState(true);\n")
+
+
+def _usp(s: Section, c: PageCopy) -> str:
+    points = c.usp or [f for _, f in c.facts][:4]
+    inner = '''        <ul className="usp">
+          {POINTS.map((p) => (
+            <li key={p} className="usp-item">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden><path d="m4.5 10.5 3.5 3.5 7.5-8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              <span className="t-body">{p}</span>
+            </li>
+          ))}
+        </ul>'''
+    return _component(s, _root(s, "s-usp", inner), prelude=f"\nconst POINTS = {_js(points)};\n")
+
+
+def _picker(s: Section, c: PageCopy) -> str:
+    """Pick one option (skin type, need...) -> three recommended products appear beside it."""
+    options = c.quiz_options or [cat for cat in c.categories[:3]] or ["Lựa chọn 1", "Lựa chọn 2", "Lựa chọn 3"]
+    items = [i.model_dump() for i in c.items]
+    inner = '''        <div className="picker">
+          <div className="stack">
+            <div className="section-head"><p className="eyebrow">Gợi ý cho riêng bạn</p><h2 className="t-h2">Chọn nhu cầu của bạn, chúng tôi gợi ý bộ sản phẩm phù hợp</h2></div>
+            <div className="picker-options" role="radiogroup" aria-label="Chọn nhu cầu">
+              {OPTIONS.map((o, i) => (
+                <button key={o} type="button" role="radio" aria-checked={pick === i} className={`tab${pick === i ? " is-active" : ""}`}
+                  data-swarm-id={`quiz-option-${i + 1}`} data-swarm-role="tab" onClick={() => setPick(i)}>{o}</button>
+              ))}
+            </div>
+          </div>
+          <div className="picker-result" aria-live="polite">
+            {[0, 1, 2].map((k) => {
+              const it = ITEMS[(pick + k) % ITEMS.length];
+              return (
+                <article key={`${pick}-${k}`} className="product picker-card">
+                  <Art label={it.name} ratio="1 / 1" tone={pick * 3 + k + 1} sizes="(min-width: 1024px) 16vw, 33vw" />
+                  <h3 className="t-body picker-name">{it.name}</h3>
+                  <span className="t-caption muted price">{it.price}</span>
+                </article>
+              );
+            })}
+          </div>
+        </div>'''
+    return _component(s, _root(s, "s-picker", inner), client=True,
+                      prelude=f"\nconst OPTIONS = {_js(options)};\nconst ITEMS = {_js(items)};\n",
+                      body="  const [pick, setPick] = useState(0);\n")
 
 
 def _split_story(s: Section, c: PageCopy) -> str:
@@ -603,6 +730,7 @@ BY_STRUCTURE = {
     "hero-editorial": _hero_editorial, "hero-centered": _hero_centered, "horizontal-scroller": _scroller, "grid-4": _grid4, "split-5-7": _split_story,
     "title-with-count": _title_count, "sidebar-grid-4": _sidebar_grid, "inline-controls": _load_more, "tabs": _tabs,
     "feature-showcase": _showcase, "testimonials": _testimonials, "text-cards": _text_cards,
+    "announcement-bar": _announcement, "usp-strip": _usp, "picker-recommend": _picker,
 }
 
 
@@ -665,6 +793,7 @@ button, input, select { font: inherit; color: inherit; }
   background: none; color: var(--action-ink); font-weight: 600; text-decoration: underline; text-underline-offset: 3px;
   cursor: pointer; transition: opacity var(--duration) var(--ease); }
 .btn-link:hover { opacity: 0.72; }
+.product .btn-link { color: var(--text-primary); }  /* quiet tertiary action on product cards (critic: blue links look raw) */
 .icon-btn { flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; width: 48px; height: 48px; padding: 0;
   border: 0; border-radius: var(--radius-sm); background: none; cursor: pointer;
   transition: background-color var(--duration) var(--ease); }
@@ -690,6 +819,12 @@ a.card:hover, article.card:hover { border-color: var(--text-secondary); transfor
 .product > .art { transition: filter var(--duration) var(--ease); }
 .product:hover > .art { filter: brightness(0.94); }
 .product-meta { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+.grid-4 .product-meta { flex-direction: column; align-items: flex-start; gap: 4px; }  /* price under the name: */
+.grid-4 .product-meta h3 { min-height: calc(2 * 1.25em); display: -webkit-box; -webkit-line-clamp: 2;   /* every card */
+  -webkit-box-orient: vertical; overflow: hidden; }                                                          /* aligns */
+.grid-4 .product > .btn { margin-top: auto; }  /* buttons share one baseline whatever the note length */
+article.product { transition: transform var(--duration) var(--ease); }
+article.product:hover { transform: translateY(-2px); }  /* one- and two-line names keep prices on one baseline */
 .price { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .section-head { display: flex; flex-direction: column; gap: 8px; }
 .eyebrow { font-size: var(--text-caption); font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase;
@@ -745,6 +880,35 @@ a.card:hover, article.card:hover { border-color: var(--text-secondary); transfor
 .footer-grid { display: grid; gap: var(--grid-gap); }
 @media (min-width: 768px) { .footer-grid { grid-template-columns: 1fr 1fr; } }
 .s-alt { background: var(--bg-surface); }
+/* Store header actions + footer columns. With icons the menu collapses below 1024px, not 768px. */
+.nav-logo { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 767px) {  /* long brand names wrap onto two short lines instead of being cut ("LUMIÈRE BOT…") */
+  .s-nav-shop .nav-logo { font-size: var(--text-body); line-height: 1.15; white-space: normal; overflow: visible; }
+}
+@media (min-width: 768px) and (max-width: 1023px) {
+  .s-nav-shop .nav-links { display: none; }
+  .s-nav-shop .nav-links.is-open { display: flex; flex-direction: column; position: absolute; inset: 64px 0 auto 0;
+    padding: 24px var(--gutter); background: var(--bg-primary); border-bottom: 1px solid var(--border-subtle); }
+  .s-nav-shop .nav-toggle { display: inline-flex; }
+}
+@media (max-width: 767px) {
+  .s-nav-shop .nav-row { gap: 8px; }
+  .s-nav-shop [data-swarm-id="nav-account"] { display: none; }  /* account lives in the menu on phones */
+}
+.nav-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.nav-actions .icon-btn { position: relative; color: inherit; }
+.nav-search { width: min(240px, 40vw); min-height: 48px; padding: 8px 12px; }
+.cart-wrap { position: relative; }
+.cart-count { position: absolute; top: 6px; right: 4px; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9999px;
+  display: grid; place-items: center; background: var(--action); color: var(--action-fg); font-size: 11px; font-weight: 600; }
+.cart-pop { position: absolute; right: 0; top: calc(100% + 8px); z-index: 20; width: 240px; padding: 16px;
+  background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); box-shadow: var(--shadow-lg); }
+@media (max-width: 767px) { .nav-search { position: absolute; left: var(--gutter); right: var(--gutter); top: 72px; width: auto; } }
+.footer-col { display: flex; flex-direction: column; gap: 4px; }
+.footer-col > p { font-weight: 600; margin-bottom: 4px; }
+.footer-link { min-height: 48px; display: inline-flex; align-items: center; color: var(--text-secondary); text-decoration: none; }
+.footer-link:hover { color: var(--text-primary); text-decoration: underline; text-underline-offset: 3px; }
+@media (min-width: 1024px) { .footer-shop { grid-template-columns: 1.4fr 1fr 1fr 1.6fr; } }
 
 /* Hero repertoire (planner.hero_structure) */
 .s-hero-overlay { position: relative; display: flex; align-items: flex-end; min-height: min(88vh, 860px);
@@ -795,10 +959,35 @@ a.card:hover, article.card:hover { border-color: var(--text-secondary); transfor
   background: transparent; text-align: left; cursor: pointer; transition: background-color var(--duration) var(--ease); }
 .filter:hover, .tab:hover { background: var(--bg-surface); }
 .filter.is-active, .tab.is-active { background: var(--text-primary); color: var(--bg-primary); border-color: var(--text-primary); }
+.filter.is-active:hover, .tab.is-active:hover { background: color-mix(in srgb, var(--text-primary) 85%, var(--bg-primary)); }
 .tabs { display: flex; flex-wrap: wrap; gap: 8px; }
 .tab-panel { margin-top: 24px; }
 .thumb { width: 80px; padding: 0; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: none; cursor: pointer; }
 .thumb:hover, .thumb.is-active { border-color: var(--text-primary); }
+
+/* Brief sections: announcement bar, promise strip, picker */
+.s-announce { position: relative; display: flex; align-items: center; justify-content: center; min-height: 40px;
+  padding: 8px 48px; background: var(--text-primary); color: var(--bg-primary); text-align: center; }
+.announce-close { position: absolute; right: 8px; top: 50%; translate: 0 -50%; display: grid; place-items: center;
+  width: 48px; height: 40px; border: 0; background: none; color: inherit; cursor: pointer; opacity: 0.8;
+  transition: opacity var(--duration) var(--ease); }
+.announce-close:hover { opacity: 1; }
+.s-usp { padding-block: 32px; border-block: 1px solid var(--border-subtle); }
+.usp { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px 24px; padding: 0; list-style: none; }
+.usp-item { display: flex; align-items: center; gap: 12px; }
+.usp-item svg { flex-shrink: 0; color: var(--action-ink); }
+.picker { display: grid; gap: var(--grid-gap); align-items: center; }
+@media (min-width: 1024px) { .picker { grid-template-columns: 5fr 7fr; } }
+.picker-options { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.picker-result { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.picker-name { font-weight: 600; }  /* h3 defaults to 700: stay within the two weights (§2.2) */
+.picker-card { animation: picker-in 400ms var(--ease) both; }
+.picker-card:nth-child(2) { animation-delay: 60ms; } .picker-card:nth-child(3) { animation-delay: 120ms; }
+@keyframes picker-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.product-media { position: relative; }
+.product-tag { position: absolute; top: 12px; left: 12px; padding: 4px 8px; border-radius: var(--radius-sm);
+  background: var(--bg-elevated); color: var(--text-primary); font-size: var(--text-caption); font-weight: 600; }
+.s-grid .tabs { margin-top: 24px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 1ms !important; animation-duration: 1ms !important; }
