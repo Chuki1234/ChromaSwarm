@@ -131,6 +131,7 @@ class CloneSource(BaseModel):
     body_font: str | None = None
     content: dict | None = None  # owned sites only
     notes: list[str] = Field(default_factory=list)
+    content_width: int | None = None  # narrow single-column reference: its column width (px, 8pt)
 
 
 class Asset(BaseModel):

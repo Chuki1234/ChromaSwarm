@@ -33,6 +33,8 @@ class Section(BaseModel):
     interactive: list[Interactive] = []
     effect: str | None = None  # B8.1 candidate
     surface: str | None = None  # "alt": tinted band (bg-surface) for rhythm between sections
+    count: int = 0  # Clone mode: how many items the reference shows (e.g. images in a gallery)
+    sources: list[int] = []  # Clone mode: indices of the reference blocks this section rebuilds
 
 
 def _i(id_: str, role: str, behavior: str) -> Interactive:
@@ -271,6 +273,7 @@ def design_inputs(state: PipelineState, project_name: str, dna: StyleDNA | None 
         heading_font=clone.heading_font if clone else (state.brief or {}).get("heading_font"),
         body_font=clone.body_font if clone else (state.brief or {}).get("body_font"),
         clone_level=("full" if clone.owned else "structure") if clone else None,
+        content_width=clone.content_width if clone else None,
         extra_rules=[f"User feedback (B7): {f}" for f in state.plan_feedback],
     )
 

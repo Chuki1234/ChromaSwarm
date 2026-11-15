@@ -48,7 +48,7 @@ def test_section_ids_are_unique_and_a_header_is_always_present():
 def test_reading_someone_elses_page_returns_no_content():
     a = asyncio.run(analyse(DEMO, owned=False))
     assert a.content is None  # the reader never returned text, links or images
-    assert [s.structure for s in a.sections][:2] == ["sticky-bar", "split-7-5"]
+    assert [s.structure for s in a.sections][:2] == ["sticky-bar", "hero-text"]  # the fixture hero has no visual
     assert a.pillars["theme"] == "editorial-luxury"  # serif headings on the reference
     assert a.pillars["color"].startswith("warm-paper #")  # warm neutrals + its accent colour
     assert a.pillars["margins"] == "airy"
@@ -219,3 +219,93 @@ def test_testimonials_with_css_quote_marks_are_recognised():
             "<footer><a>a</a><a>b</a><a>c</a><a>d</a></footer>")
     a = asyncio.run(analyse("data:text/html," + urllib.parse.quote(html), owned=False))
     assert "testimonials" in [s.structure for s in a.sections]
+
+
+def test_two_column_page_and_loose_headings():
+    """Product-page layout (as on themex.studio): promo strip, nav, content column of headings and
+    figures, side column with the h1 buy box. The h1 box becomes the hero; loose headings join the
+    block after them only within the same column; nothing is lost."""
+    import urllib.parse
+
+    fig = "<figure style='margin:0;height:300px;display:flex;gap:16px'><img style='width:300px;height:280px' src='data:image/gif;base64,R0lGODlhAQABAAAAACw='><img style='width:300px;height:280px' src='data:image/gif;base64,R0lGODlhAQABAAAAACw='></figure>"
+    html = ("<style>body{margin:0;font:16px sans-serif}.wrap{display:flex;gap:40px;padding:0 64px}"
+            ".main{width:860px}.side{width:420px}</style>"
+            "<div style='height:40px'>Ưu đãi có hạn</div>"
+            "<header style='height:80px'><nav><a href='/'>Brand</a><a>Docs</a></nav></header>"
+            f"<div class='wrap'><div class='main'>{fig}<h2>Mẫu trang</h2><p>Mô tả các mẫu trang có sẵn trong theme.</p>{fig}"
+            "<h2>Hỗ trợ</h2><p>Chúng tôi trả lời trong vòng 24 giờ qua email và form liên hệ.</p></div>"
+            "<div class='side'><div style='height:300px'><h1>Kyoto</h1><a>Mua ngay</a><a>Xem demo</a></div></div></div>"
+            "<footer><a>a</a><a>b</a><a>c</a><a>d</a></footer>")
+    a = asyncio.run(analyse("data:text/html;charset=utf-8," + urllib.parse.quote(html), owned=True))
+    ids = [s.id for s in a.sections]
+    assert ids[0] == "site-header" and ids[1] == "hero"  # nav kept, side-column h1 moved up as hero
+    headings = [a.content["sections"][i].get("heading") for i in ids]
+    assert "Mẫu trang" in headings and "Hỗ trợ" in headings  # loose headings kept, not glued to the buy box
+    assert a.content["sections"]["hero"]["heading"] == "Kyoto"
+
+
+def test_consecutive_picture_blocks_become_one_gallery():
+    from chromaswarm.clone.reader import group_blocks
+
+    pic = lambda **kw: feat(**{"images": 2, "text_len": 10, **kw})  # noqa: E731
+    blocks = [feat(tag="header", nav=True, height=80), feat(h1=True, images=1), pic(lead_text=30, text_len=40),
+              pic(), pic(), feat(text_len=600), pic(images=8, lead_text=20, text_len=30), feat(tag="footer", links=8)]
+    groups = group_blocks(blocks)
+    assert ([2, 3, 4], "gallery") in groups and ([6], "gallery") in groups  # 3 figures merged; 8-photo grid alone
+    assert ([5], None) in groups and ([1], None) in groups
+    secs = sections_from_blocks(blocks)
+    gallery = next(s for s in secs if s.structure == "gallery")
+    assert gallery.count == 6 and gallery.sources == [2, 3, 4] and "gộp 3 khối ảnh" in gallery.content
+
+
+def test_personal_site_sections_logo_strip_list_rows_and_tall_header():
+    # kyoto.themex.studio: a 240px header (logo + menu + avatar), "featured on" logos, posts with dates.
+    assert classify(feat(tag="header", nav=True, height=240, links=20, columns=2), 0, 10) == "sticky-bar"
+    assert classify(feat(height=240, links=20), 0, 10) != "sticky-bar"  # a tall plain block is not a header
+    assert classify(feat(height=181, columns=4, images=3, logos=4, text_len=11, row_items_with_img=3), 2, 10) == "logo-strip"
+    assert classify(feat(height=447, rows=7, headings=8, text_len=379, links=8), 4, 10) == "list-rows"
+    assert classify(feat(height=447, rows=7, images=4, row_items_with_img=0), 4, 10) != "list-rows"  # media: not a list
+
+
+def test_list_rows_and_logo_strip_render_with_live_controls():
+    from chromaswarm.developer.content import copy_for
+    from chromaswarm.developer.nextjs import render_section
+    from chromaswarm.state_machine.pipeline_state import Domain, PipelineState
+    state = PipelineState(session_id="s", raw_prompt="Trang cá nhân của một nhà thiết kế", domain=Domain.PORTFOLIO)
+    copy = build_copy(state)
+    assert copy.rows and all(meta for _, meta in copy.rows)  # sample rows carry a meta (date)
+    rows = render_section(Section(id="list-rows", name="Danh sách", structure="list-rows", content="x",
+                                  interactive=[Interactive(id="list-row", role="link", behavior="open")]), copy).content
+    assert 'data-swarm-id="list-more"' in rows and "useState" in rows and "list-row-" in rows
+    logos = render_section(Section(id="logo-strip", name="Dải logo", structure="logo-strip", content="x", count=4), copy).content
+    assert logos.count("Logo {i + 1}") == 1 and "length: 4" in logos
+    # A second list on the page continues the pool instead of repeating the first one.
+    assert copy_for("list-rows", ["list-rows"], copy).rows != copy.rows
+
+
+def test_text_only_hero_and_narrow_column_are_kept(monkeypatch):
+    from chromaswarm.agents.planner import design_inputs
+    from chromaswarm.clone.reader import build_analysis
+    from chromaswarm.engines.design_spec import build_design_spec, render_design_md
+    import chromaswarm.clone.reader as reader
+    monkeypatch.setattr(reader, "derive_pillars", lambda *a: {})  # pillars are not under test here
+    StyleDNA = lambda: None  # noqa: E731
+    assert classify(feat(h1=True), 1, 5) == "hero-text"
+    assert classify(feat(h1=True, images=1), 1, 5) == "split-7-5"
+    hero = feat(h1=True, index=1, inputs=1, text_len=200)
+    raw = {"url": "https://example.com", "title": "Ví dụ", "content_width": 787,
+           "blocks": [feat(tag="header", nav=True, height=120, index=0), hero, feat(tag="footer", links=6, index=2)]}
+    a = build_analysis(raw, StyleDNA(), owned=False)
+    assert a.content_width == 784
+    signup = next(s for s in a.sections if s.structure == "hero-text")
+    assert [i.id for i in signup.interactive] == ["hero-email", "hero-signup"]
+    wide = build_analysis({**raw, "content_width": 1280}, StyleDNA(), owned=False)
+    assert wide.content_width is None  # a normal-width page keeps the density preset
+    # The measured column reaches DESIGN.md / tokens.css through the spec engine.
+    from chromaswarm.state_machine.pipeline_state import CloneSource, PipelineState
+    state = PipelineState(session_id="s", raw_prompt="x", selected_page="clone",
+                          clone=CloneSource(url="https://example.com", content_width=784))
+    state.pillars.theme, state.pillars.layout, state.pillars.color, state.pillars.margins = "warm-organic", "catalog", "light", "balanced"
+    spec = build_design_spec(design_inputs(state, "Ví dụ"))
+    assert spec.spatial.container_max == 784 + 2 * spec.spatial.page_gutter_desktop
+    assert "đo từ trang mẫu" in render_design_md(spec)

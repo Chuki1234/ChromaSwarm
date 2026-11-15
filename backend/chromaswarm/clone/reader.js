@@ -20,23 +20,63 @@
     if (kids.length === 1 && kids[0].getBoundingClientRect().width >= vw * 0.9) root = kids[0];
     else break;
   }
-  const kidsOf = el => [...el.children].filter(visible).filter(c => c.getBoundingClientRect().height >= 40);
-  let blocks = kidsOf(root);
+  // 16px keeps one-line headings / paragraphs; the grouping below attaches them to the next block.
+  const kidsOf = el => [...el.children].filter(visible).filter(c => c.getBoundingClientRect().height >= 16
+    && !/^(SCRIPT|STYLE|NOSCRIPT|BR|HR)$/.test(c.tagName));
+  // Fixed-position boxes narrower than half the page (promo widgets, chat bubbles) float over the page:
+  // they are not sections. A fixed full-width header stays.
+  const floating = el => getComputedStyle(el).position === "fixed" && el.getBoundingClientRect().width < vw * 0.5;
+  let blocks = kidsOf(root).filter(el => !floating(el));
   // Wrappers hide the real sections: expand <main>, and any block taller than ~2 screens that
   // holds several blocks of its own (e.g. one 9000px div around the whole page), a few levels deep.
+  // A row of tall side-by-side children is a column layout: the columns are containers, not sections.
+  const columnsOf = el => {
+    const kids = kidsOf(el);
+    if (kids.length < 2) return null;
+    const rs = kids.map(k => k.getBoundingClientRect());
+    const sideBySide = rs.some((r, i) => rs.some((q, j) => j !== i && q.left >= r.right - 4 && q.top < r.bottom && r.top < q.bottom));
+    // Page columns (content + sidebar): exactly two, spanning most of the width, one of them long.
+    // A row of 3+ equal cards is a card grid, not columns.
+    const span = Math.max(...rs.map(r => r.right)) - Math.min(...rs.map(r => r.left));
+    const isColumns = kids.length === 2 && sideBySide && span >= vw * 0.7
+      && rs.every(r => r.height >= 300) && rs.some(r => r.height >= 600);
+    return isColumns ? kids : null;
+  };
+  const columnSet = new Set();
   for (let depth = 0; depth < 6; depth++) {
     let changed = false;
     blocks = blocks.flatMap(el => {
       const kids = kidsOf(el);
       const tall = el.getBoundingClientRect().height > innerHeight * 2;
+      const cols = columnsOf(el);
+      if (cols && !el.querySelector(":scope > h1, :scope > h2")) { changed = true; cols.forEach(c => columnSet.add(c)); return cols; }
+      if (kids.length >= 2 && columnSet.has(el)) { changed = true; return kids; }  // a column holds sections
       if (kids.length >= 1 && (el.tagName === "MAIN" || tall)) { changed = true; return kids; }  // single wrappers too
       return [el];
     });
     if (!changed) break;
   }
-  // A lone heading or link strip is part of the section after it, not a section of its own.
-  blocks = blocks.filter((el, i) => i === 0 || i === blocks.length - 1
-    || (el.getBoundingClientRect().height >= 120 && !/^(H1|H2|H3|H4|P|A|UL)$/.test(el.tagName)));
+  blocks = blocks.filter(el => !floating(el));
+  // Lone headings / paragraphs / link strips belong to the section after them (their text is counted
+  // there); a run of them with nothing after it becomes a text section of its own. Navigation is kept.
+  const isNav = el => el.tagName === "HEADER" || el.tagName === "NAV" || !!el.querySelector("nav");
+  const isLoose = el => {
+    if (isNav(el) || el.tagName === "H1" || el.querySelector("h1")) return false;  // the hero is never loose
+    if (/^(H2|H3|H4|P|A|UL|SPAN)$/.test(el.tagName)) return true;  // a bare text element
+    return el.getBoundingClientRect().height < 120 && !el.querySelector("img, picture, video, canvas, svg, button, input");
+  };
+  const grouped = [];
+  let pending = [];
+  const sameColumn = (a, b) => Math.abs(a.getBoundingClientRect().left - b.getBoundingClientRect().left) < 200;
+  blocks.forEach((el, i) => {
+    if (i > 0 && i < blocks.length - 1 && isLoose(el)) { pending.push(el); return; }
+    if (pending.length && !sameColumn(pending[0], el)) {  // text that ends another column stands alone
+      grouped.push({ el: null, lead: pending }); pending = [];
+    }
+    grouped.push({ el, lead: pending }); pending = [];
+  });
+  if (pending.length) grouped.splice(grouped.length - 1, 0, { el: null, lead: pending });  // before the footer
+  const leadText = lead => lead.map(text).join(" ").trim();
 
   const priceRe = /(\d[\d.,]*\s?(₫|đ|vnd|vnđ|\$|€|usd))|((\$|€)\s?\d)/i;
 
@@ -75,17 +115,57 @@
     let n = 0;
     for (const card of el.querySelectorAll("figure, article, li, a, div")) {
       const lines = (card.innerText || "").split("\n").map(t => t.trim()).filter(Boolean);
-      if (lines.length >= 2 && lines.length <= 5 && lines.some(l => l.length >= 40)
-          && lines.some(l => l.length < 60 && ROLE.test(l))) n++;
+      // The quote and the role line are different lines (a post title like "… for Product Designers" is not a card).
+      const quote = lines.findIndex(l => l.length >= 60);
+      if (lines.length >= 2 && lines.length <= 5 && quote >= 0
+          && lines.some((l, i) => i !== quote && l.length < 60 && ROLE.test(l))) n++;
       if (n >= 4) break;
     }
     return n >= 2 ? 2 : 0;
   }
 
+  // Testimonial cards drawn with a small round avatar next to a long sentence (quote mark often a background image).
+  function avatarCards(el) {
+    const cards = new Set();
+    for (const img of el.querySelectorAll("img")) {
+      const r = img.getBoundingClientRect();
+      if (!visible(img) || r.width > 96 || r.width < 24) continue;
+      const round = [img, img.parentElement].some(n => /50%|9999|999px/.test(getComputedStyle(n).borderRadius)
+        || px(getComputedStyle(n).borderRadius) >= r.width / 2 - 1);
+      if (!round) continue;
+      const card = img.closest("article, li, figure:not(:has(> img:only-child)), blockquote") || img.parentElement?.parentElement?.parentElement;
+      if (card && card !== el && [...card.querySelectorAll("p, blockquote, div")].some(n => ownText(n).length >= 60)) cards.add(card);
+    }
+    return cards.size >= 2 ? 2 : 0;
+  }
+
+  // A vertical list of one-line rows (blog posts with dates, work history): ≥3 stacked siblings, each short
+  // and wide, with text at both ends of the row.
+  function listRows(el) {
+    let best = [];
+    for (const parent of [el, ...el.querySelectorAll("*")].slice(0, 400)) {
+      const kids = [...parent.children].filter(visible);
+      if (kids.length < 3) continue;
+      const rows = kids.filter(k => {
+        const r = k.getBoundingClientRect();
+        const parts = (k.innerText || "").split("\n").filter(t => t.trim()).length;  // entry + meta, not a bare bullet
+        return r.height >= 16 && r.height < 100 && r.width >= 320 && parts >= 2 && !k.querySelector("img, video, canvas, input")
+          && Math.abs(r.left - kids[0].getBoundingClientRect().left) < 4;
+      });
+      if (rows.length >= 3 && rows.length >= kids.length * 0.6 && rows.length > best.length) best = rows;
+    }
+    return best;
+  }
+
   const pageBg = getComputedStyle(document.body).backgroundColor;
   const out = [];
-  blocks.forEach((el, index) => {
-    const r = el.getBoundingClientRect();
+  grouped.forEach(({ el: blockEl, lead }, index) => {
+    const el = blockEl || lead[0];
+    const r = blockEl ? blockEl.getBoundingClientRect() : (() => {
+      const rs = lead.map(l => l.getBoundingClientRect());
+      return { top: Math.min(...rs.map(x => x.top)), left: Math.min(...rs.map(x => x.left)),
+               width: Math.max(...rs.map(x => x.width)), height: rs.reduce((a, x) => a + x.height, 0) };
+    })();
     const cs = getComputedStyle(el);
     const cols = columns(el);
     const imgs = [...el.querySelectorAll("img")].filter(visible);
@@ -96,9 +176,13 @@
     });
     const bigImg = media.some(i => i.getBoundingClientRect().width >= vw * 0.35);
     const heading = el.querySelector("h1, h2, h3");
+    const listEls = listRows(el);
     const features = {
-      tag: el.tagName.toLowerCase(), role: el.getAttribute("role"), index, height: Math.round(r.height),
-      top: Math.round(r.top + scrollY), h1: !!el.querySelector("h1"), headings: el.querySelectorAll("h1,h2,h3,h4").length,
+      tag: blockEl ? el.tagName.toLowerCase() : "text", role: el.getAttribute("role"), index, height: Math.round(r.height),
+      top: Math.round(r.top + scrollY), left: Math.round(r.left), width: Math.round(r.width),
+      h1: !!el.querySelector("h1") || lead.some(l => l.tagName === "H1" || l.querySelector("h1")),
+      headings: (blockEl ? el.querySelectorAll("h1,h2,h3,h4").length : 0) + lead.filter(l => /^H[1-4]$/.test(l.tagName) || l.querySelector("h1,h2,h3,h4")).length,
+      lead_text: leadText(lead).length,
       nav: !!el.querySelector("nav") || el.tagName === "NAV", links: el.querySelectorAll("a").length,
       buttons: el.querySelectorAll("button, a[class*=btn], a[class*=button], [role=button]").length,
       inputs: el.querySelectorAll("input:not([type=hidden]), textarea, select").length,
@@ -107,7 +191,7 @@
       tablist: !!el.querySelector("[role=tablist]"), images: media.length, big_image: bigImg,
       bg_differs: cs.backgroundColor !== "rgba(0, 0, 0, 0)" && cs.backgroundColor !== pageBg,
       bg_image: cs.backgroundImage !== "none" || (media[0] && media[0].getBoundingClientRect().width >= vw * 0.9),
-      columns: cols.count, scroller: scroller(el), text_len: text(el).length,
+      columns: cols.count, scroller: scroller(el), text_len: (blockEl ? text(el).length : 0) + leadText(lead).length,
       prices: (text(el).match(new RegExp(priceRe, "gi")) || []).length,
       numeric_items: cols.items.filter(i => /^\s*[\d.,%+<>~]+/.test(text(i))).length,
       card_widths: cols.items.map(i => Math.round(i.getBoundingClientRect().width)),
@@ -117,17 +201,23 @@
         if (t.length <= 30) return false;
         const before = getComputedStyle(n, "::before").content || "";
         return /^[“"«]/.test(t) || /[“"«]/.test(before.replace(/^"|"$/g, "")) || n.tagName === "Q";
-      }).length + attributions(el),
-      row_items_with_img: cols.items.filter(i => i.querySelector("img, picture, video, canvas, svg")).length,
+      }).length + attributions(el) + avatarCards(el),
+      rows: listEls.length,
+      row_items_with_img: cols.items.filter(i => [...i.querySelectorAll("img, picture, video, canvas, svg")].some(m => {
+        const r = m.getBoundingClientRect(); return r.width >= 64 && r.height >= 64;
+      })).length,
+      logos: [...el.querySelectorAll("img, svg")].filter(visible).filter(m => {
+        const r = m.getBoundingClientRect(); return r.height >= 24 && r.height <= 140 && r.width >= 48 && !m.parentElement.closest("svg");
+      }).length,
       padding_y: Math.round(px(cs.paddingTop) + px(cs.paddingBottom)),
     };
     const block = { features };
     if (owned) {
       block.content = {
-        heading: text(heading).slice(0, 160),
+        heading: (lead.map(l => /^H[1-4]$/.test(l.tagName) ? text(l) : "").find(Boolean) || text(heading)).slice(0, 160),
         headings: [...el.querySelectorAll("h1, h2, h3")].filter(visible).map(text).filter(Boolean).slice(0, 8).map(t => t.slice(0, 160)),
         logo: (() => { const a = el.querySelector('a[href="/"], a[href="./"], a[href="#"], a'); return a ? text(a).slice(0, 60) : ""; })(),
-        paragraphs: [...el.querySelectorAll("p")].filter(visible).map(text).filter(t => t.length > 20).slice(0, 4).map(t => t.slice(0, 400)),
+        paragraphs: [...lead.filter(l => l.tagName === "P"), ...(blockEl ? el.querySelectorAll("p") : [])].filter(visible).map(text).filter(t => t.length > 20).slice(0, 4).map(t => t.slice(0, 400)),
         buttons: [...el.querySelectorAll("button, a")].filter(visible).map(b => text(b)).filter(t => t && t.length <= 40).slice(0, 8),
         nav: [...el.querySelectorAll("nav a")].filter(visible).slice(0, 8).map(a => [text(a), a.getAttribute("href") || "#"]).filter(([t]) => t && t.length <= 30),
         images: imgs.slice(0, 8).map(i => i.currentSrc || i.src).filter(u => /^https?:/.test(u)),
@@ -140,11 +230,35 @@
           price: (text(i).match(priceRe) || [""])[0],
           image: (i.querySelector("img")?.currentSrc || i.querySelector("img")?.src || ""),
         }; }),
+        // List rows: the entry (longest line) and its meta (date, period: the last line).
+        rows: listEls.slice(0, 10).map(r => {
+          const lines = (r.innerText || "").split("\n").map(t => t.trim()).filter(Boolean);
+          const title = lines.reduce((a, b) => (b.length > a.length ? b : a), "");
+          return [title.slice(0, 120), lines.length > 1 ? lines[lines.length - 1].slice(0, 40) : ""];
+        }),
         faqs: [...el.querySelectorAll("details")].slice(0, 8).map(d => [text(d.querySelector("summary")), text(d).replace(text(d.querySelector("summary")), "").trim().slice(0, 300)]),
       };
     }
     out.push(block);
   });
+
+  // Content width of the page: horizontal span of all blocks' content (text, media, controls) together, so a
+  // two-column page counts both columns. Narrow single-column sites (~700-900px) keep that column in the rebuild.
+  const extents = out.map((_, i) => grouped[i]).map(({ el: b, lead }) => {
+    let l = Infinity, r = -Infinity;
+    for (const root of [b, ...lead].filter(Boolean)) {
+      for (const n of [root, ...root.querySelectorAll("h1, h2, h3, h4, p, li, img, a, button, input, figure")]) {
+        if (n === root && b) continue;
+        if (!visible(n)) continue;
+        const q = n.getBoundingClientRect();
+        if (q.width < 40) continue;
+        l = Math.min(l, q.left); r = Math.max(r, q.right);
+      }
+    }
+    return r > l ? [l, r] : null;
+  }).filter(Boolean);
+  const contentWidth = extents.length
+    ? Math.round(Math.max(...extents.map(e => e[1])) - Math.min(...extents.map(e => e[0]))) : null;
 
   const first = sel => { const el = document.querySelector(sel); return el ? getComputedStyle(el).fontFamily.split(",")[0].replace(/["']/g, "").trim() : null; };
   return {
@@ -152,6 +266,6 @@
     title: document.querySelector('meta[property="og:site_name"]')?.content || document.title || location.hostname,
     description: owned ? (document.querySelector('meta[name="description"]')?.content || "") : "",
     heading_font: first("h1") || first("h2"), body_font: first("main p") || first("p") || first("body"),
-    blocks: out,
+    blocks: out, content_width: contentWidth,
   };
 }

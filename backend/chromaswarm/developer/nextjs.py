@@ -272,6 +272,36 @@ def _hero_split(s: Section, c: PageCopy) -> str:
     return _component(s, _root(s, "s-hero", inner), client=True, body="  const [sent, setSent] = useState(false);\n")
 
 
+def _hero_text(s: Section, c: PageCopy) -> str:
+    """Text-only hero: headline, lead and either an email signup (when the reference had one) or a CTA."""
+    if any(i.id == "hero-email" for i in s.interactive):
+        action = f'''            <form className="stack hero-signup" noValidate onSubmit={{(e) => {{ e.preventDefault(); setState(/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(email) ? "ok" : "error"); }}}}>
+              <label htmlFor="hero-email" className="t-body">{{{_js(c.cta)}}}</label>
+              <div className="row">
+                <input id="hero-email" type="email" className="input" value={{email}} onChange={{(e) => setEmail(e.target.value)}}
+                  placeholder="ban@email.com" data-swarm-id="hero-email" data-swarm-role="input"
+                  aria-invalid={{state === "error"}} aria-describedby="hero-email-msg" />
+                <button type="submit" className="btn btn-primary" data-swarm-id="hero-signup" data-swarm-role="button">Đăng ký</button>
+              </div>
+              <p id="hero-email-msg" className="t-caption" role="status">
+                {{state === "ok" ? "Đã đăng ký, cảm ơn bạn." : state === "error" ? "Email chưa đúng định dạng." : ""}}
+              </p>
+            </form>'''
+        body = '  const [email, setEmail] = useState("");\n  const [state, setState] = useState<"idle" | "ok" | "error">("idle");\n'
+    else:
+        action = f'''            <div className="row">
+              <button type="button" className="btn btn-primary" data-swarm-id="cta-primary" data-swarm-role="button"
+                onClick={{() => setSent(true)}}>{{sent ? "Đã ghi nhận, chúng tôi sẽ liên hệ" : {_js(c.cta)}}}</button>
+            </div>'''
+        body = "  const [sent, setSent] = useState(false);\n"
+    inner = f'''        <div className="stack hero-text">
+            <h1 className="t-h1">{{{_js(c.headline)}}}</h1>
+            <p className="t-lead">{{{_js(c.subhead)}}}</p>
+{action}
+        </div>'''
+    return _component(s, _root(s, "s-hero-text", inner), client=True, body=body)
+
+
 def _metrics(s: Section, c: PageCopy) -> str:
     inner = f'''        <dl className="metrics">
           {{FACTS.map(([v, k]) => (
@@ -722,6 +752,53 @@ def _text_cards(s: Section, c: PageCopy) -> str:
     return _component(s, _root(s, "s-text-cards", inner), prelude=f"\nconst ROWS = {_js(c.story[:3])};\n")
 
 
+def _gallery(s: Section, c: PageCopy) -> str:
+    """Image gallery: one compact grid with as many tiles as the reference showed (3 to 12)."""
+    tiles = max(3, min(s.count or 6, 12))
+    inner = f'''        <h2 className="t-h2">{{{_js(c.story[0][0] if c.story else "Thư viện hình ảnh")}}}</h2>
+        <div className="gallery">
+          {{Array.from({{ length: {tiles} }}, (_, i) => (
+            <figure key={{i}} className="gallery-tile"><Art label={{`Hình ${{i + 1}}`}} ratio="4 / 3" tone={{i}} /></figure>
+          ))}}
+        </div>'''
+    return _component(s, _root(s, "s-gallery", inner))
+
+
+def _logo_strip(s: Section, c: PageCopy) -> str:
+    """"As featured on" / client logos: a short caption over a row of marks (placeholders until real logos)."""
+    marks = max(3, min(s.count or 4, 8))
+    inner = f'''        <p className="t-caption muted logo-caption">Được nhắc đến trên</p>
+        <ul className="logo-strip" aria-label="Đối tác và báo chí">
+          {{Array.from({{ length: {marks} }}, (_, i) => (
+            <li key={{i}} className="logo-mark t-h4">Logo {{i + 1}}</li>
+          ))}}
+        </ul>'''
+    return _component(s, _root(s, "s-logos", inner))
+
+
+def _list_rows(s: Section, c: PageCopy) -> str:
+    """A stacked list of one-line entries (posts + dates, work history + periods) with a show-all control."""
+    rows = c.rows or [(t, "") for t, _ in c.story]
+    title = SECTION_TITLES_VI.get(s.id, "Bài viết" if any(ch.isdigit() for _, m in rows for ch in m) else "Danh sách")
+    inner = f'''        <h2 className="t-caption muted list-title">{title}</h2>
+        <ul className="list-rows">
+          {{(all ? ROWS : ROWS.slice(0, 5)).map(([entry, meta], i) => (
+            <li key={{entry}}>
+              <a href="#" className="list-row" data-swarm-id={{`list-row-${{i + 1}}`}} data-swarm-role="link">
+                <span className="t-body">{{entry}}</span><span className="list-dots" aria-hidden />
+                <span className="t-caption muted">{{meta}}</span>
+              </a>
+            </li>
+          ))}}
+        </ul>
+        {{ROWS.length > 5 && (
+          <button type="button" className="btn btn-ghost list-more" data-swarm-id="list-more" data-swarm-role="button"
+            aria-expanded={{all}} onClick={{() => setAll(!all)}}>{{all ? "Thu gọn" : `Xem tất cả (${{ROWS.length}})`}}</button>
+        )}}'''
+    return _component(s, _root(s, "s-list", inner), client=True, prelude=f"\nconst ROWS = {_js(rows[:10])};\n",
+                      body="  const [all, setAll] = useState(false);\n")
+
+
 BY_ID = {"site-header": _nav, "site-footer": _footer, "auth": _auth, "product-main": _pdp_main}
 BY_STRUCTURE = {
     "sticky-bar": _nav, "split-7-5": _hero_split, "inline-metrics": _metrics, "alternating-z": _z_rows,
@@ -731,6 +808,7 @@ BY_STRUCTURE = {
     "title-with-count": _title_count, "sidebar-grid-4": _sidebar_grid, "inline-controls": _load_more, "tabs": _tabs,
     "feature-showcase": _showcase, "testimonials": _testimonials, "text-cards": _text_cards,
     "announcement-bar": _announcement, "usp-strip": _usp, "picker-recommend": _picker,
+    "gallery": _gallery, "logo-strip": _logo_strip, "hero-text": _hero_text, "list-rows": _list_rows,
 }
 
 
@@ -841,7 +919,7 @@ article.product:hover { transform: translateY(-2px); }  /* one- and two-line nam
 
 .s-nav { position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--bg-primary) 85%, transparent);
   backdrop-filter: blur(12px); border-bottom: 1px solid var(--border-subtle); }
-.nav-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; min-height: 64px; }
+.nav-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; column-gap: 24px; min-height: 64px; }
 .nav-logo { font-family: var(--font-heading); font-size: var(--text-h4); text-decoration: none; min-height: 48px;
   display: inline-flex; align-items: center; }
 .nav-links { display: none; gap: 32px; }
@@ -849,7 +927,7 @@ article.product:hover { transform: translateY(-2px); }  /* one- and two-line nam
   background: var(--bg-primary); border-bottom: 1px solid var(--border-subtle); }
 .nav-logo { transition: color var(--duration) var(--ease); }
 .nav-logo:hover { text-decoration: underline; text-underline-offset: 4px; }
-.nav-link { text-decoration: none; min-height: 48px; display: inline-flex; align-items: center; }
+.nav-link { text-decoration: none; min-height: 48px; display: inline-flex; align-items: center; white-space: nowrap; }
 .nav-link:hover { text-decoration: underline; text-underline-offset: 4px; }
 @media (min-width: 768px) {
   .nav-links, .nav-links.is-open { display: flex; flex-direction: row; position: static; padding: 0; border: 0; background: none; }
@@ -863,7 +941,8 @@ article.product:hover { transform: translateY(-2px); }  /* one- and two-line nam
 .z-rows { display: flex; flex-direction: column; gap: var(--section-y); }
 .bento { display: grid; gap: 32px 24px; margin-top: 32px; }
 .bento .art { height: clamp(240px, 26vw, 400px); }  /* same image height across a row, whatever the span */
-@media (min-width: 768px) { .bento { grid-template-columns: repeat(3, 1fr); } .bento-wide { grid-column: span 2; } }
+@media (min-width: 768px) { .bento { grid-template-columns: repeat(3, 1fr); } .bento-wide { grid-column: span 2; }
+  .bento > :nth-child(3):last-child { grid-column: 1 / -1; } }  /* 3 cards: the last one closes the row */
 .modal-scrim { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px;
   background: color-mix(in srgb, var(--text-primary) 45%, transparent); }
 .modal { display: flex; flex-direction: column; gap: 16px; width: min(480px, 100%); padding: 32px;
@@ -938,6 +1017,22 @@ article.product:hover { transform: translateY(-2px); }  /* one- and two-line nam
 .quotes { display: grid; gap: 24px; margin-top: 32px; }
 @media (min-width: 768px) { .quotes { grid-template-columns: repeat(2, 1fr); } }
 .quote blockquote { margin: 0; line-height: 1.35; }
+.gallery { display: grid; gap: 16px; margin-top: 32px; grid-template-columns: repeat(2, 1fr); }
+@media (min-width: 1024px) { .gallery { grid-template-columns: repeat(3, 1fr); } }
+.gallery-tile { margin: 0; }
+.hero-text { max-width: 72ch; }
+.hero-signup .input { flex: 1; min-width: 200px; }
+.logo-caption, .list-title { text-transform: uppercase; letter-spacing: 0.08em; }
+.logo-strip { list-style: none; padding: 0; margin-top: 16px; display: grid; gap: 16px; grid-template-columns: repeat(2, 1fr); }
+@media (min-width: 768px) { .logo-strip { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); } }
+.logo-mark { display: grid; place-items: center; min-height: 64px; border-radius: var(--radius-md);
+  background: var(--bg-surface); color: var(--text-secondary); }
+.list-rows { list-style: none; padding: 0; margin-top: 16px; display: grid; }
+.list-row { display: flex; align-items: baseline; gap: 16px; min-height: 48px; padding: 8px 0; text-decoration: none; }
+.list-row:hover .t-body { color: var(--accent); }
+.list-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.list-dots { flex: 1; border-bottom: 1px dotted var(--border-subtle); min-width: 16px; }
+.list-more { margin-top: 24px; }
 .text-cards { display: grid; gap: var(--grid-gap); }
 @media (min-width: 768px) { .text-cards { grid-template-columns: repeat(3, 1fr); } }
 .text-card { display: flex; flex-direction: column; gap: 8px; padding-top: 24px; border-top: 1px solid var(--border-subtle); }

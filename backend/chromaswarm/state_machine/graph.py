@@ -236,7 +236,8 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         p.clone = p.clone.model_copy(update={
             "analysed": True, "title": a.title, "sections": [sec.model_dump() for sec in a.sections],
             "pillars": a.pillars, "heading_font": a.heading_font, "body_font": a.body_font,
-            "content": a.content, "notes": a.notes})
+            "content": a.content, "notes": a.notes,
+            "content_width": a.content_width})
         pages, _ = agent.sitemap_for(p.domain)
         clone_page = SitemapPage(slug=CLONE_PAGE, title=f"Bản dựng lại · {a.title}"[:80],
                                  purpose=f"Dựng lại từ {p.clone.url}", status=PageStatus.BUILDING)
