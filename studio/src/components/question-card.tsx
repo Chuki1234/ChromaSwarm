@@ -26,7 +26,7 @@ type Props = {
 };
 
 const input =
-  "w-full rounded-lg border border-line bg-surface px-4 py-3 text-sm outline-none transition-colors duration-200 placeholder:text-fg-3 focus-visible:border-accent";
+  "w-full rounded-xl border border-line-strong bg-elevated px-4 py-3 text-sm outline-none transition-colors duration-200 placeholder:text-fg-3 focus-visible:border-accent";
 const primaryBtn =
   "h-12 rounded-lg bg-accent px-6 text-sm font-medium text-accent-fg transition-[filter,transform] duration-200 hover:brightness-110 active:scale-[0.98] disabled:opacity-50";
 const secondaryBtn =
@@ -67,12 +67,12 @@ function Choice({ q, busy, onAnswer, hideFreeText = false }: { q: Question; busy
             data-swarm-id={`option-${o.value}`}
             data-swarm-role="button"
             onClick={() => onAnswer({ value: o.value, label: o.label })}
-            className="group flex flex-col items-start gap-1 rounded-xl border border-line p-4 text-left transition-colors duration-200 hover:border-accent focus-visible:border-accent active:scale-[0.98] disabled:opacity-50"
+            className="group flex flex-col items-start gap-1 rounded-2xl border border-line bg-elevated p-4 text-left shadow-card transition-[transform,box-shadow,border-color] duration-200 hover:-translate-y-0.5 hover:border-accent/60 hover:shadow-float focus-visible:border-accent active:scale-[0.98] disabled:opacity-50"
           >
             <span className="flex items-center gap-2 text-sm font-medium">
               {o.label}
               {q.recommended === o.value && (
-                <span className="rounded-sm bg-accent px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-wider text-accent-fg">
+                <span className="rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent">
                   Nên làm trước
                 </span>
               )}
@@ -284,7 +284,7 @@ function Handover({ q, state, busy, onAnswer }: { q: Question; state: PipelineSt
 }
 
 /** Clone mode, B1: link + a short description + whether the site belongs to the user. */
-function CloneSource({ busy, onAnswer }: { busy: boolean; onAnswer: Props["onAnswer"] }) {
+export function CloneSource({ busy, onAnswer }: { busy: boolean; onAnswer: Props["onAnswer"] }) {
   const [url, setUrl] = useState("");
   const [prompt, setPrompt] = useState("");
   const [owned, setOwned] = useState(false);

@@ -143,7 +143,8 @@ def page_sections(state: PipelineState) -> list[Section]:
     surface = Surface(state.pillars.surface) if state.pillars.surface in {x.value for x in Surface} else None
     brief = state.brief or {}
     first_page = not state.page_routes or state.page_routes.get(state.selected_page or "") == "/"
-    if brief.get("sections") and first_page and state.selected_page in ("landing", "home"):
+    listed = len([b for b in brief.get("sections") or [] if b.get("kind") != "hero"]) >= 3  # brief.MIN_LISTED_SECTIONS
+    if listed and first_page and state.selected_page in ("landing", "home"):
         return sections_from_brief(brief, Layout(state.pillars.layout), theme, surface)
     return sections_for(state.selected_page or "", Layout(state.pillars.layout), theme, surface)
 

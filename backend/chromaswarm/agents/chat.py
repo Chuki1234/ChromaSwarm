@@ -132,6 +132,9 @@ Phân loại tin nhắn mới nhất của người dùng thành đúng một in
 - "revise": chỉ trong bước hỏi 5 trụ cột (B3), khi người dùng muốn đổi lại một trụ cột ĐÃ trả lời trước đó.
   answer = {"revise": "theme|layout|color|margins|scope", "text": "<nguyên văn mong muốn mới>"}.
 
+Ở bước đọc prompt (B1) và chọn trang (B2), reply chỉ xác nhận ngắn điều người dùng muốn làm. KHÔNG hứa sẽ hỏi thêm
+và KHÔNG nói trước bước sau: hệ thống tự đọc mô tả và tự cho biết còn thiếu gì (đủ rồi thì không hỏi).
+
 Không bịa số liệu thiết kế; mọi con số đã có trong phần thiết kế hiện tại hoặc tài liệu chuẩn.
 
 Hai mode của Chroma (trả lời đúng như sau khi được hỏi):

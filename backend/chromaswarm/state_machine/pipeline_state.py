@@ -203,6 +203,7 @@ class PipelineState(BaseModel):
     # pillars, orders the landing sections and feeds the copywriter. None = no brief / not read yet.
     brief: dict | None = None
     brief_read: bool = False
+    brief_applied: bool = False  # B3 pre-fill from the brief done (once)
     # B3: scope answered in several messages ("18-30 tuổi", then "điện thoại", then "Mua ngay")
     # is judged as one answer: earlier unclear parts are kept here until the whole is clear.
     scope_draft: str | None = None

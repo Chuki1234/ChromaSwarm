@@ -30,6 +30,7 @@ from chromaswarm.agents.consultant import (
     Option,
     Question,
     RuleBasedConsultant,
+    extract_cta,
     interpret_surface,
     project_title,
     split_color,
@@ -39,7 +40,7 @@ from chromaswarm.agents.consultant import (
 from chromaswarm.agents.planner import CLONE_PAGE, Section, design_inputs, page_sections, render_plan_md, render_product_md
 from chromaswarm.clone.reader import analyse as analyse_reference
 from chromaswarm.build.runtime import SectionCheck
-from chromaswarm.agents.brief import mode_from_background
+from chromaswarm.agents.brief import Brief, mode_from_background
 from chromaswarm.developer.content import build_copy
 from chromaswarm.developer.copywriter import copy_key
 from chromaswarm.qa.critic import render_markdown
@@ -106,6 +107,19 @@ def feedback_notice(changes: dict[str, str]) -> str:
 
     done = "; ".join(f"{PILLAR_LABELS[k]} → {show(k, v)}" for k, v in changes.items())
     return f"Đã cập nhật: {done}. Tài liệu đã được tạo lại, bạn xem và duyệt nhé."
+
+
+MISSING_LABELS = {"theme": "phong cách", "layout": "bố cục", "color": "tông màu nền", "margins": "độ thoáng",
+                  "scope": "khách hàng & nút chính"}
+
+
+def scope_gap(draft: str | None) -> str:
+    """The half of the B3 scope answer still missing, given what is already known."""
+    if not draft:
+        return MISSING_LABELS["scope"]
+    if extract_cta(draft):
+        return "ai là khách hàng chính (độ tuổi, nghề, dùng điện thoại hay máy tính)"
+    return "nút QUAN TRỌNG NHẤT bạn muốn khách bấm (ví dụ: Mua ngay, Đặt lịch, Đăng ký)"
 
 
 def prefill_from_brief(p, brief) -> list[str]:
@@ -249,8 +263,22 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         return {"pipeline": p, "notice": f"Đã đọc {len(a.sections)} section từ trang mẫu: {names}. Sẽ dựng lại {kind}."}
 
     def b2_creative(p: PipelineState) -> dict:
+        if not p.brief_read and deps.brief_reader:
+            # Read the prompt once for every answer it already gives; returned before any interrupt so the
+            # (LLM) reading is persisted and never repeated.
+            p.brief_read = True
+            brief = deps.brief_reader(p.raw_prompt or "")
+            p.brief = brief.model_dump() if brief else None
+            return {"pipeline": p, "notice": None}
         pages, first = agent.sitemap_for(p.domain)
         p.sitemap = pages
+        asked = (p.brief or {}).get("page")
+        if asked in {pg.slug for pg in pages}:  # "làm landing page": no need to ask which page
+            p.selected_page = asked
+            next(pg for pg in p.sitemap if pg.slug == asked).status = PageStatus.BUILDING
+            p.advance()
+            title = next(pg.title for pg in pages if pg.slug == asked)
+            return {"pipeline": p, "notice": f"Bắt đầu với {title} như bạn yêu cầu."}
         listing = "\n".join(f"{n}. {pg.title} — {pg.purpose}" for n, pg in enumerate(pages, 1))
         answer = interrupt(Question(
             step="B2", kind="choice", key="selected_page", allow_free_text=False, recommended=first,
@@ -278,20 +306,23 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             if p.can_advance():
                 p.advance()
                 return {"pipeline": p, "notice": "Đã lấy 4 trụ cột từ trang mẫu và đối tượng từ mô tả của bạn."}
-        if p.mode is not BuildMode.CLONE and not p.brief_read and deps.brief_reader:
-            # A detailed first message is a brief: take every pillar it already answers (user reviews at B7).
-            p.brief_read = True
-            brief = deps.brief_reader(p.raw_prompt or "")
-            if brief is not None:
-                p.brief = brief.model_dump()
-                filled = prefill_from_brief(p, brief)
-                taken = filled + brief.summary()
-                if p.can_advance():
-                    p.advance()
-                return {"pipeline": p, "notice": (
-                    "Mình đã đọc bản mô tả của bạn và lấy sẵn: " + "; ".join(taken) + ". Phần còn thiếu mình hỏi tiếp, "
-                    "và bạn vẫn đổi được mọi thứ ở bước duyệt kế hoạch.") if taken else state.notice}
-        if p.pillars.theme and not p.pillars.surface:
+        if p.mode is not BuildMode.CLONE and p.brief and not p.brief_applied:
+            p.brief_applied = True
+            brief = Brief.model_validate(p.brief)
+            taken = prefill_from_brief(p, brief) + brief.summary()
+            if not p.pillars.scope and (brief.audience or brief.primary_cta):
+                # half of the scope answer is in the prompt: keep it, ask only the other half
+                p.scope_draft = brief.audience or f"Hành động quan trọng nhất: {brief.primary_cta}"
+            missing = [scope_gap(p.scope_draft) if m == "scope" else MISSING_LABELS[m] for m in p.pillars.missing()]
+            if p.can_advance():
+                p.advance()
+            if not taken:
+                return {"pipeline": p, "notice": state.notice}
+            text = "Mình đã lấy từ mô tả của bạn: " + "; ".join(taken) + "."
+            text += (f" Chỉ còn thiếu: {', '.join(missing)} — mình hỏi tiếp." if missing
+                     else " Đã đủ thông tin, không cần hỏi thêm. Bạn vẫn đổi được mọi thứ ở bước duyệt kế hoạch.")
+            return {"pipeline": p, "notice": text}
+        if p.pillars.theme and not p.pillars.surface and not (p.brief or {}).get("theme"):
             # Material, right after the theme; skipped when the first message already named one.
             if named := surface_in_text(p.raw_prompt or ""):
                 p.pillars.surface = named  # returned (not followed by an interrupt) so the value is persisted
@@ -307,6 +338,8 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
                 return {"pipeline": p, "notice": None}
         pillar = p.pillars.next_question()
         q = agent.pillar_question(pillar)
+        if pillar == "scope" and p.scope_draft:  # half of it is known: ask only the other half
+            q.text = (f"Mình đã có: “{p.scope_draft}”. Bạn cho mình biết thêm {scope_gap(p.scope_draft)} nhé?")
         q.note = state.notice
         answer = interrupt(q.model_dump())
         if isinstance(answer, dict) and answer.get("revise") in Pillars.ORDERED_FIELDS:
@@ -327,12 +360,12 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             value = agent.interpret("scope", combined)
             if value is None:
                 p.scope_draft = combined
-                return {"pipeline": p, "notice": (
-                    f"Mình đã ghi lại: “{combined}”. Bạn bổ sung phần còn thiếu nhé "
-                    "(khách hàng chính, hoặc nút QUAN TRỌNG NHẤT bạn muốn họ bấm — ví dụ: Mua ngay, Đặt lịch, Đăng ký).")}
+                return {"pipeline": p, "notice": f"Mình đã ghi lại: “{combined}”. Chỉ còn thiếu {scope_gap(combined)}."}
             p.scope_draft = None
         else:
             value = agent.interpret(pillar, str(answer))
+            if pillar == "color" and value and len(value.split()) == 1 and (p.brief or {}).get("accent"):
+                value = f"{value} {p.brief['accent']}"  # tone from this answer + the colour named in the prompt
         if value is None:
             return {"pipeline": p, "notice": "Mình chưa hiểu rõ câu trả lời — bạn chọn một phương án hoặc mô tả cụ thể hơn nhé."}
         setattr(p.pillars, pillar, value)
@@ -370,6 +403,11 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
                 p.advance()
             return {"pipeline": p, "notice": None}
 
+        if (p.brief or {}).get("assets_said") and not p.assets_confirmed:
+            p.assets_confirmed = True  # "dùng ảnh Unsplash": no need to ask for assets
+            p.advance()
+            return {"pipeline": p, "notice": (state.notice + " " if state.notice else "") +
+                    "Bạn đã nói về nguồn ảnh nên mình bỏ qua bước gửi tài nguyên."}
         answer = interrupt(Question(
             step="B4", kind="assets", key="assets", note=state.notice,
             text=("Bạn gửi giúp mình các tài nguyên đang có: logo, ảnh sản phẩm thật, slogan/thông điệp chính, "

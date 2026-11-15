@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { BuildPanel } from "@/components/build-panel";
-import { QuestionCard, type Answer, type Question } from "@/components/question-card";
-import { Welcome } from "@/components/welcome";
+import { CloneSource, QuestionCard, type Answer, type Question } from "@/components/question-card";
 
 const BACKEND_WS = process.env.NEXT_PUBLIC_BACKEND_WS ?? "ws://localhost:8100";
 
@@ -20,6 +19,14 @@ const STEPS: { id: string; label: string; phase: string }[] = [
   { id: "B10", label: "Hợp nhất", phase: "Triển khai" },
   { id: "B11", label: "Cursor Lớn Nhất", phase: "Kiểm định" },
   { id: "B12", label: "Bàn giao", phase: "Kiểm định" },
+];
+
+// One click from the empty screen: a complete prompt goes straight to the plan (agents/brief.py).
+const EXAMPLES: { tag: string; text: string }[] = [
+  { tag: "Bán hàng", text: "Landing page bán nến thơm handmade, phong cách sang trọng, nền kem, màu xanh rêu, khách văn phòng 25-35 tuổi, muốn họ bấm Đặt mua" },
+  { tag: "Đặt lịch", text: "Trang đặt lịch spa, tông tối sang trọng, muốn khách bấm Đặt lịch ngay" },
+  { tag: "SaaS", text: "Landing page cho phần mềm quản lý dự án, giao diện hiện đại, nền tối, nút Dùng thử miễn phí" },
+  { tag: "Thời trang", text: "Web bán giày sneaker cho sinh viên, phong cách cá tính, nhiều sản phẩm" },
 ];
 
 export type PipelineState = {
@@ -63,8 +70,11 @@ type Snapshot = {
 };
 
 type Status = "connecting" | "open" | "closed";
-type Turn = { step: string; question: string; answer: string };
-type ChatLine = { role: "user" | "assistant"; text: string };
+/** The conversation as the user reads it, oldest first. Questions stay in place once answered. */
+type Item =
+  | { kind: "user"; text: string }
+  | { kind: "assistant"; text: string; tone?: "error" }
+  | { kind: "question"; sig: string; q: Question; note: string | null };
 
 function sessionId(): string {
   try {
@@ -78,50 +88,150 @@ function sessionId(): string {
   }
 }
 
+const MODE_KEY = "chromaswarm-mode"; // the mode to open with after "Đổi chế độ" starts a new session
+
+function savedMode(): "creative" | "clone" {
+  try {
+    return localStorage.getItem(MODE_KEY) === "clone" ? "clone" : "creative";
+  } catch {
+    return "creative";
+  }
+}
+
+const sigOf = (s: Snapshot) => (s.question ? `${s.state.step}|${s.question.key}|${s.question.text}` : "");
+
 export function PipelineConsole() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [status, setStatus] = useState<Status>("connecting");
-  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [history, setHistory] = useState<Turn[]>([]);
-  const [chat, setChat] = useState<ChatLine[]>([]);
+  const [items, setItems] = useState<Item[]>([]);
   const [draft, setDraft] = useState("");
+  // Local until something is sent: the user can switch Creative <-> Clone freely on the empty screen.
+  const [mode, setMode] = useState<"creative" | "clone">("creative");
+  const [panelOpen, setPanelOpen] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
+  const lastSig = useRef("");
+  const lastNote = useRef<string | null>(null);
+  const pendingPrompt = useRef<string | null>(null); // typed on the empty screen, sent once Chroma asks for it
+  const pendingClone = useRef<Answer | null>(null); // Clone form filled on the empty screen, sent once Chroma asks for it
+  const endRef = useRef<HTMLDivElement>(null);
+
+  const send = (payload: object) => wsRef.current?.send(JSON.stringify(payload));
 
   useEffect(() => {
     const ws = new WebSocket(`${BACKEND_WS}/ws/session/${sessionId()}`);
     wsRef.current = ws;
-    ws.onopen = () => setStatus("open");
+    ws.onopen = () => {
+      setStatus("open");
+      setMode(savedMode()); // after "Đổi chế độ": open the new session in the chosen mode
+    };
     ws.onclose = () => setStatus("closed");
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data);
-      setBusy(false);
       if (msg.type === "state") {
-        setSnap(msg);
-        setError(null);
+        const s = msg as Snapshot;
+        setSnap(s);
+        setBusy(false);
+        const sig = sigOf(s);
+        // The prompt / Clone form filled on the empty screen answers this question: don't show it again.
+        if ((pendingPrompt.current && s.question?.key === "raw_prompt") ||
+            (pendingClone.current && s.question?.kind === "clone_source")) lastSig.current = sig;
+        if (sig && sig !== lastSig.current) {
+          lastSig.current = sig;
+          lastNote.current = s.notice;
+          // The mode choice lives on the empty screen, not in the thread.
+          if (s.question!.kind !== "mode") setItems((it) => [...it, { kind: "question", sig, q: s.question!, note: s.notice }]);
+        } else if (s.notice && s.notice !== lastNote.current) {
+          lastNote.current = s.notice; // same question, new remark ("chưa hiểu rõ…", "đã ghi lại…")
+          setItems((it) => [...it, { kind: "assistant", text: s.notice! }]);
+        }
+        if (pendingClone.current && s.question?.kind === "clone_source") {
+          const a = pendingClone.current;
+          pendingClone.current = null;
+          setBusy(true);
+          send({ type: "answer", value: a.value });
+        }
+        if (pendingPrompt.current && s.question?.key === "raw_prompt") {
+          const text = pendingPrompt.current;
+          pendingPrompt.current = null;
+          setBusy(true);
+          send({ type: "chat", text });
+        }
       } else if (msg.type === "chat") {
-        setChat((c) => [...c, { role: msg.role, text: msg.text }]);
-        if (msg.role === "user") setBusy(true); // the reply / next question is on its way
+        setItems((it) => [...it, { kind: msg.role === "user" ? "user" : "assistant", text: msg.text }]);
+        // user echo: the reply is on its way. Chroma's reply: done — an answer to a question ("Bento là gì?")
+        // comes with no new state, so waiting for one would leave the composer locked.
+        setBusy(msg.role === "user");
       } else if (msg.type === "error") {
-        setError(msg.message);
+        setBusy(false);
+        setItems((it) => [...it, { kind: "assistant", tone: "error", text: `${msg.message} Bạn gửi lại giúp mình nhé.` }]);
       }
     };
     return () => ws.close();
   }, []);
 
+  useLayoutEffect(() => {
+    endRef.current?.scrollIntoView({ block: "end" });
+  }, [items, busy, snap?.state.sections_checked?.length, snap?.state.qa_summary]);
+
+  useEffect(() => {
+    if (!panelOpen) return;
+    const close = (e: KeyboardEvent) => e.key === "Escape" && setPanelOpen(false);
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [panelOpen]);
+
+  const question = snap?.question ?? null;
+  const step = snap?.state.step ?? "B1";
+  const stepIdx = STEPS.findIndex((s) => s.id === step);
+  const empty = items.length === 0 && (!question || question.kind === "mode");
+  const cloneMode = snap?.state.mode === "clone";
+  // Clone fills its own form; every other question accepts plain chat (answers, questions, changes of mind).
+  const chatOpen = status === "open" && !cloneMode && question?.kind !== "clone_source";
+
   const answer = (a: Answer) => {
-    if (!snap?.question) return;
-    setHistory((h) => [...h, { step: snap.state.step, question: snap.question!.text.split("\n")[0], answer: a.label }]);
+    if (!question) return;
+    setItems((it) => [...it, { kind: "user", text: a.label }]);
     setBusy(true);
-    wsRef.current?.send(JSON.stringify({ type: "answer", value: a.value }));
+    send({ type: "answer", value: a.value });
   };
 
-  const sendChat = () => {
-    const text = draft.trim();
-    if (!text) return;
+  const submit = (text: string) => {
+    const t = text.trim();
+    if (!t || busy || status !== "open") return;
     setDraft("");
+    if (question?.kind === "mode") {
+      // Empty screen: pick Creative, then send the prompt as soon as Chroma asks for it.
+      pendingPrompt.current = t;
+      setBusy(true);
+      send({ type: "answer", value: "creative" });
+      return;
+    }
     setBusy(true);
-    wsRef.current?.send(JSON.stringify({ type: "chat", text }));
+    send({ type: "chat", text: t });
+  };
+
+  const submitClone = (a: Answer) => {
+    // Clone is chosen only now, with the form already filled: until then the switch stays reversible.
+    pendingClone.current = a;
+    setItems((it) => [...it, { kind: "user", text: a.label }]);
+    setBusy(true);
+    send({ type: "answer", value: "clone" });
+  };
+
+  const chooseMode = (m: "creative" | "clone") => {
+    setMode(m);
+    try {
+      localStorage.setItem(MODE_KEY, m);
+    } catch {}
+  };
+
+  const changeMode = () => {
+    const other = cloneMode ? "creative" : "clone";
+    const label = other === "clone" ? "Clone (dựng lại từ một trang có sẵn)" : "Creative (dựng từ ý tưởng)";
+    if (stepIdx > 0 && !window.confirm(`Chuyển sang ${label}? Phiên hiện tại sẽ dừng lại và bắt đầu phiên mới.`)) return;
+    chooseMode(other);
+    restart();
   };
 
   const restart = () => {
@@ -131,62 +241,283 @@ export function PipelineConsole() {
     location.reload();
   };
 
-  const current = snap?.state.step ?? "B1";
-  // Creative mode (and the mode choice itself) talks through the chat bar; Clone uses its form.
-  const chatEnabled = !!snap && snap.state.mode !== "clone" && !!snap.question && snap.question.kind !== "clone_source";
-  const currentIdx = STEPS.findIndex((s) => s.id === current);
-  // B1 before anything was said: the landing view (what Chroma does + the Creative / Clone choice).
-  const welcome = current === "B1" && snap?.question?.kind === "mode" && history.length === 0 && chat.length === 0;
-  const phases = [...new Set(STEPS.map((s) => s.phase))];
-  const statusLabel = { open: "Đã kết nối", connecting: "Đang kết nối", closed: "Mất kết nối" }[status];
+  const building = !!snap && !question && (snap.running || snap.finished) && stepIdx >= STEPS.findIndex((s) => s.id === "B8");
+  const lastQuestionIdx = items.map((i) => i.kind).lastIndexOf("question");
 
   return (
-    <main className="mx-auto grid w-full max-w-[1360px] flex-1 gap-8 px-4 py-12 md:grid-cols-[240px_1fr] md:px-8 lg:grid-cols-[240px_1fr_280px]">
-      <div className="backdrop" aria-hidden />
-      <aside className="flex flex-col gap-6">
-        <div className="flex items-center justify-between gap-3">
-          <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
-            <Logo />ChromaSwarm
-          </h1>
-          <span className="flex items-center gap-2 whitespace-nowrap text-xs text-fg-2" role="status">
-            <span className={`h-2 w-2 rounded-full ${status === "open" ? "dot-live bg-accent" : status === "closed" ? "bg-danger" : "bg-fg-3"}`} />
-            {statusLabel}
+    <div className="flex h-dvh w-full overflow-hidden">
+      <SidePanel open={panelOpen} onClose={() => setPanelOpen(false)} snap={snap} status={status} stepIdx={stepIdx} onRestart={restart} />
+
+      <main className="flex min-w-0 flex-1 flex-col">
+        <header className={`flex h-14 shrink-0 items-center gap-3 border-b border-line px-4 ${empty ? "md:hidden" : ""}`}>
+          <button type="button" onClick={() => setPanelOpen(true)} aria-label="Mở bảng tiến độ" data-swarm-id="open-panel"
+            data-swarm-role="button" className="grid size-10 place-items-center rounded-lg hover:bg-surface md:hidden">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden><path d="M3 6h14M3 10h14M3 14h14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
+          </button>
+          {empty ? (
+            <span className="font-semibold">ChromaSwarm</span>
+          ) : (
+            <button type="button" onClick={changeMode} data-swarm-id="change-mode" data-swarm-role="button"
+              className="flex h-10 items-center gap-2 rounded-lg px-2 text-sm text-fg-2 transition-colors duration-200 hover:bg-surface hover:text-fg">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden><path d="M10 3.5 5.5 8l4.5 4.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              Đổi sang {cloneMode ? "Creative" : "Clone"}
+            </button>
+          )}
+          {!empty && (
+            <span className="rounded-full border border-line px-3 py-1 text-xs text-fg-2">
+              {cloneMode ? "Clone · từ trang có sẵn" : "Creative · từ ý tưởng"}
+            </span>
+          )}
+          <span className="ml-auto font-mono text-xs text-fg-2">{step} · {STEPS[stepIdx]?.label}</span>
+        </header>
+
+        {empty ? (
+          <EmptyState mode={mode} setMode={chooseMode} status={status}>
+            <div className="stack-cell">
+              <div data-hidden={mode !== "creative"} aria-hidden={mode !== "creative"} className="flex flex-col gap-4">
+                <Composer value={draft} onChange={setDraft} onSubmit={() => submit(draft)} disabled={status !== "open" || mode !== "creative"}
+                  busy={busy} big placeholder="Ví dụ: Landing page bán gốm thủ công, phong cách ấm áp, khách 25–40 tuổi, muốn họ bấm Đặt hàng" />
+                <p className="px-2 text-xs text-fg-3">Gợi ý — bấm để thử ngay:</p>
+                <ul className="grid gap-3 sm:grid-cols-2" aria-label="Gợi ý">
+                  {EXAMPLES.map((e) => (
+                    <li key={e.text}>
+                      <button type="button" tabIndex={mode === "creative" ? 0 : -1} disabled={busy || status !== "open"} onClick={() => submit(e.text)}
+                        data-swarm-role="button"
+                        className="group flex h-full w-full flex-col gap-2 rounded-2xl border border-line bg-elevated p-4 text-left shadow-card transition-[transform,box-shadow,border-color] duration-300 hover:-translate-y-0.5 hover:border-line-strong hover:shadow-float disabled:opacity-50">
+                        <span className="self-start rounded-full bg-accent-soft px-2.5 py-0.5 text-xs font-medium text-accent">{e.tag}</span>
+                        <span className="text-sm leading-relaxed text-fg-2 group-hover:text-fg">{e.text}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div data-hidden={mode !== "clone"} aria-hidden={mode !== "clone"}
+                className="rounded-3xl border border-line bg-elevated p-6 shadow-card">
+                {/* inert while hidden: its fields must not take focus behind the Creative panel */}
+                <fieldset disabled={mode !== "clone"} className="contents">
+                  <CloneSource busy={busy || status !== "open"} onAnswer={submitClone} />
+                </fieldset>
+              </div>
+            </div>
+          </EmptyState>
+        ) : (
+          <>
+            <div className="flex-1 overflow-y-auto" data-swarm-section="conversation">
+              <ol className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-8" aria-label="Hội thoại với Chroma">
+                {items.map((it, i) =>
+                  it.kind === "user" ? (
+                    <li key={i} className="msg-in max-w-[85%] self-end whitespace-pre-wrap rounded-3xl bg-surface px-5 py-3 leading-relaxed">
+                      {it.text}
+                    </li>
+                  ) : it.kind === "assistant" ? (
+                    <Assistant key={i}>
+                      <p className={`whitespace-pre-wrap leading-relaxed ${it.tone === "error" ? "text-danger" : "text-fg"}`}
+                        role={it.tone === "error" ? "alert" : undefined}>{it.text}</p>
+                    </Assistant>
+                  ) : i === lastQuestionIdx && question && it.sig === sigOf(snap!) ? (
+                    <Assistant key={i}>
+                      {question.kind === "handover" && <BuildPanel state={snap!.state} notice={null} running={false} />}
+                      <QuestionCard key={it.sig} question={question} notice={it.note} state={snap!.state}
+                        busy={busy || status !== "open"} onAnswer={answer} chatMode={chatOpen} />
+                    </Assistant>
+                  ) : (
+                    <Assistant key={i}>
+                      {it.note && <p className="mb-2 text-sm text-fg-2">{it.note}</p>}
+                      <p className="whitespace-pre-line leading-relaxed text-fg-2">{it.q.text}</p>
+                    </Assistant>
+                  ),
+                )}
+                {building && (
+                  <Assistant>
+                    <BuildPanel state={snap!.state} notice={snap!.notice} running={snap!.running} />
+                  </Assistant>
+                )}
+                {busy && (
+                  <Assistant>
+                    <span className="typing" aria-label="Chroma đang trả lời"><i /><i /><i /></span>
+                  </Assistant>
+                )}
+                {status === "closed" && (
+                  <Assistant>
+                    <p role="alert" className="text-danger">Mất kết nối tới backend (cổng 8100). Hãy chạy backend rồi tải lại trang.</p>
+                  </Assistant>
+                )}
+              </ol>
+              <div ref={endRef} />
+            </div>
+            <div className="shrink-0 px-4 pb-4 pt-2">
+              <div className="mx-auto w-full max-w-3xl">
+                <Composer value={draft} onChange={setDraft} onSubmit={() => submit(draft)} disabled={!chatOpen} busy={busy}
+                  placeholder={cloneMode ? "Clone mode: điền form trong hội thoại ở trên" : "Trả lời Chroma, hỏi lại (vd: “Bento là gì?”) hoặc đổi ý…"} />
+                <p className="mt-2 text-center text-xs text-fg-3">Chroma chỉ dựng sau khi bạn duyệt kế hoạch ở bước B7.</p>
+              </div>
+            </div>
+          </>
+        )}
+      </main>
+    </div>
+  );
+}
+
+function Assistant({ children }: { children: React.ReactNode }) {
+  return (
+    <li className="msg-in flex gap-3">
+      <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-full border border-line text-accent" aria-hidden>
+        <Logo size={16} />
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-3 pt-1">{children}</div>
+    </li>
+  );
+}
+
+function Composer({ value, onChange, onSubmit, disabled, busy, placeholder, big = false }: {
+  value: string; onChange: (v: string) => void; onSubmit: () => void; disabled: boolean; busy: boolean;
+  placeholder: string; big?: boolean;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  }, [value]);
+  const ready = !disabled && !busy && !!value.trim();
+  return (
+    <form className={`flex items-end gap-2 rounded-3xl border border-line bg-elevated shadow-card transition-[border-color,box-shadow] duration-200 focus-within:border-accent/50 focus-within:shadow-float ${big ? "p-3" : "p-2"}`}
+      onSubmit={(e) => { e.preventDefault(); onSubmit(); }} data-swarm-section="chat-bar">
+      <label htmlFor={big ? "prompt-input" : "chat-input"} className="sr-only">Nhắn cho Chroma</label>
+      <textarea id={big ? "prompt-input" : "chat-input"} ref={ref} rows={1} value={value} disabled={disabled} placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); onSubmit(); }
+        }}
+        className={`max-h-[200px] flex-1 resize-none bg-transparent px-3 py-2 leading-relaxed outline-none placeholder:text-fg-3 disabled:cursor-not-allowed ${big ? "min-h-[88px] text-base" : "text-sm"}`}
+        data-swarm-id="chat-input" data-swarm-role="input" />
+      <button type="submit" disabled={!ready} aria-label="Gửi" data-swarm-id="chat-send" data-swarm-role="button"
+        className="grid size-10 shrink-0 place-items-center rounded-full bg-accent text-accent-fg shadow-card transition-[background-color,opacity,transform] duration-200 hover:bg-accent-hover active:scale-95 disabled:bg-line-strong disabled:text-elevated disabled:shadow-none">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden><path d="M9 14V4m0 0L4.5 8.5M9 4l4.5 4.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
+      </button>
+    </form>
+  );
+}
+
+const TRUST = [
+  { title: "Kiểm thử tự động", text: "4 bài QA trên 4 kích thước màn hình" },
+  { title: "Chấm điểm thẩm mỹ", text: "So với chuẩn các trang mẫu hàng đầu" },
+  { title: "Code thật, của bạn", text: "Next.js, chạy được và sửa tiếp được" },
+];
+
+function EmptyState({ mode, setMode, status, children }: {
+  mode: "creative" | "clone"; setMode: (m: "creative" | "clone") => void; status: Status; children: React.ReactNode;
+}) {
+  return (
+    // Anchored from the top (not centred): switching panels changes nothing above them.
+    <div className="flex-1 overflow-y-auto px-4" data-swarm-section="welcome">
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 pb-16 pt-[clamp(32px,10vh,112px)]">
+        <div className="msg-in flex flex-col items-center gap-4 text-center">
+          <span className="inline-flex items-center gap-2 rounded-full border border-line bg-elevated px-3 py-1 text-xs text-fg-2 shadow-card">
+            <span className="size-1.5 rounded-full bg-accent" aria-hidden />
+            Đội thiết kế AI · 12 bước · bạn duyệt trước khi dựng
           </span>
+          <h1 className="text-balance text-4xl font-semibold tracking-tight sm:text-5xl">
+            Hôm nay bạn muốn làm <span className="text-accent">trang web</span> gì?
+          </h1>
+          <p className="max-w-[56ch] text-pretty text-lg leading-relaxed text-fg-2">
+            Kể bằng lời thường. Chroma hiểu phong cách, màu và khách hàng của bạn, chỉ hỏi phần còn thiếu, rồi dựng trang thật để bạn xem ngay.
+          </p>
         </div>
+
+        <ModeSwitch mode={mode} setMode={setMode} />
+        {children}
+
+        <ul className="grid gap-4 border-t border-line pt-8 sm:grid-cols-3" aria-label="Cam kết">
+          {TRUST.map((t) => (
+            <li key={t.title} className="flex items-start gap-3">
+              <span className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-full bg-accent-soft text-accent" aria-hidden>
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="m3.5 8.5 3 3 6-7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              </span>
+              <span className="flex flex-col gap-0.5">
+                <span className="text-sm font-medium">{t.title}</span>
+                <span className="text-sm text-fg-2">{t.text}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+        {status === "closed" && (
+          <p role="alert" className="text-center text-sm text-danger">Không kết nối được tới backend (cổng 8100). Hãy chạy backend rồi tải lại trang.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Segmented control with a sliding thumb: the selection moves, the layout never does. */
+function ModeSwitch({ mode, setMode }: { mode: "creative" | "clone"; setMode: (m: "creative" | "clone") => void }) {
+  const opts = [
+    { value: "creative" as const, label: "Creative", hint: "từ ý tưởng" },
+    { value: "clone" as const, label: "Clone", hint: "từ trang có sẵn" },
+  ];
+  return (
+    <div className="relative mx-auto grid w-full max-w-sm grid-cols-2 rounded-full border border-line bg-surface p-1 text-sm" role="radiogroup" aria-label="Chế độ">
+      <span className="seg-thumb absolute inset-y-1 left-1 w-[calc(50%-4px)] rounded-full bg-elevated shadow-card" aria-hidden
+        style={{ transform: mode === "clone" ? "translateX(100%)" : "translateX(0)" }} />
+      {opts.map((o) => (
+        <button key={o.value} type="button" role="radio" aria-checked={mode === o.value} onClick={() => setMode(o.value)}
+          data-swarm-id={`option-${o.value}`} data-swarm-role="button"
+          className={`relative z-10 flex h-10 items-center justify-center gap-1.5 rounded-full transition-colors duration-200 ${mode === o.value ? "font-medium text-fg" : "text-fg-2 hover:text-fg"}`}>
+          {o.label}<span className="hidden text-fg-3 sm:inline">· {o.hint}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function SidePanel({ open, onClose, snap, status, stepIdx, onRestart }: {
+  open: boolean; onClose: () => void; snap: Snapshot | null; status: Status; stepIdx: number; onRestart: () => void;
+}) {
+  const phases = [...new Set(STEPS.map((s) => s.phase))];
+  const statusLabel = { open: "Đã kết nối", connecting: "Đang kết nối", closed: "Mất kết nối" }[status];
+  return (
+    <>
+      {open && <div className="fixed inset-0 z-30 bg-fg/30 md:hidden" onClick={onClose} aria-hidden />}
+      <aside className={`fixed inset-y-0 left-0 z-40 flex w-72 flex-col gap-6 overflow-y-auto border-r border-line bg-bg p-4 transition-transform duration-300 md:static md:translate-x-0 md:bg-surface/60 ${open ? "translate-x-0" : "-translate-x-full"}`}
+        aria-label="Tiến độ" data-swarm-section="step-tracker">
+        <div className="flex items-center justify-between gap-2">
+          <span className="flex items-center gap-2 font-semibold text-accent"><Logo size={20} /><span className="text-fg">ChromaSwarm</span></span>
+          <button type="button" onClick={onClose} aria-label="Đóng bảng tiến độ" className="grid size-9 place-items-center rounded-lg hover:bg-surface md:hidden">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden><path d="m4 4 8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
+          </button>
+        </div>
+        <button type="button" onClick={onRestart} data-swarm-id="restart-session" data-swarm-role="button"
+          className="flex h-11 items-center gap-2 rounded-xl border border-line px-3 text-sm transition-colors duration-200 hover:bg-surface">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden><path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
+          Phiên mới
+        </button>
         <div className="flex flex-col gap-2">
-          <div className="flex justify-between text-xs text-fg-2">
-            <span>Tiến độ</span>
-            <span className="font-mono">{currentIdx + 1}/{STEPS.length}</span>
-          </div>
+          <div className="flex justify-between text-xs text-fg-2"><span>Tiến độ</span><span className="font-mono">{stepIdx + 1}/{STEPS.length}</span></div>
           <div className="h-1.5 overflow-hidden rounded-full bg-surface" role="progressbar" aria-label="Tiến độ 12 bước"
-            aria-valuemin={1} aria-valuemax={STEPS.length} aria-valuenow={currentIdx + 1}>
-            <div className="h-full rounded-full bg-accent transition-[width] duration-700 ease-out"
-              style={{ width: `${((currentIdx + 1) / STEPS.length) * 100}%` }} />
+            aria-valuemin={1} aria-valuemax={STEPS.length} aria-valuenow={stepIdx + 1}>
+            <div className="h-full rounded-full bg-accent transition-[width] duration-700 ease-out" style={{ width: `${((stepIdx + 1) / STEPS.length) * 100}%` }} />
           </div>
         </div>
-        <nav aria-label="Các bước" className="hidden flex-col gap-4 md:flex" data-swarm-section="step-tracker">
+        <nav aria-label="Các bước" className="flex flex-col gap-3">
           {phases.map((phase) => (
-            <div key={phase} className="flex flex-col gap-1">
-              <p className="px-3 font-mono text-[11px] uppercase tracking-[0.16em] text-fg-3">{phase}</p>
+            <div key={phase} className="flex flex-col">
+              <p className="px-2 pb-1 font-mono text-[11px] uppercase tracking-[0.16em] text-fg-3">{phase}</p>
               <ol className="flex flex-col">
                 {STEPS.filter((s) => s.phase === phase).map((s) => {
                   const i = STEPS.indexOf(s);
-                  const state = i < currentIdx ? "done" : i === currentIdx ? "current" : "todo";
+                  const state = i < stepIdx ? "done" : i === stepIdx ? "current" : "todo";
                   return (
                     <li key={s.id} aria-current={state === "current" ? "step" : undefined}
-                      className={`flex items-center gap-3 rounded-lg px-3 py-1.5 text-sm transition-colors duration-300 ${
-                        state === "current" ? "bg-surface font-medium text-fg" : state === "done" ? "text-fg-2" : "text-fg-3"}`}>
-                      <span className="grid h-5 w-5 shrink-0 place-items-center" aria-hidden>
+                      className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm ${state === "current" ? "bg-surface font-medium text-fg" : state === "done" ? "text-fg-2" : "text-fg-3"}`}>
+                      <span className="grid size-4 shrink-0 place-items-center" aria-hidden>
                         {state === "done" ? (
-                          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="text-accent"><path d="m3.5 8.5 3 3 6-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                        ) : state === "current" ? (
-                          <span className="dot-live h-2 w-2 rounded-full bg-accent" />
-                        ) : (
-                          <span className="h-1.5 w-1.5 rounded-full bg-line" />
-                        )}
+                          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" className="text-accent"><path d="m3.5 8.5 3 3 6-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                        ) : state === "current" ? <span className="dot-live size-2 rounded-full bg-accent" /> : <span className="size-1.5 rounded-full bg-line" />}
                       </span>
-                      <span className="w-8 font-mono text-xs">{s.id}</span>
-                      <span>{s.label}</span>
+                      <span className="w-7 font-mono text-[11px]">{s.id}</span>
+                      <span className="truncate">{s.label}</span>
                     </li>
                   );
                 })}
@@ -194,176 +525,27 @@ export function PipelineConsole() {
             </div>
           ))}
         </nav>
-        <button
-          type="button"
-          onClick={restart}
-          data-swarm-id="restart-session"
-          data-swarm-role="button"
-          className="mt-4 self-start text-xs text-fg-3 underline-offset-4 transition-colors duration-200 hover:text-fg hover:underline"
-        >
-          Bắt đầu phiên mới
-        </button>
+        {snap && snap.missing.length > 0 && (
+          <div className="flex flex-col gap-2 rounded-xl border border-line p-3">
+            <p className="text-xs font-medium">Còn cần để qua bước</p>
+            <ul className="flex flex-col gap-1 font-mono text-[11px] text-fg-2">{snap.missing.map((m) => <li key={m}>— {m}</li>)}</ul>
+            <p className="text-xs text-fg-3">Clarity Score {Math.round(snap.clarity_score * 100)}%</p>
+          </div>
+        )}
+        <p className="mt-auto flex items-center gap-2 text-xs text-fg-2" role="status">
+          <span className={`size-2 rounded-full ${status === "open" ? "dot-live bg-accent" : status === "closed" ? "bg-danger" : "bg-fg-3"}`} />
+          {statusLabel}
+        </p>
       </aside>
-
-      <section className={`flex min-w-0 flex-col gap-8 ${welcome ? "lg:col-span-2" : ""}`} data-swarm-section="conversation">
-        {welcome && snap?.question ? (
-          <Welcome question={snap.question} busy={busy || status !== "open"} onAnswer={answer} />
-        ) : (
-        <>
-        <header className="flex flex-col gap-2">
-          <p className="font-mono text-xs uppercase tracking-widest text-fg-3">
-            {STEPS[currentIdx]?.phase} · {current}
-          </p>
-          <h2 className="text-3xl font-semibold tracking-tight">{STEPS[currentIdx]?.label}</h2>
-        </header>
-
-        {history.length > 0 && (
-          <ol className="flex flex-col gap-4 border-b border-line pb-8">
-            {history.map((t, i) => (
-              <li key={i} className="grid grid-cols-[40px_1fr] gap-x-4 gap-y-1 text-sm">
-                <span className="font-mono text-xs text-fg-3">{t.step}</span>
-                <span className="text-fg-2">{t.question}</span>
-                <span />
-                <span className="font-medium">→ {t.answer}</span>
-              </li>
-            ))}
-          </ol>
-        )}
-
-        {chat.length > 0 && (
-          <ol className="flex flex-col gap-3" aria-label="Trò chuyện với Chroma" data-swarm-section="chat-log">
-            {chat.map((m, i) => (
-              <li key={i} className={`max-w-[72ch] rounded-xl px-4 py-3 text-sm leading-relaxed ${
-                m.role === "user" ? "self-end bg-surface text-fg" : "self-start border border-line text-fg-2"}`}>
-                {m.role === "assistant" && <span className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-fg-3">Chroma</span>}
-                {m.text}
-              </li>
-            ))}
-          </ol>
-        )}
-
-        {error && (  /* next to the question, where the user is looking */
-          <p role="alert" className="rounded-lg border border-danger/40 px-4 py-3 text-sm text-danger">
-            {error} Bạn gửi lại câu trả lời giúp mình nhé.
-          </p>
-        )}
-
-        {snap?.question?.kind === "handover" && <BuildPanel state={snap.state} notice={null} running={false} />}
-
-        {snap?.question ? (
-          <QuestionCard
-            key={`${snap.state.step}-${snap.question.key}-${history.length}`}
-            question={snap.question}
-            notice={snap.notice}
-            state={snap.state}
-            busy={busy || status !== "open"}
-            onAnswer={answer}
-            chatMode={chatEnabled}
-          />
-        ) : snap && (snap.running || snap.finished) && currentIdx >= STEPS.findIndex((s) => s.id === "B8") ? (
-          <BuildPanel state={snap.state} notice={snap.notice} running={snap.running} />
-        ) : !snap ? (
-          <LoadingSkeleton closed={status === "closed"} />
-        ) : (
-          <p className="flex items-center gap-2 text-sm text-fg-2"><span className="dot-live h-2 w-2 rounded-full bg-accent" />Đang xử lý…</p>
-        )}
-        {chatEnabled && (
-          <form
-            className="sticky bottom-4 flex gap-3 rounded-xl border border-line bg-bg p-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              sendChat();
-            }}
-            data-swarm-section="chat-bar"
-          >
-            <label htmlFor="chat-input" className="sr-only">Nhắn cho Chroma</label>
-            <input id="chat-input" value={draft} onChange={(e) => setDraft(e.target.value)} autoComplete="off"
-              placeholder="Trả lời, hỏi lại (vd: “Bento là gì?”) hoặc đổi ý (vd: “cho mình đổi lại màu”)…"
-              className="h-12 flex-1 rounded-lg bg-transparent px-3 text-sm outline-none placeholder:text-fg-3"
-              data-swarm-id="chat-input" data-swarm-role="input" />
-            <button type="submit" disabled={busy || status !== "open" || !draft.trim()} data-swarm-id="chat-send"
-              data-swarm-role="button"
-              className="h-12 rounded-lg bg-accent px-6 text-sm font-medium text-accent-fg transition-[filter,transform] duration-200 hover:brightness-110 active:scale-[0.98] disabled:opacity-50">
-              Gửi
-            </button>
-          </form>
-        )}
-        </>
-        )}
-      </section>
-
-      <aside className={`flex-col gap-4 md:col-start-2 lg:col-start-auto ${welcome ? "hidden" : "flex"}`} data-swarm-section="gates">
-        <div className="grid grid-cols-2 gap-4 lg:grid-cols-1">
-          <Stat label="Clarity Score (B3)" value={`${Math.round((snap?.clarity_score ?? 0) * 100)}%`} />
-          <Stat label="Tool được cấp" value={String(snap?.tools.length ?? "–")} />
-        </div>
-        <Panel title="Điều kiện để qua bước">
-          {snap?.missing.length ? (
-            <ul className="flex flex-col gap-2 font-mono text-xs text-fg-2">
-              {snap.missing.map((m) => (
-                <li key={m}>— {m}</li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-sm text-fg-2">Đã đủ.</p>
-          )}
-        </Panel>
-        <Panel title="Tool agent được dùng">
-          <ul className="flex flex-wrap gap-2">
-            {snap?.tools.map((t) => (
-              <li key={t} className="rounded-md border border-line px-2 py-1 font-mono text-xs text-fg-2">
-                {t}
-              </li>
-            ))}
-          </ul>
-        </Panel>
-      </aside>
-    </main>
+    </>
   );
 }
 
-function Logo() {
+function Logo({ size = 22 }: { size?: number }) {
   return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden className="text-accent">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
       <path d="m12 2 9 5v10l-9 5-9-5V7l9-5Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
       <path d="m3 7 9 5 9-5M12 12v10" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
     </svg>
-  );
-}
-
-function LoadingSkeleton({ closed }: { closed: boolean }) {
-  if (closed)
-    return (
-      <p role="alert" className="rounded-lg border border-danger/40 px-4 py-3 text-sm text-danger">
-        Không kết nối được tới backend (cổng 8100). Hãy chạy backend rồi tải lại trang.
-      </p>
-    );
-  return (
-    <div className="flex flex-col gap-4" aria-busy="true" aria-label="Đang tải">
-      <div className="h-4 w-40 animate-pulse rounded bg-surface" />
-      <div className="h-12 w-3/4 animate-pulse rounded-lg bg-surface" />
-      <div className="grid gap-4 md:grid-cols-2">
-        <div className="h-32 animate-pulse rounded-2xl bg-surface" />
-        <div className="h-32 animate-pulse rounded-2xl bg-surface" />
-      </div>
-    </div>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex flex-col gap-1 rounded-xl border border-line bg-surface p-4">
-      <span className="text-xs text-fg-3">{label}</span>
-      <span className="font-mono text-2xl">{value}</span>
-    </div>
-  );
-}
-
-function Panel({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div className="flex flex-col gap-3 rounded-xl border border-line p-4">
-      <h3 className="text-sm font-medium">{title}</h3>
-      {children}
-    </div>
   );
 }
