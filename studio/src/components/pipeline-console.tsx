@@ -6,19 +6,20 @@ import { CloneSource, QuestionCard, type Answer, type Question } from "@/compone
 
 const BACKEND_WS = process.env.NEXT_PUBLIC_BACKEND_WS ?? "ws://localhost:8100";
 
+// What each pipeline step means for the user, in their words (ids stay the backend's B1..B12).
 const STEPS: { id: string; label: string; phase: string }[] = [
-  { id: "B1", label: "Đọc prompt", phase: "Tư vấn" },
-  { id: "B2", label: "Tư vấn sitemap", phase: "Tư vấn" },
-  { id: "B3", label: "Hỏi 5 trụ cột", phase: "Tư vấn" },
-  { id: "B4", label: "Assets & tham khảo", phase: "Tư vấn" },
-  { id: "B5", label: "DESIGN.md", phase: "Kế hoạch" },
-  { id: "B6", label: "PRODUCT.md + PLAN.md", phase: "Kế hoạch" },
-  { id: "B7", label: "Duyệt kế hoạch", phase: "Kế hoạch" },
-  { id: "B8", label: "Phòng Design", phase: "Triển khai" },
-  { id: "B9", label: "Phòng Developer", phase: "Triển khai" },
-  { id: "B10", label: "Hợp nhất", phase: "Triển khai" },
-  { id: "B11", label: "Cursor Lớn Nhất", phase: "Kiểm định" },
-  { id: "B12", label: "Bàn giao", phase: "Kiểm định" },
+  { id: "B1", label: "Lắng nghe ý tưởng", phase: "Thấu hiểu" },
+  { id: "B2", label: "Chọn trang làm trước", phase: "Thấu hiểu" },
+  { id: "B3", label: "Phong cách & khách hàng", phase: "Thấu hiểu" },
+  { id: "B4", label: "Ảnh, logo & trang mẫu", phase: "Thấu hiểu" },
+  { id: "B5", label: "Màu, chữ & khoảng cách", phase: "Lên kế hoạch" },
+  { id: "B6", label: "Bố cục từng phần", phase: "Lên kế hoạch" },
+  { id: "B7", label: "Bạn duyệt kế hoạch", phase: "Lên kế hoạch" },
+  { id: "B8", label: "Cài đặt giao diện", phase: "Dựng trang" },
+  { id: "B9", label: "Dựng từng phần trang", phase: "Dựng trang" },
+  { id: "B10", label: "Ghép trang hoàn chỉnh", phase: "Dựng trang" },
+  { id: "B11", label: "Kiểm tra & chấm điểm", phase: "Hoàn thiện" },
+  { id: "B12", label: "Bàn giao cho bạn", phase: "Hoàn thiện" },
 ];
 
 // One click from the empty screen: a complete prompt goes straight to the plan (agents/brief.py).
@@ -87,6 +88,18 @@ function sessionId(): string {
     return `s-${Date.now().toString(36)}`;
   }
 }
+
+// Gate keys from the backend (pipeline_state.missing_for_exit) in the user's words.
+const NEEDS: Record<string, string> = {
+  mode: "Chọn Creative hoặc Clone", raw_prompt: "Mô tả trang web bạn muốn", domain: "Xác định lĩnh vực",
+  clone_url: "Link trang mẫu", clone_analysis: "Đọc trang mẫu", sitemap: "Danh sách trang", selected_page: "Chọn trang làm trước",
+  "pillar:theme": "Phong cách", "pillar:layout": "Bố cục", "pillar:color": "Tông màu", "pillar:margins": "Độ thoáng",
+  "pillar:scope": "Khách hàng & nút chính", assets_confirmed: "Ảnh, logo (hoặc bỏ qua)", design_md: "Bộ nhận diện",
+  product_md: "Mô tả sản phẩm", plan_md: "Kế hoạch bố cục", user_approval: "Bạn duyệt kế hoạch",
+  design_system: "Cài đặt giao diện", sections_planned: "Danh sách phần trang", integrated: "Ghép trang", qa_passed: "Qua kiểm tra chất lượng",
+};
+const needLabel = (k: string) =>
+  NEEDS[k] ?? (k.startsWith("write:") ? `Dựng phần “${k.slice(6)}”` : k.startsWith("check:") ? `Kiểm tra phần “${k.slice(6)}”` : k);
 
 const MODE_KEY = "chromaswarm-mode"; // the mode to open with after "Đổi chế độ" starts a new session
 
@@ -268,7 +281,7 @@ export function PipelineConsole() {
               {cloneMode ? "Clone · từ trang có sẵn" : "Creative · từ ý tưởng"}
             </span>
           )}
-          <span className="ml-auto font-mono text-xs text-fg-2">{step} · {STEPS[stepIdx]?.label}</span>
+          <span className="ml-auto truncate text-xs text-fg-2">Bước {stepIdx + 1} · {STEPS[stepIdx]?.label}</span>
         </header>
 
         {empty ? (
@@ -494,7 +507,7 @@ function SidePanel({ open, onClose, snap, status, stepIdx, onRestart }: {
           Phiên mới
         </button>
         <div className="flex flex-col gap-2">
-          <div className="flex justify-between text-xs text-fg-2"><span>Tiến độ</span><span className="font-mono">{stepIdx + 1}/{STEPS.length}</span></div>
+          <div className="flex justify-between text-xs text-fg-2"><span>Tiến độ dự án</span><span className="font-mono">{stepIdx + 1}/{STEPS.length}</span></div>
           <div className="h-1.5 overflow-hidden rounded-full bg-surface" role="progressbar" aria-label="Tiến độ 12 bước"
             aria-valuemin={1} aria-valuemax={STEPS.length} aria-valuenow={stepIdx + 1}>
             <div className="h-full rounded-full bg-accent transition-[width] duration-700 ease-out" style={{ width: `${((stepIdx + 1) / STEPS.length) * 100}%` }} />
@@ -503,7 +516,7 @@ function SidePanel({ open, onClose, snap, status, stepIdx, onRestart }: {
         <nav aria-label="Các bước" className="flex flex-col gap-3">
           {phases.map((phase) => (
             <div key={phase} className="flex flex-col">
-              <p className="px-2 pb-1 font-mono text-[11px] uppercase tracking-[0.16em] text-fg-3">{phase}</p>
+              <p className="px-2 pb-1 text-xs font-medium text-fg-3">{phase}</p>
               <ol className="flex flex-col">
                 {STEPS.filter((s) => s.phase === phase).map((s) => {
                   const i = STEPS.indexOf(s);
@@ -516,7 +529,7 @@ function SidePanel({ open, onClose, snap, status, stepIdx, onRestart }: {
                           <svg width="13" height="13" viewBox="0 0 16 16" fill="none" className="text-accent"><path d="m3.5 8.5 3 3 6-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
                         ) : state === "current" ? <span className="dot-live size-2 rounded-full bg-accent" /> : <span className="size-1.5 rounded-full bg-line" />}
                       </span>
-                      <span className="w-7 font-mono text-[11px]">{s.id}</span>
+                      <span className="w-5 text-right font-mono text-[11px] tabular-nums">{i + 1}</span>
                       <span className="truncate">{s.label}</span>
                     </li>
                   );
@@ -527,9 +540,13 @@ function SidePanel({ open, onClose, snap, status, stepIdx, onRestart }: {
         </nav>
         {snap && snap.missing.length > 0 && (
           <div className="flex flex-col gap-2 rounded-xl border border-line p-3">
-            <p className="text-xs font-medium">Còn cần để qua bước</p>
-            <ul className="flex flex-col gap-1 font-mono text-[11px] text-fg-2">{snap.missing.map((m) => <li key={m}>— {m}</li>)}</ul>
-            <p className="text-xs text-fg-3">Clarity Score {Math.round(snap.clarity_score * 100)}%</p>
+            <p className="text-xs font-medium">Việc tiếp theo</p>
+            <ul className="flex flex-col gap-1 text-xs text-fg-2">
+              {snap.missing.slice(0, 5).map((m) => (
+                <li key={m} className="flex items-start gap-2"><span className="mt-1.5 size-1 shrink-0 rounded-full bg-fg-3" aria-hidden />{needLabel(m)}</li>
+              ))}
+            </ul>
+            <p className="text-xs text-fg-3">Đã rõ {Math.round(snap.clarity_score * 100)}% yêu cầu thiết kế</p>
           </div>
         )}
         <p className="mt-auto flex items-center gap-2 text-xs text-fg-2" role="status">
