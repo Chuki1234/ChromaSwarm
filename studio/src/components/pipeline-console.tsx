@@ -50,6 +50,8 @@ export type PipelineState = {
   qa_summary: string | null;
   qa_failures: string[];
   design_score: number | null;
+  clone_fidelity?: number | null;
+  clone_fidelity_notes?: string[];
   design_critique: string[];
   heal_history: { iteration: number; failures: string[] }[];
   heal_rules: string[];

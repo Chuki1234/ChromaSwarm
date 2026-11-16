@@ -251,8 +251,9 @@
         if (n === root && b) continue;
         if (!visible(n)) continue;
         const q = n.getBoundingClientRect();
-        if (q.width < 40) continue;
-        l = Math.min(l, q.left); r = Math.max(r, q.right);
+        // Carousels and marquees park items far off-screen: only what lies inside the viewport counts.
+        if (q.width < 40 || q.right <= 0 || q.left >= vw) continue;
+        l = Math.min(l, Math.max(0, q.left)); r = Math.max(r, Math.min(vw, q.right));
       }
     }
     return r > l ? [l, r] : null;

@@ -11,7 +11,9 @@ signature.
 
 from __future__ import annotations
 
+import contextvars
 import json
+import re
 import urllib.parse
 
 from pydantic import BaseModel
@@ -34,8 +36,68 @@ def component_name(section_id: str) -> str:
     return "".join(p.capitalize() for p in section_id.replace("_", "-").split("-")) + "Section"
 
 
-def _js(value) -> str:
+def _js(value, name: str | None = None) -> str:
+    """A value in generated code. While a section is rendered for a template (`render_section(...,
+    content=...)`), copy goes to the page's content file instead and the code reads `C.<key>`."""
+    if (col := _COLLECT.get()) is not None:
+        return f"C.{col.add(value, name)}"
     return json.dumps(value, ensure_ascii=False)
+
+
+def _norm(value):
+    """Tuples and models as plain JSON-like values, so copy can be compared with what a template shows."""
+    if isinstance(value, BaseModel):
+        return value.model_dump()
+    if isinstance(value, (list, tuple)):
+        return [_norm(v) for v in value]
+    return value
+
+
+class _Collector:
+    """Copy shown by one section, keyed by the PageCopy field it came from (headline, story, items...)."""
+
+    def __init__(self, page: str, copy: PageCopy):
+        self.page, self.entries = page, {}
+        self.fields = {k: _norm(v) for k, v in copy}
+
+    def _name_for(self, value) -> str:
+        v = _norm(value)
+        for field, fv in self.fields.items():
+            if v == fv or (isinstance(v, list) and v and isinstance(fv, list) and fv[:len(v)] == v):
+                return field
+        return "text"
+
+    def add(self, value, name: str | None) -> str:
+        base, v = name or self._name_for(value), _norm(value)
+        for key, existing in self.entries.items():  # the same text shown twice is one entry
+            if existing == v and key.rstrip("0123456789") == base:
+                return key
+        key, n = base, 2
+        while key in self.entries:
+            key, n = f"{base}{n}", n + 1
+        self.entries[key] = v
+        return key
+
+
+_COLLECT: contextvars.ContextVar[_Collector | None] = contextvars.ContextVar("chromaswarm_collect", default=None)
+
+
+# Fixed words written straight into a template (section titles, eyebrows, link labels): plain text
+# between an opening and closing tag whose attributes hold no expression.
+_FIXED_TEXT = re.compile(r"(<(h1|h2|h3|h4|p|span|a|figcaption|label|strong)\b([^<>{}]*)>)([^<>{}]*[^\W\d_][^<>{}]*)(</\2>)")
+
+
+def _lift_fixed_text(jsx: str, col: "_Collector") -> str:
+    def sub(m: re.Match) -> str:
+        tag, attrs, text = m.group(2), m.group(3), m.group(4)
+        name = ("eyebrow" if "eyebrow" in attrs else "heading" if tag in ("h1", "h2", "h3", "h4")
+                else "link" if tag == "a" else "label")
+        return f"{m.group(1)}{{C.{col.add(text.strip(), name)}}}{m.group(5)}"
+    return _FIXED_TEXT.sub(sub, jsx)
+
+
+def content_module(page: str) -> str:
+    return f"content/{page or 'home'}"
 
 
 # ----------------------------------------------------------------- scaffold
@@ -92,7 +154,59 @@ export default function RootLayout({{ children }}: {{ children: React.ReactNode 
         heal_file([]),
         motion_file([]),
         WorkspaceFile(path="components/Art.tsx", content=art_component(spec, photos or [])),
+        images_file(photos or []),
+        WorkspaceFile(path="HUONG_DAN.md", content=guide(project)),
     ]
+
+
+def images_file(photos: list[str]) -> WorkspaceFile:
+    return WorkspaceFile(path="content/images.ts", content=(
+        "// ẢNH TRÊN TRANG — dùng lần lượt theo thứ tự trong danh sách (ảnh 1 cho chỗ ảnh đầu tiên, ...).\n"
+        "// Dùng ảnh của bạn: chép file vào thư mục public/images/ rồi ghi đường dẫn, ví dụ \"/images/chan-dung.jpg\".\n"
+        "// Để trống danh sách thì trang dùng nền màu thay ảnh.\n"
+        f"export const PHOTOS: string[] = {_ts(list(photos), 0)};\n"))
+
+
+def guide(project: str) -> str:
+    return f"""# Hướng dẫn dùng template — {project}
+
+Trang này do ChromaSwarm dựng. Bạn chỉ cần sửa chữ và ảnh, không phải đụng vào code giao diện.
+
+## 1. Sửa chữ
+
+Mở thư mục `content/`: mỗi trang một file — trang chính là `home.ts`, `landing.ts` hoặc `clone.ts` (bản dựng lại từ trang mẫu); trang thêm sau có file riêng, ví dụ `pdp.ts`.
+
+- Mỗi khối trong file là một phần của trang, theo thứ tự từ trên xuống, có ghi tên phần ở dòng `//` phía trên.
+- Chỉ sửa chữ nằm trong dấu ngoặc kép. Giữ nguyên dấu ngoặc, dấu phẩy và tên bên trái dấu hai chấm.
+- Chỗ có dấu ngoặc vuông như `[Tên của bạn]` là chỗ bắt buộc phải thay.
+- Danh sách (thẻ, câu hỏi, dòng kinh nghiệm...) thêm hoặc bớt được: chép nguyên một dòng `[..., ...],` rồi sửa.
+
+## 2. Thay ảnh
+
+1. Chép ảnh vào `public/images/` (nên dùng .jpg hoặc .webp, cạnh dài khoảng 1600px).
+2. Mở `content/images.ts`, ghi đường dẫn theo thứ tự xuất hiện trên trang, ví dụ:
+   `export const PHOTOS: string[] = ["/images/anh-chinh.jpg", "/images/du-an-1.jpg"];`
+
+## 3. Chạy thử trên máy
+
+Cần Node.js 20 trở lên.
+
+```bash
+npm install
+npm run dev
+```
+
+Mở http://localhost:3000. Sửa file nào, trang tự cập nhật.
+
+## 4. Đưa lên mạng
+
+Cách nhanh nhất: đẩy thư mục này lên GitHub rồi nhập vào https://vercel.com (miễn phí), hoặc chạy `npx vercel`.
+
+## Không nên sửa (trừ khi bạn biết code)
+
+- `app/tokens.css`: màu, chữ, khoảng cách — mọi con số đã được kiểm tra độ tương phản và lưới 8pt.
+- `components/`: giao diện từng phần, đọc chữ từ thư mục `content/`.
+"""
 
 
 def heal_file(rules: list[str]) -> WorkspaceFile:
@@ -147,8 +261,8 @@ def art_component(spec: DesignSpec, photos: list[str] | None = None) -> str:
     return f'''"use client";
 
 const ART = {_js(variants)};
-// Real photography: the user's own (Clone mode) or topic-matched Unsplash stock.
-const PHOTOS: string[] = {_js(photos or [])};
+// Real photography: listed in content/images.ts (the user's own, or topic-matched Unsplash stock).
+import {{ PHOTOS }} from "@/content/images";
 const WIDTHS = [480, 800, 1200, 1800];
 
 type Props = {{ label: string; ratio?: string; tone?: number; sizes?: string }};
@@ -185,6 +299,12 @@ def _component(section: Section, jsx: str, *, client: bool = False, prelude: str
     imports = 'import { useState } from "react";\n' if client else ""
     if "<Art" in jsx:
         imports += 'import { Art } from "@/components/Art";\n'
+    if (col := _COLLECT.get()) is not None:
+        jsx = _lift_fixed_text(jsx, col)
+    if col is not None and col.entries:
+        # Template: this section's words live in the page's content file (edit text there, not here).
+        imports += (f'import {{ content }} from "@/{content_module(col.page)}";\n\n'
+                    f"const C = content[{json.dumps(section.id)}];\n")
     return f"""{head}{imports}{prelude}
 export function {component_name(section.id)}() {{
 {body}  return (
@@ -267,7 +387,7 @@ def _hero_split(s: Section, c: PageCopy) -> str:
               <a href="#details" className="link-arrow" data-swarm-id="cta-secondary" data-swarm-role="link">{c.cta_secondary} <span aria-hidden>→</span></a>
             </div>
           </div>
-          <Art label={{{_js(c.brand)}}} />
+          <Art label={{{_js(c.brand, "image_alt")}}} />
         </div>'''
     return _component(s, _root(s, "s-hero", inner), client=True, body="  const [sent, setSent] = useState(false);\n")
 
@@ -391,7 +511,7 @@ def _footer(s: Section, c: PageCopy) -> str:
             {["Vận chuyển", "Đổi trả", "Câu hỏi thường gặp"].map((l) => <a key={l} href="#" className="footer-link">{l}</a>)}</nav>
           <nav className="footer-col" aria-label="Chính sách"><p className="t-body">Chính sách</p>
             {["Bảo mật", "Điều khoản", "Liên hệ"].map((l) => <a key={l} href="#" className="footer-link">{l}</a>)}</nav>'''
-    inner = f'''        <div className={{{_js("footer-grid footer-shop" if c.shop else "footer-grid")}}}>
+    inner = f'''        <div className={{{json.dumps("footer-grid footer-shop" if c.shop else "footer-grid")}}}>
           <div className="stack"><strong className="t-h4">{{{_js(c.brand)}}}</strong><p className="t-caption muted">{{{_js(c.footer_line)}}}</p></div>{cols}
           <form className="stack" noValidate onSubmit={{(e) => {{ e.preventDefault(); setState(/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(email) ? "ok" : "error"); }}}}>
             <label htmlFor="newsletter" className="t-body">Nhận tin mới qua email</label>
@@ -415,7 +535,7 @@ def _hero_overlay(s: Section, c: PageCopy) -> str:
     """Full-bleed photo, dark scrim, copy on the photo (MODERN_UI_REFERENCES: Chamberlain, Marou)."""
     mcp = ' data-swarm-mcp="2d-css"' if s.effect else ""
     jsx = f'''<section data-swarm-section="{s.id}"{mcp} className="s-hero-overlay">
-      <Art label={{{_js(c.brand)}}} ratio="auto" sizes="100vw" />
+      <Art label={{{_js(c.brand, "image_alt")}}} ratio="auto" sizes="100vw" />
       <div className="hero-scrim" aria-hidden />
       <div className="container hero-overlay-copy"><div className="hero-copy-panel">
         <p className="eyebrow on-photo">{{{_js(c.eyebrow or c.brand)}}}</p>
@@ -444,7 +564,7 @@ def _hero_editorial(s: Section, c: PageCopy) -> str:
               <a href="#details" className="link-arrow" data-swarm-id="cta-secondary" data-swarm-role="link">{c.cta_secondary} <span aria-hidden>→</span></a>
             </div>
           </div>
-          <Art label={{{_js(c.brand)}}} ratio="21 / 9" sizes="100vw" />
+          <Art label={{{_js(c.brand, "image_alt")}}} ratio="21 / 9" sizes="100vw" />
         </div>'''
     return _component(s, _root(s, "s-hero-editorial", inner), client=True, body="  const [sent, setSent] = useState(false);\n")
 
@@ -460,7 +580,7 @@ def _hero_centered(s: Section, c: PageCopy) -> str:
               onClick={{() => setSent(true)}}>{{sent ? "Đã ghi nhận, chúng tôi sẽ liên hệ" : {_js(c.cta)}}}</button>
             <a href="#details" className="link-arrow" data-swarm-id="cta-secondary" data-swarm-role="link">{c.cta_secondary} <span aria-hidden>→</span></a>
           </div>
-          <div className="hero-panel"><Art label={{{_js(c.brand)}}} ratio="16 / 9" sizes="(min-width: 1024px) 80vw, 100vw" /></div>
+          <div className="hero-panel"><Art label={{{_js(c.brand, "image_alt")}}} ratio="16 / 9" sizes="(min-width: 1024px) 80vw, 100vw" /></div>
         </div>'''
     return _component(s, _root(s, "s-hero-centered", inner), client=True, body="  const [sent, setSent] = useState(false);\n")
 
@@ -476,7 +596,7 @@ def _full_image(s: Section, c: PageCopy) -> str:
                 onClick={{() => setSent(true)}}>{{sent ? "Đã ghi nhận, chúng tôi sẽ liên hệ" : {_js(c.cta)}}}</button>
             </div>
           </div>
-          <Art label={{{_js(c.brand)}}} ratio="16 / 8" />
+          <Art label={{{_js(c.brand, "image_alt")}}} ratio="16 / 8" />
         </div>'''
     return _component(s, _root(s, "s-hero-image", inner), client=True, body="  const [sent, setSent] = useState(false);\n")
 
@@ -536,7 +656,7 @@ def _announcement(s: Section, c: PageCopy) -> str:
     jsx = f'''<div data-swarm-section="{s.id}" role="region" aria-label="Thông báo">
       {{open && (
         <div className="s-announce">
-          <p className="t-caption">{{{_js(text)}}}</p>
+          <p className="t-caption">{{{_js(text, "text")}}}</p>
           <button type="button" className="announce-close" aria-label="Đóng thông báo" data-swarm-id="announcement-close"
             data-swarm-role="button" onClick={{() => setOpen(false)}}>
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden><path d="m4 4 8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
@@ -595,8 +715,8 @@ def _picker(s: Section, c: PageCopy) -> str:
 def _split_story(s: Section, c: PageCopy) -> str:
     title, text = c.story[0]
     inner = f'''        <div className="split split-5-7">
-          <h2 className="t-h2">{{{_js(title)}}}</h2>
-          <p className="t-lead">{{{_js(text)}}}</p>
+          <h2 className="t-h2">{{{_js(title, "title")}}}</h2>
+          <p className="t-lead">{{{_js(text, "text")}}}</p>
         </div>'''
     return _component(s, _root(s, "s-story", inner))
 
@@ -683,7 +803,7 @@ def _pdp_main(s: Section, c: PageCopy) -> str:
     item = c.items[0]
     inner = f'''        <div className="split split-7-5">
           <div className="stack">
-            <Art label={{{_js(item.name)}}} tone={{img}} />
+            <Art label={{{_js(item.name, "image_alt")}}} tone={{img}} />
             <div className="row">
               {{[0, 1, 2].map((i) => (
                 <button key={{i}} type="button" className={{img === i ? "thumb is-active" : "thumb"}} aria-label={{`Ảnh ${{i + 1}}`}}
@@ -715,13 +835,13 @@ def _showcase(s: Section, c: PageCopy) -> str:
     """Feature showcase: heading left, explanation right, a wide product visual underneath."""
     title, text = c.story[0]
     inner = f'''        <div className="split split-5-7">
-          <h2 className="t-h2">{{{_js(title)}}}</h2>
+          <h2 className="t-h2">{{{_js(title, "title")}}}</h2>
           <div className="stack">
-            <p className="t-lead">{{{_js(text)}}}</p>
+            <p className="t-lead">{{{_js(text, "text")}}}</p>
             <a href="#" className="link-arrow" data-swarm-id="{s.id}-more" data-swarm-role="link">Tìm hiểu thêm <span aria-hidden>→</span></a>
           </div>
         </div>
-        <div className="showcase-media"><Art label={{{_js(title)}}} ratio="16 / 7" tone={{1}} /></div>'''
+        <div className="showcase-media"><Art label={{{_js(title, "image_alt")}}} ratio="16 / 7" tone={{1}} /></div>'''
     return _component(s, _root(s, "s-showcase", inner))
 
 
@@ -741,9 +861,8 @@ def _testimonials(s: Section, c: PageCopy) -> str:
 def _text_cards(s: Section, c: PageCopy) -> str:
     """A row of text cards (changelog, feature list) when the reference shows no visuals."""
     inner = '''        <div className="text-cards">
-          {ROWS.map(([title, text], i) => (
+          {ROWS.map(([title, text]) => (
             <article key={title} className="text-card">
-              <span className="t-caption muted">{String(i + 1).padStart(2, "0")}</span>
               <h3 className="t-h4">{title}</h3>
               <p className="t-body muted">{text}</p>
             </article>
@@ -812,12 +931,60 @@ BY_STRUCTURE = {
 }
 
 
-def render_section(section: Section, copy: PageCopy, page: str = "") -> WorkspaceFile:
+def render_section(section: Section, copy: PageCopy, page: str = "", content: dict | None = None) -> WorkspaceFile:
+    """One section component. With `content` (a dict), the section's copy is moved out of the code:
+    `content[section.id]` receives it and the component reads it from the page's content file."""
     fn = BY_ID.get(section.id) or BY_STRUCTURE.get(section.structure)
     if fn is None:
         raise ValueError(f"no Next.js template for structure {section.structure!r}")
     folder = f"components/sections/{page}" if page else "components/sections"
-    return WorkspaceFile(path=f"{folder}/{component_name(section.id)}.tsx", content=fn(section, copy))
+    col = _Collector(page, copy) if content is not None else None
+    token = _COLLECT.set(col)
+    try:
+        code = fn(section, copy)
+    finally:
+        _COLLECT.reset(token)
+    if col is not None:
+        content[section.id] = col.entries
+    return WorkspaceFile(path=f"{folder}/{component_name(section.id)}.tsx", content=code)
+
+
+CONTENT_HEAD = """// NỘI DUNG TRANG — sửa chữ của bạn ngay trong file này, rồi lưu lại.
+// - Mỗi khối là một phần của trang, theo thứ tự từ trên xuống.
+// - Chỉ sửa phần chữ trong dấu ngoặc kép; giữ nguyên dấu ngoặc, dấu phẩy và tên bên trái dấu hai chấm.
+// - Chữ mẫu do Chroma điền sẵn: thay bằng nội dung thật của bạn.
+// Ảnh: xem content/images.ts. Hướng dẫn đầy đủ: HUONG_DAN.md.
+"""
+
+
+_IDENT = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
+
+
+def _ts(value, indent: int = 2) -> str:
+    """Readable TypeScript literal: short lists on one line, objects one key per line, bare keys."""
+    pad, inner = " " * indent, " " * (indent + 2)
+    if isinstance(value, dict):
+        if not value:
+            return "{}"
+        rows = [f"{inner}{k if _IDENT.match(k) else json.dumps(k)}: {_ts(v, indent + 2)}," for k, v in value.items()]
+        return "{\n" + "\n".join(rows) + f"\n{pad}}}"
+    if isinstance(value, list):
+        flat = "[" + ", ".join(_ts(v, indent + 2) for v in value) + "]"
+        if len(flat) <= 90 and "\n" not in flat:
+            return flat
+        return "[\n" + "\n".join(f"{inner}{_ts(v, indent + 2)}," for v in value) + f"\n{pad}]"
+    return json.dumps(value, ensure_ascii=False)
+
+
+def content_file(page: str, sections: list[tuple[Section, dict]]) -> WorkspaceFile:
+    """The page's content file: every section's words, in page order, labelled by section name."""
+    blocks = []
+    for section, entries in sections:
+        if not entries:
+            continue
+        blocks.append(f"  // {section.name}\n  {json.dumps(section.id)}: {_ts(entries, 2)},")
+    return WorkspaceFile(path=f"{content_module(page)}.ts",
+                         content=CONTENT_HEAD + "\nexport const content = {\n" + "\n".join(blocks) + "\n};\n")
 
 
 # ----------------------------------------------------------------- base.css

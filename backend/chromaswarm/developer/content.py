@@ -293,6 +293,10 @@ def build_copy(state: PipelineState) -> PageCopy:
         copy = copy.model_copy(update={"images": photos})
     if state.page_copy:  # written by the LLM copywriter and validated there
         copy = apply_written_copy(copy, state.page_copy)
+    if state.selected_page == "clone" and clone and not clone.owned:
+        # Structure clone: the page is a template for the user's own words. The lines a visitor reads
+        # first are clear placeholders (never the reference's text, never a name guessed from the prompt).
+        copy = copy.model_copy(update=CLONE_PLACEHOLDERS)
     return copy
 
 
@@ -353,6 +357,14 @@ ROW_META = ["12 Th3", "28 Th2", "15 Th2", "02 Th2", "20 Th1", "08 Th1", "18 Th12
 
 def sample_rows(story: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return [(title, ROW_META[i % len(ROW_META)]) for i, (title, _) in enumerate(story)]
+
+
+CLONE_PLACEHOLDERS = {
+    "brand": "[Tên của bạn]",
+    "headline": "[Câu tiêu đề: bạn làm gì, cho ai]",
+    "subhead": "[Một hai câu giới thiệu ngắn về bạn hoặc sản phẩm của bạn]",
+    "footer_line": "© [Tên của bạn]. Sửa nội dung trong thư mục content/.",
+}
 
 
 def _rot(xs: list, k: int) -> list:

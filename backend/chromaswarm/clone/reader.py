@@ -13,6 +13,7 @@ so a structure clone of someone else's site carries the user's own copy.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -162,7 +163,9 @@ def _media_only(block: dict) -> bool:
     """A block that is essentially pictures: screenshots, a photo row, a figure."""
     f = block["features"]
     own_text = f["text_len"] - f.get("lead_text", 0)
-    return (f["images"] >= 1 and own_text < 120 and not f["h1"] and not f["nav"]
+    # A heading with its own sentence and a link around a picture is a feature block, not a gallery tile.
+    feature = f["headings"] >= 1 and own_text >= 40 and f["links"] + f["buttons"] >= 1
+    return (f["images"] >= 1 and own_text < 120 and not feature and not f["h1"] and not f["nav"]
             and f["tag"] not in ("footer", "header") and not f.get("quotes"))
 
 
@@ -296,10 +299,15 @@ async def analyse(url: str, owned: bool, width: int = 1440, height: int = 900) -
     return build_analysis(raw, dna, owned)
 
 
-def build_analysis(raw: dict, dna: StyleDNA, owned: bool) -> CloneAnalysis:
+def prepare_blocks(raw: dict) -> tuple[list[dict], list[str]]:
+    """The blocks sections are built from (Section.sources index into this list)."""
     blocks = [b for b in raw["blocks"] if not (b["features"]["height"] < 60 and not b["features"]["nav"]
                                                 and b["features"]["index"] == 0)]  # a thin promo strip on top
-    blocks, notes = reading_order(blocks)
+    return reading_order(blocks)
+
+
+def build_analysis(raw: dict, dna: StyleDNA, owned: bool) -> CloneAnalysis:
+    blocks, notes = prepare_blocks(raw)
     raw = {**raw, "blocks": blocks}
     sections = sections_from_blocks(blocks)
     fonts = {}
@@ -320,3 +328,28 @@ def build_analysis(raw: dict, dna: StyleDNA, owned: bool) -> CloneAnalysis:
     return CloneAnalysis(url=raw.get("url", ""), title=title[:80], owned=owned, sections=sections, pillars=pillars,
                          content=page_content(raw, sections) if owned else None, notes=notes, dna=dna,
                          content_width=content_width, **fonts)
+
+
+# ------------------------------------------------------------------ what the user is told
+
+_EXACT = re.compile(r"100\s*%|giống\s+(hệt|hoàn\s+toàn|y\s+hệt|y\s+chang|y\s+nguyên)|\by\s+(hệt|chang|nguyên)\b"
+                    r"|(copy|sao\s+chép|clone|chép)\s+(y|nguyên|toàn\s+bộ|hết|100)|giống\s+100", re.IGNORECASE)
+
+
+def wants_exact_copy(text: str) -> bool:
+    """The description asks for an exact copy (text, images, brand), not just the structure."""
+    return bool(_EXACT.search(text or ""))
+
+
+def clone_limits(a: CloneAnalysis) -> list[str]:
+    """What the rebuild will not match, said before the plan so the user is never surprised."""
+    limits = [f"font {m.group(1)} được thay bằng font có tiếng Việt"
+              for n in a.notes if (m := re.match(r"Font '(.+?)'", n))]
+    approx = sum("§2.5 quy tắc 4" in s.content for s in a.sections)
+    if approx:
+        limits.append(f"{approx} section chưa có mẫu đúng kiểu, dựng bằng khối nội dung gần nhất")
+    limits.append("hiệu ứng riêng của trang (hover, chuyển động khi cuộn, carousel) chưa được chép — "
+                  "bản dựng dùng hiệu ứng có sẵn")
+    if not a.owned:
+        limits.append("chữ, ảnh và tên thương hiệu là của bạn (để trống chỗ trong file nội dung)")
+    return limits

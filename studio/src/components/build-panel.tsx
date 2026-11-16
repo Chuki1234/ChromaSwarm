@@ -4,6 +4,8 @@ import type { PipelineState } from "@/components/pipeline-console";
 
 type Props = { state: PipelineState; notice: string | null; running: boolean };
 
+const BACKEND_HTTP = (process.env.NEXT_PUBLIC_BACKEND_WS ?? "ws://localhost:8100").replace(/^ws/, "http");
+
 const SECTION_STATUS = {
   todo: { label: "Chờ", cls: "text-fg-3" },
   written: { label: "Dev đã viết", cls: "text-fg-2" },
@@ -72,6 +74,36 @@ export function BuildPanel({ state, notice, running }: Props) {
       )}
 
       {state.qa_summary && <QaPanel state={state} />}
+
+      {state.clone_fidelity != null && (
+        <div className="flex flex-col gap-2 rounded-xl border border-line p-4" data-swarm-section="fidelity">
+          <div className="flex items-baseline justify-between gap-4">
+            <h3 className="text-sm font-medium">Độ giống trang mẫu</h3>
+            <span className="font-mono text-sm">{Math.round(state.clone_fidelity)}/100</span>
+          </div>
+          {(state.clone_fidelity_notes?.length ?? 0) > 0 && (
+            <ul className="flex flex-col gap-1 text-sm text-fg-2">
+              {state.clone_fidelity_notes!.map((n) => <li key={n}>{n}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {state.qa_passed && (
+        <div className="flex flex-col gap-2 rounded-xl border border-line p-4" data-swarm-section="template">
+          <h3 className="text-sm font-medium">Dùng trang này làm template</h3>
+          <p className="text-sm text-fg-2">
+            Chữ nằm trong <code className="font-mono text-xs">content/</code>, ảnh trong{" "}
+            <code className="font-mono text-xs">public/images/</code>. Giải nén, sửa nội dung, chạy{" "}
+            <code className="font-mono text-xs">npm install && npm run dev</code> — xem HUONG_DAN.md bên trong.
+          </p>
+          <a href={`${BACKEND_HTTP}/sessions/${encodeURIComponent(state.session_id)}/template.zip`} download
+            data-swarm-id="download-template" data-swarm-role="link"
+            className="self-start rounded-lg bg-accent px-4 py-3 text-sm font-medium text-accent-fg hover:bg-[var(--accent-hover)]">
+            Tải template (.zip)
+          </a>
+        </div>
+      )}
 
       {Object.keys(state.page_routes ?? {}).length > 1 && (
         <List title="Các trang đã dựng" items={Object.entries(state.page_routes).map(([slug, route]) => `${route}  ·  ${slug}`)} />

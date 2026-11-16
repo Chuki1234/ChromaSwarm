@@ -132,6 +132,11 @@ class CloneSource(BaseModel):
     content: dict | None = None  # owned sites only
     notes: list[str] = Field(default_factory=list)
     content_width: int | None = None  # narrow single-column reference: its column width (px, 8pt)
+    # The description asked for an exact copy ("100%", "y hệt") without the ownership tick: asked once at B1.
+    exact_requested: bool = False
+    exact_answered: bool = False
+    # Owned clones: the user confirms ownership again at B3, shown the reference's own name. None = not asked.
+    owner_confirmed: bool | None = None
 
 
 class Asset(BaseModel):
@@ -213,6 +218,8 @@ class PipelineState(BaseModel):
     page_copy_key: str | None = None
     design_score: float | None = None  # B11 design critic (vision model), 1-10; None = no critic
     design_critique: list[str] = Field(default_factory=list)  # "where: problem → fix"
+    clone_fidelity: float | None = None  # Clone mode, B11: closeness to the reference, 0-100 (clone/fidelity.py)
+    clone_fidelity_notes: list[str] = Field(default_factory=list)
 
     # B12
     handover_closed: bool = False  # user chose "finish": no further page in this session
@@ -386,6 +393,8 @@ class PipelineState(BaseModel):
         self.heal_contrast = []
         self.design_score = None
         self.design_critique = []
+        self.clone_fidelity = None
+        self.clone_fidelity_notes = []
 
 
 class GateError(RuntimeError):

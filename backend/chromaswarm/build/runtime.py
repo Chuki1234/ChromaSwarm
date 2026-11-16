@@ -21,12 +21,15 @@ from pydantic import BaseModel
 from chromaswarm.agents.planner import Section
 from chromaswarm.design.dept import TokenChange, TokenFile, fix_contrast, repair
 from chromaswarm.developer.content import PageCopy, copy_for
-from chromaswarm.developer.nextjs import WorkspaceFile, heal_file, motion_file, page_file, render_section, scaffold
+from chromaswarm.developer.nextjs import (WorkspaceFile, content_file, heal_file, motion_file, page_file,
+                                         render_section, scaffold)
 from chromaswarm.mcp_motion.client import MotionEffect, build_effects
 from chromaswarm.mcp_motion.server import pick_effect
 from chromaswarm.developer.workspace import TOKENS_PATH, DevServer, Workspace
 from chromaswarm.engines.design_spec import DesignSpec
 from chromaswarm.playwright_engine.swarm import Agent, ColorReading, Finding, SwarmOverlay, design_pass
+from chromaswarm.clone.fidelity import Fidelity, score, snapshot_page
+from chromaswarm.playwright_engine.style_dna_scraper import open_settled
 from chromaswarm.qa.critic import Critique, critique
 from chromaswarm.qa.master import QaReport, run_master_qa
 from chromaswarm.state_machine.pipeline_state import Step
@@ -65,6 +68,7 @@ class BuildRuntime(Protocol):
     async def heal(self, session: str, rules: list[str], contrast: list[dict]) -> list[TokenChange]: ...
     async def master_qa(self, session: str, spec: DesignSpec) -> QaReport: ...
     # optional: async def critique(self, session: str, context: str = "") -> Critique | None
+    # optional: async def fidelity(self, session: str, reference_url: str, shots: Path | None = None) -> Fidelity | None
     async def close(self, session: str) -> None: ...
 
 
@@ -80,6 +84,8 @@ class _Session:
     base_url: str | None = None
     route: str = "/"
     handed_over: bool = False
+    # Template content per page: section id -> (section, its words), in page order (content/<page>.ts).
+    content: dict[str, dict[str, tuple[Section, dict]]] = field(default_factory=dict)
 
 
 CREATE_ONLY = {"app/heal.css", "app/motion.css"}  # accumulate across pages and heal loops
@@ -176,15 +182,30 @@ class LocalBuildRuntime:
                             page: str = "", route: str = "/") -> None:
         s = self._s(session)
         section_copy = copy_for(written[-1].structure, [w.structure for w in written[:-1]], copy)
-        s.workspace.write(Step.B9_DEVELOP, render_section(written[-1], section_copy, page))
+        self._write_component(s, written[-1], section_copy, page, keep=[w.id for w in written])
         s.workspace.write(Step.B9_DEVELOP, page_file(written, page, route))
+
+    def _write_component(self, s: _Session, section: Section, copy: PageCopy, page: str,
+                         keep: list[str] | None = None) -> None:
+        """Component + the page's content file (the section's words live there, editable as a template)."""
+        words: dict = {}
+        s.workspace.write(Step.B9_DEVELOP, render_section(section, copy, page, content=words))
+        current = s.content.setdefault(page, {})
+        current[section.id] = (section, words[section.id])
+        if keep is not None:  # a refined page may have dropped sections: keep only the page's own, in order
+            s.content[page] = current = {sid: current[sid] for sid in keep if sid in current}
+        s.workspace.write(Step.B9_DEVELOP, content_file(page, list(current.values())))
 
     async def refresh_shared(self, session: str, section: Section, copy: PageCopy, pages: list[str]) -> None:
         """Re-render a shared section (the header) on pages built earlier, so their navigation
         links to the page being built now."""
         s = self._s(session)
         for page in pages:
-            if (s.workspace.root / "components" / "sections" / page).exists():
+            if not (s.workspace.root / "components" / "sections" / page).exists():
+                continue
+            if page in s.content:
+                self._write_component(s, section, copy, page)
+            else:  # page built before a backend restart: its content file is unknown here, keep words inline
                 s.workspace.write(Step.B9_DEVELOP, render_section(section, copy, page))
 
     # -------------------------------------------------------------- B8.1
@@ -298,6 +319,30 @@ class LocalBuildRuntime:
             return None
         finally:
             await page.close()
+
+    async def fidelity(self, session: str, reference_url: str, shots: Path | None = None) -> Fidelity | None:
+        """Clone mode: read the reference and the rebuilt page with the same reader (clean tabs, no
+        overlay) and score how close they are. `shots` also saves both full-page screenshots there."""
+        s = self._s(session)
+        if not (s.browser and s.page):
+            return None
+        url = (s.base_url or s.page.url).rstrip("/") + (s.route if s.route != "/" else "")
+        pages = [await s.browser.new_page(viewport={"width": 1440, "height": 900}) for _ in range(2)]
+        try:
+            snaps = []
+            for page, target, name in zip(pages, (reference_url, url), ("original", "clone")):
+                await open_settled(page, target)
+                if shots:
+                    shots.mkdir(parents=True, exist_ok=True)
+                    await page.screenshot(path=str(shots / f"{name}.png"), full_page=True)
+                snaps.append(await snapshot_page(page))
+            return score(*snaps)
+        except Exception as e:  # noqa: BLE001 — measuring never stops a build
+            log.warning("fidelity failed: %s", e)
+            return None
+        finally:
+            for page in pages:
+                await page.close()
 
     # -------------------------------------------------------------- B12
     async def handover(self, session: str, options: list[dict]) -> None:

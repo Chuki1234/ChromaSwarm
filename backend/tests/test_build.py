@@ -270,7 +270,10 @@ def test_end_to_end_real_next_app(tmp_path):
     assert (app / "app/page.tsx").exists() and (app / "app/home/page.tsx").exists()
     assert "data-swarm-page" in (app / "app/motion.css").read_text()
     assert (app / "app/motion.css").read_text().count("/* fx */") == 2  # one block per effect, no duplicates
-    assert '"/home"' in (app / "components/sections/landing/SiteHeaderSection.tsx").read_text()
+    # The header's links live in the landing page's content file (the page is a fill-in template).
+    assert '"/home"' in (app / "content/landing.ts").read_text()
+    assert 'content["site-header"]' in (app / "components/sections/landing/SiteHeaderSection.tsx").read_text()
+    assert (app / "content/images.ts").exists() and (app / "HUONG_DAN.md").exists()
 
 
 def _built(tmp_path, sid, fake=None):

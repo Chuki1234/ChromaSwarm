@@ -126,7 +126,10 @@ def test_owned_clone_uses_the_sites_own_copy_and_photos(tmp_path):
                    "items": [{"title": "Bát men lam", "note": "Đường kính 12cm", "price": "180.000₫"},
                              {"title": "Đĩa men rạn", "note": "Đường kính 20cm", "price": "250.000₫"}]}}}
     runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=fake_reader(content)))
-    p = asyncio.run(drive(runner, "c4", ["clone", {"url": "https://gom-moc.vn", "prompt": PROMPT, "owned": True}]))["pipeline"]
+    snap = asyncio.run(drive(runner, "c4", ["clone", {"url": "https://gom-moc.vn", "prompt": PROMPT, "owned": True}]))
+    assert snap["question"]["key"] == "clone_owner_confirm" and "Gốm Mộc" in snap["question"]["text"]
+    p = asyncio.run(runner.answer("c4", "confirm"))["pipeline"]
+    assert p.clone.owner_confirmed is True
     copy = build_copy(p)
     assert copy.brand == "Gốm Mộc" and copy.headline == "Gốm làm tay, nung củi" and copy.cta == "Nhắn tin đặt hàng"
     assert [i.name for i in copy.items] == ["Bát men lam", "Đĩa men rạn"] and copy.items[0].price == "180.000₫"
@@ -309,3 +312,39 @@ def test_text_only_hero_and_narrow_column_are_kept(monkeypatch):
     spec = build_design_spec(design_inputs(state, "Ví dụ"))
     assert spec.spatial.container_max == 784 + 2 * spec.spatial.page_gutter_desktop
     assert "đo từ trang mẫu" in render_design_md(spec)
+
+
+def test_exact_copy_request_without_the_tick_is_explained_and_asked(tmp_path):
+    from chromaswarm.clone.reader import wants_exact_copy
+    assert wants_exact_copy("yêu cầu giống hoàn toàn 100% từ giao diện đến effect")
+    assert wants_exact_copy("copy y hệt trang này") and not wants_exact_copy(PROMPT)
+    exact = PROMPT + ", giống 100% trang mẫu"
+    runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=fake_reader({"sections": {}})))
+    snap = asyncio.run(drive(runner, "e1", ["clone", {"url": "https://gom-moc.vn", "prompt": exact, "owned": False}]))
+    assert snap["question"]["key"] == "clone_ownership" and "giả danh" in snap["question"]["text"]
+    snap = asyncio.run(runner.answer("e1", "structure"))
+    p = snap["pipeline"]
+    assert p.clone.owned is False and p.clone.content is None
+    assert snap["question"]["key"] != "clone_owner_confirm"  # nothing of theirs is copied: no confirmation needed
+    # Choosing "this is my site" still goes through the named confirmation after reading.
+    runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=fake_reader({"sections": {}})))
+    asyncio.run(drive(runner, "e2", ["clone", {"url": "https://gom-moc.vn", "prompt": exact, "owned": False}]))
+    snap = asyncio.run(runner.answer("e2", "owned"))
+    assert snap["pipeline"].clone.owned is True and snap["question"]["key"] == "clone_owner_confirm"
+
+
+def test_declining_ownership_at_confirmation_drops_the_read_content(tmp_path):
+    runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=fake_reader({"site_title": "Gốm Mộc", "sections": {}})))
+    asyncio.run(drive(runner, "d1", ["clone", {"url": "https://gom-moc.vn", "prompt": PROMPT, "owned": True}]))
+    p = asyncio.run(runner.answer("d1", "structure"))["pipeline"]
+    assert p.clone.owned is False and p.clone.content is None and p.clone.owner_confirmed is False
+
+
+def test_reading_notice_lists_what_will_not_match():
+    from chromaswarm.clone.reader import clone_limits
+    a = CloneAnalysis(url="https://x.vn", title="X", owned=False, pillars={},
+                      notes=["Font 'Switzer' của trang mẫu chưa xác nhận có bộ chữ tiếng Việt; dùng font của preset."],
+                      sections=[Section(id="a", name="A", structure="split-5-7",
+                                        content="Dựng lại từ section #2 — chưa có mẫu đúng kiểu, dựng bằng khối nội dung gần nhất (§2.5 quy tắc 4)")])
+    limits = " | ".join(clone_limits(a))
+    assert "font Switzer" in limits and "1 section" in limits and "hiệu ứng" in limits and "của bạn" in limits

@@ -5,6 +5,11 @@
 * **Giao diện Sản phẩm & Swarm Studio (Frontend Target):** **Next.js 15 (App Router, TypeScript, Tailwind CSS)** (có thể mở rộng Adapter sang React/Angular).
 * **Phương pháp Nghiên cứu & Thực nghiệm:** Kết hợp **Claude Science** (xây dựng mô hình toán học màu sắc OKLCH, hàm phạt Anti-AI-Slop, thiết kế thực nghiệm) và **Claude Code** (triển khai hệ thống Python Multi-Agent + Next.js).
 
+**Phân công theo mode:**
+* **Mode Creative** (chat → đọc brief → 5 trụ cột → dựng trang): **Cường** phụ trách chính (nhánh `quoccuong`); Chuki1234 chỉ hỗ trợ.
+* **Mode Clone** (link → đọc trang mẫu → dựng lại): **Chuki1234** phụ trách chính; Cường hỗ trợ.
+* Phần dùng chung (graph, pipeline state, planner, codegen Next.js, engines, QA, FRONTEND_STANDARDS) sửa thì báo người còn lại và giữ test của cả hai mode luôn xanh. Chi tiết file thuộc ai: mục *Team & ownership* trong `CLAUDE.md`.
+
 ---
 
 ## PHẦN 1: QUY TRÌNH 12 BƯỚC BẮT BUỘC CỦA HỆ THỐNG AGENT (PYTHON ORCHESTRATOR)

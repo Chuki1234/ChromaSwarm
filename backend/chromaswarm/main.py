@@ -20,7 +20,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from chromaswarm.agents.chat import LLMChat, RuleChat
@@ -30,6 +31,7 @@ from chromaswarm.agents.llm_consultant import LLMConsultant
 from chromaswarm.build.runtime import LocalBuildRuntime
 from chromaswarm.agents.brief import build_brief_reader
 from chromaswarm.developer.copywriter import build_copywriter
+from chromaswarm.developer.template import app_dir_for, template_zip
 from chromaswarm.playwright_engine.style_dna_scraper import scrape_url
 from chromaswarm.state_machine.graph import Deps, PipelineRunner
 from chromaswarm.state_machine.pipeline_state import BuildMode, GateError, Step, tools_for
@@ -106,6 +108,16 @@ def to_message(snap: dict) -> dict:
         "clarity_score": p.pillars.clarity_score,
         "running": snap["question"] is None and not snap["finished"],
     }
+
+
+@app.get("/sessions/{session_id}/template.zip")
+def download_template(session_id: str) -> Response:
+    """The built page as a ready-to-fill template (content/ for words, public/images/ for photos)."""
+    app_dir = app_dir_for(build.root, session_id) if build else None
+    if app_dir is None:
+        raise HTTPException(status_code=404, detail="Chưa có trang nào được dựng cho phiên này.")
+    return Response(template_zip(app_dir), media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="chromaswarm-{session_id}.zip"'})
 
 
 @app.get("/health")

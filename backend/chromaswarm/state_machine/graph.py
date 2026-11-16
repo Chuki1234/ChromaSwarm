@@ -39,10 +39,12 @@ from chromaswarm.agents.consultant import (
 )
 from chromaswarm.agents.planner import CLONE_PAGE, Section, design_inputs, page_sections, render_plan_md, render_product_md
 from chromaswarm.clone.reader import analyse as analyse_reference
+from chromaswarm.clone.reader import clone_limits, wants_exact_copy
 from chromaswarm.build.runtime import SectionCheck
 from chromaswarm.agents.brief import Brief, mode_from_background
 from chromaswarm.developer.content import build_copy
 from chromaswarm.developer.copywriter import copy_key
+from chromaswarm.clone.fidelity import render_markdown as render_fidelity
 from chromaswarm.qa.critic import render_markdown
 from chromaswarm.qa.master import heal_css
 from chromaswarm.engines.design_spec import (
@@ -205,9 +207,27 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
                 return {"pipeline": p, "notice": "Clone cần một link hợp lệ (ví dụ https://tenmien.vn)."}
             if len(prompt) < 12:
                 return {"pipeline": p, "notice": "Bạn mô tả thêm một chút về trang web của bạn nhé (ít nhất một câu)."}
-            p.clone = CloneSource(url=url, owned=bool(data.get("owned")))
+            owned = bool(data.get("owned"))
+            p.clone = CloneSource(url=url, owned=owned, exact_requested=not owned and wants_exact_copy(prompt))
             p.raw_prompt = prompt
             return {"pipeline": p, "notice": None}
+        if p.mode is BuildMode.CLONE and p.clone and p.clone.exact_requested and not p.clone.exact_answered:
+            # "Giống 100%" without the tick: explain why content is not copied and let the user choose.
+            answer = interrupt(Question(
+                step="B1", kind="choice", key="clone_ownership", allow_free_text=False,
+                text=("Bạn muốn giống 100% — cả chữ, ảnh và tên thương hiệu. Chroma chỉ chép nội dung khi đó là "
+                      "trang của bạn: chép trang của người khác là giả danh họ và dùng tác phẩm của họ. "
+                      "Trang này có phải của bạn không?"),
+                options=[Option(value="owned", label="Đây là trang của tôi",
+                                hint="Chép cả cấu trúc, chữ và ảnh; Chroma xác nhận lại tên trang sau khi đọc"),
+                         Option(value="structure", label="Dựng cấu trúc với nội dung của tôi",
+                                hint="Bố cục và phong cách giống trang mẫu; chữ, ảnh là của bạn, dán vào file nội dung")],
+            ).model_dump())
+            if answer not in ("owned", "structure"):
+                return {"pipeline": p, "notice": "Vui lòng chọn một trong hai cách."}
+            p.clone = p.clone.model_copy(update={"exact_answered": True, "owned": answer == "owned"})
+            return {"pipeline": p, "notice": None if answer == "owned" else
+                    "Chroma sẽ dựng giống bố cục và phong cách; chữ và ảnh để trống chỗ cho nội dung của bạn."}
         if not p.raw_prompt:
             answer = interrupt(Question(step="B1", kind="text", key="raw_prompt",
                                         text="Bạn muốn xây dựng trang web gì? Cứ mô tả bằng lời bình thường.").model_dump())
@@ -260,7 +280,10 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         p.advance()
         kind = "cấu trúc, chữ và ảnh (trang của bạn)" if p.clone.owned else "cấu trúc và phong cách (chữ, ảnh là của bạn)"
         names = ", ".join(sec.name for sec in a.sections)
-        return {"pipeline": p, "notice": f"Đã đọc {len(a.sections)} section từ trang mẫu: {names}. Sẽ dựng lại {kind}."}
+        notice = f"Đã đọc {len(a.sections)} section từ trang mẫu: {names}. Sẽ dựng lại {kind}."
+        if limits := clone_limits(a):
+            notice += " Sẽ không giống trang mẫu ở: " + "; ".join(limits) + "."
+        return {"pipeline": p, "notice": notice}
 
     def b2_creative(p: PipelineState) -> dict:
         if not p.brief_read and deps.brief_reader:
@@ -296,6 +319,24 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
     # ---------------------------------------------------------------- B3
     def b3(state: GraphState) -> dict:
         p = _copy(state)
+        if p.mode is BuildMode.CLONE and p.clone and p.clone.analysed and p.clone.owned and p.clone.owner_confirmed is None:
+            # Owned clones copy someone's name, words and photos: confirm against the page's own name.
+            answer = interrupt(Question(
+                step="B3", kind="choice", key="clone_owner_confirm", allow_free_text=False,
+                text=(f"Trang mẫu tên là “{p.clone.title}”. Chroma sẽ chép tên, chữ và ảnh của trang này. "
+                      "Chỉ xác nhận nếu bạn là chủ trang hoặc được chủ trang cho phép."),
+                options=[Option(value="confirm", label="Tôi là chủ trang / được phép",
+                                hint="Chép cả chữ, ảnh và thương hiệu"),
+                         Option(value="structure", label="Chỉ dựng cấu trúc",
+                                hint="Bỏ chữ và ảnh đã đọc; dùng nội dung của bạn")],
+            ).model_dump())
+            if answer not in ("confirm", "structure"):
+                return {"pipeline": p, "notice": "Vui lòng chọn một trong hai cách."}
+            if answer == "confirm":
+                p.clone = p.clone.model_copy(update={"owner_confirmed": True})
+                return {"pipeline": p, "notice": None}
+            p.clone = p.clone.model_copy(update={"owner_confirmed": False, "owned": False, "content": None})
+            return {"pipeline": p, "notice": "Đã bỏ chữ và ảnh của trang mẫu; chỉ dựng lại cấu trúc và phong cách."}
         if p.mode is BuildMode.CLONE and p.clone and p.clone.analysed:
             # Measured on the reference page, not guessed; the user reviews them at B7.
             for key, value in p.clone.pillars.items():
@@ -628,6 +669,14 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
                     p.design_critique = [f"{i.where}: {i.problem} → {i.fix}" for i in c.issues]
                     write_artifact(p, "CRITIQUE.md", render_markdown(c))
                     notice += f" Chấm thẩm mỹ: {c.overall:.1f}/10."
+            # Clone mode: how close the rebuild is to the reference (same reader on both pages).
+            measure = getattr(deps.build, "fidelity", None)
+            if p.mode == BuildMode.CLONE and p.clone and measure:
+                if f := await measure(p.session_id, p.clone.url):
+                    p.clone_fidelity = f.total
+                    p.clone_fidelity_notes = f.notes
+                    write_artifact(p, "FIDELITY.md", render_fidelity(f, p.clone.url))
+                    notice += f" Độ giống trang mẫu: {f.total:.0f}/100."
             p.advance()
             return {"pipeline": p, "notice": notice}
         new_rules = [r for r in heal_css(report.failures) if r not in p.heal_rules]
