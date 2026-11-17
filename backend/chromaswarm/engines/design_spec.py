@@ -50,6 +50,7 @@ class DesignInputs(BaseModel):
     body_font: str | None = None
     # Clone mode: where the reference fonts load from + their Vietnamese fallback (FontSource dumps)
     font_sources: list[dict] = []
+    lang: str = "vi"  # page language (<html lang>): a Clone keeps the reference's language
 
 
 CLONE_POLICY = {

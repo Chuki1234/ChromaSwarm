@@ -78,7 +78,9 @@
   }
 
   const sleep = ms => new Promise(r => setTimeout(r, cfg.instant ? 0 : ms / cfg.speed));
-  const frame = () => new Promise(r => requestAnimationFrame(() => r()));
+  // A hidden or covered window stops painting, so requestAnimationFrame never fires there: never wait
+  // more than 50ms for a frame, or the whole build stalls while the Chromium window is out of sight.
+  const frame = () => new Promise(r => { requestAnimationFrame(() => r()); setTimeout(r, 50); });
 
   function arrow(color, size) {
     return `<svg width="${size}" height="${size}" viewBox="0 0 24 24"><path d="M3 2 L3 19 L8 14.5 L11.5 22 L14.5 20.6 L11 13.3 L18 13.3 Z"

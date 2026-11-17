@@ -348,3 +348,82 @@ def test_every_generated_button_has_a_handler():
             code = render_section(section, copy).content
             for button in re.findall(r"<button\b[^>]*>", code, flags=re.S):
                 assert "onClick" in button or 'type="submit"' in button, (slug, section.id, button[:120])
+
+
+def test_refine_from_the_browser_bar_takes_the_feedback_written_there(tmp_path, monkeypatch):
+    import chromaswarm.main as main
+    runner, fake = _built(tmp_path, "rb1")
+    refine = next(o for o in fake.handover_options if o["value"]["action"] == "refine")
+    assert refine["feedback"] is True and refine["submit"] and refine["placeholder"]  # the bar shows its own box
+    sent: list[dict] = []
+
+    async def capture(sid, msg):
+        sent.append(msg)
+    monkeypatch.setattr(main, "runner", runner)
+    monkeypatch.setattr(main, "broadcast", capture)
+    asyncio.run(main.browser_choice("rb1", {"action": "refine"}))  # no text yet: asked for it, nothing resumed
+    assert asyncio.run(runner.snapshot("rb1"))["pipeline"].step is Step.B12_HANDOVER and "góp ý" in sent[-1]["notice"]
+    asyncio.run(main.browser_choice("rb1", {"action": "refine", "feedback": "đổi sang tông tối"}))
+    p = asyncio.run(runner.snapshot("rb1"))["pipeline"]
+    assert p.step is Step.B7_APPROVAL and p.pillars.color.startswith("dark")
+
+
+def test_clone_builds_in_designer_passes_wireframe_colour_content(tmp_path):
+    from tests.test_clone import fake_reader
+
+    class PassesBuild(FakeBuild):
+        def __init__(self):
+            super().__init__()
+            self.wire = False
+
+        def begin_wireframe(self, session):
+            self.wire = True
+            self.log.append("wireframe")
+
+        def wireframe_active(self, session):
+            return self.wire
+
+        async def colour(self, session):
+            self.log.append("colour")
+
+        async def fill_content(self, session):
+            self.wire = False
+            self.log.append("content")
+
+    fake = PassesBuild()
+    runner = PipelineRunner(Deps(artifacts_root=tmp_path, build=fake, clone_reader=fake_reader()))
+    notices: list[str] = []
+
+    async def seen(snap):
+        if snap.get("notice"):
+            notices.append(snap["notice"])
+
+    async def run():
+        await runner.start("w1")
+        await runner.answer("w1", "clone")
+        await runner.answer("w1", {"url": "https://gom-moc.vn"})
+        return await runner.answer("w1", {"approve": True}, seen)
+    p = asyncio.run(run())["pipeline"]
+    assert p.step is Step.B12_HANDOVER and p.build_passes == ["colour", "content"]
+    order = [x for x in fake.log if x in ("wireframe", "colour", "content", "integrate")]
+    assert order == ["wireframe", "colour", "content", "integrate"]
+    assert any("Wireframe" in n for n in notices) and any("Tô màu" in n for n in notices)
+    assert any("Điền nội dung" in n for n in notices)
+
+
+def test_wireframe_css_keeps_each_colours_lightness_and_skeleton_keeps_links():
+    from chromaswarm.agents.planner import design_inputs
+    from chromaswarm.developer.nextjs import skeleton, wireframe_file
+    from chromaswarm.engines.design_spec import build_design_spec
+    from chromaswarm.state_machine.pipeline_state import PipelineState
+    s = PipelineState(session_id="s", raw_prompt="x")
+    s.pillars.theme, s.pillars.layout, s.pillars.color, s.pillars.margins = "warm-organic", "catalog", "light #2238c7", "balanced"
+    spec = build_design_spec(design_inputs(s, "X"))
+    css = wireframe_file(spec).content
+    accent = next(t for t in spec.palette.tokens if t.name == "accent")
+    lightness = accent.css.split("(")[1].split()[0]
+    assert f"--accent: oklch({lightness} 0 0);" in css and "grayscale" in css
+    assert wireframe_file(None).content.count("{") == 0  # colour pass: no rule left
+    out = skeleton({"nav_links": [["Work", "#"], ["Home", "/home"]], "headline": "Complex software, clean", "price": ""})
+    assert out["nav_links"][0][1] == "#" and out["nav_links"][1][1] == "/home" and "Work" not in str(out)
+    assert out["headline"].count(" ") == 2 and set(out["headline"].replace(" ", "")) == {"▬"} and out["price"] == ""

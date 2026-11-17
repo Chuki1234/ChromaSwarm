@@ -32,6 +32,7 @@ from chromaswarm.build.runtime import LocalBuildRuntime
 from chromaswarm.agents.brief import build_brief_reader
 from chromaswarm.developer.copywriter import build_copywriter
 from chromaswarm.developer.template import app_dir_for, template_zip
+from chromaswarm.clone.preview import page_preview
 from chromaswarm.playwright_engine.style_dna_scraper import scrape_url
 from chromaswarm.state_machine.graph import Deps, PipelineRunner
 from chromaswarm.state_machine.pipeline_state import BuildMode, GateError, Step, tools_for
@@ -108,6 +109,20 @@ def to_message(snap: dict) -> dict:
         "clarity_score": p.pillars.clarity_score,
         "running": snap["question"] is None and not snap["finished"],
     }
+
+
+@app.get("/clone/preview")
+async def clone_preview(url: str) -> dict:
+    """First-screen screenshot + title of a reference page, shown under the link before it is read."""
+    from chromaswarm.state_machine.pipeline_state import Reference
+    try:
+        target = Reference.model_validate({"url": url}).url
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Link chưa hợp lệ.") from None
+    try:
+        return (await page_preview(str(target))).model_dump()
+    except Exception as e:  # noqa: BLE001 — unreachable / blocked page: the form still works without a preview
+        raise HTTPException(status_code=502, detail=f"Không mở được trang: {str(e)[:120]}") from None
 
 
 @app.get("/sessions/{session_id}/template.zip")
@@ -188,9 +203,9 @@ async def browser_choice(session_id: str, value: dict) -> None:
     question = snap["question"] or {}
     if question.get("kind") != "handover":
         return
-    if value.get("action") == "refine":  # feedback is typed in the Studio, not in the page
+    if value.get("action") == "refine" and not str(value.get("feedback") or "").strip():
         await broadcast(session_id, {**to_message(snap),
-                                     "notice": "Bạn ghi điều muốn tinh chỉnh vào ô góp ý trong Studio rồi bấm “Tinh chỉnh”."})
+                                     "notice": "Bạn ghi điều muốn tinh chỉnh vào ô góp ý rồi gửi."})
         return
     try:
         await resume(session_id, value)

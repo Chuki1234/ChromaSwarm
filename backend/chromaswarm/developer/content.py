@@ -12,6 +12,7 @@ import re
 from pydantic import BaseModel
 
 from chromaswarm.agents.consultant import extract_cta, project_title
+from chromaswarm.developer.i18n import CLONE_PLACEHOLDERS_EN, copy_en, page_lang
 from chromaswarm.developer.photos import stock_photos
 from chromaswarm.state_machine.pipeline_state import Domain, PipelineState
 
@@ -49,6 +50,7 @@ class PageCopy(BaseModel):
     shop: bool = False  # a store: header gets search / account / cart, footer gets policy links
     cards: list[Item] = []  # bento cards: products for shops / projects for portfolios, features otherwise
     rows: list[tuple[str, str]] = []  # list rows: (entry, meta) — posts with dates, work history with periods
+    lang: str = "vi"  # page language (developer/i18n.py): a Clone keeps the reference's language
 
 
 DEFAULTS: dict[Domain, dict] = {
@@ -285,18 +287,22 @@ def build_copy(state: PipelineState) -> PageCopy:
     )
     if state.brief:
         copy = apply_brief(copy, state.brief, state.pillars.scope or "")
+    lang = page_lang(state)
+    if lang != "vi":  # a Clone keeps its reference's language: sample copy in that language
+        en = copy_en(state.domain, brand)
+        copy = copy.model_copy(update={**en, "lang": lang, "nav_links": nav_links(state, en["nav"])})
     clone = state.clone
     if state.selected_page == "clone" and clone and clone.owned and clone.content:
         return owned_clone_copy(copy, clone.content)
     # No photos of their own: free-license stock photos picked by topic (§1.3, never grey boxes)
     if photos := stock_photos(f"{state.raw_prompt or ''} {brand} {state.pillars.scope or ''}", state.domain):
         copy = copy.model_copy(update={"images": photos})
-    if state.page_copy:  # written by the LLM copywriter and validated there
+    if state.page_copy and lang == "vi":  # written (in Vietnamese) by the LLM copywriter and validated there
         copy = apply_written_copy(copy, state.page_copy)
     if state.selected_page == "clone" and clone and not clone.owned:
         # Structure clone: the page is a template for the user's own words. The lines a visitor reads
         # first are clear placeholders (never the reference's text, never a name guessed from the prompt).
-        copy = copy.model_copy(update=CLONE_PLACEHOLDERS)
+        copy = copy.model_copy(update=CLONE_PLACEHOLDERS if lang == "vi" else CLONE_PLACEHOLDERS_EN)
     return copy
 
 

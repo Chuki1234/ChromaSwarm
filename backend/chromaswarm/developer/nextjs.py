@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from chromaswarm.agents.planner import Section
 from chromaswarm.clone.fonts import google_css_url
+from chromaswarm.developer.i18n import localize_code, localize_value
 from chromaswarm.developer.content import PageCopy
 from chromaswarm.developer.surfaces import surface_css
 from chromaswarm.engines.design_spec import DesignSpec
@@ -134,12 +135,13 @@ import "./base.css";
 import "./surface.css";
 import "./motion.css";
 import "./heal.css";
+import "./wireframe.css";
 
 export const metadata: Metadata = {{ title: {_js(project)} }};
 
 export default function RootLayout({{ children }}: {{ children: React.ReactNode }}) {{
   return (
-    <html lang="vi">
+    <html lang="{spec.inputs.lang}">
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
 {links}
@@ -153,6 +155,7 @@ export default function RootLayout({{ children }}: {{ children: React.ReactNode 
         WorkspaceFile(path="app/surface.css", content=surface_css(spec.inputs.surface)),
         heal_file([]),
         motion_file([]),
+        wireframe_file(None),
         WorkspaceFile(path="components/Art.tsx", content=art_component(spec, photos or [])),
         images_file(photos or []),
         WorkspaceFile(path="HUONG_DAN.md", content=guide(project)),
@@ -224,6 +227,40 @@ def font_stylesheets(spec: DesignSpec) -> list[str]:
             google.append(src["fallback"])
     google = sorted(dict.fromkeys(google))
     return ([google_css_url(google)] if google else []) + others
+
+
+def wireframe_file(spec: DesignSpec | None) -> WorkspaceFile:
+    """Wireframe pass (Clone): every colour token at its own lightness with no hue, photos in greyscale,
+    no shadows — layout and hierarchy first, the same contrast as the final page. `None` = colour applied."""
+    head = "/* Wireframe pass: layout and hierarchy in greys. Emptied when the colour pass runs (B10). */\n"
+    if spec is None:
+        return WorkspaceFile(path="app/wireframe.css", content=head)
+    greys = []
+    for tk in spec.palette.tokens:
+        m = re.match(r"oklch\(\s*([\d.]+%?)", tk.css)
+        if m:
+            greys.append(f"  --{tk.name}: oklch({m.group(1)} 0 0);")
+    css = (":root {\n" + "\n".join(greys) + "\n}\n"
+           "img { filter: grayscale(1) contrast(.85); }\n"
+           "* { box-shadow: none !important; text-shadow: none !important; }\n")
+    return WorkspaceFile(path="app/wireframe.css", content=head + css)
+
+
+_HREF = re.compile(r"^(/|#|https?:|mailto:|tel:)")
+
+
+def skeleton(value):
+    """Content for the wireframe pass: each word becomes a grey bar of about its length (links keep
+    their targets), so the layout is judged before any copy is in."""
+    if isinstance(value, str):
+        if not value or _HREF.match(value):
+            return value
+        return " ".join("▬" * max(2, min(len(w) // 2 + 1, 6)) for w in value.split())
+    if isinstance(value, list):
+        return [skeleton(v) for v in value]
+    if isinstance(value, dict):
+        return {k: skeleton(v) for k, v in value.items()}
+    return value
 
 
 def heal_file(rules: list[str]) -> WorkspaceFile:
@@ -958,11 +995,11 @@ def render_section(section: Section, copy: PageCopy, page: str = "", content: di
     col = _Collector(page, copy) if content is not None else None
     token = _COLLECT.set(col)
     try:
-        code = fn(section, copy)
+        code = localize_code(fn(section, copy), copy.lang)  # fixed UI words in the page's language
     finally:
         _COLLECT.reset(token)
     if col is not None:
-        content[section.id] = col.entries
+        content[section.id] = localize_value(col.entries, copy.lang)
     return WorkspaceFile(path=f"{folder}/{component_name(section.id)}.tsx", content=code)
 
 

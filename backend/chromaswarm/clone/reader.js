@@ -261,12 +261,23 @@
   const contentWidth = extents.length
     ? Math.round(Math.max(...extents.map(e => e[1])) - Math.min(...extents.map(e => e[0]))) : null;
 
+  // Page language: the declared <html lang>; otherwise Vietnamese when a noticeable share of letters carry
+  // Vietnamese diacritics. Only a ratio is computed, no text leaves the page.
+  function pageLang() {
+    const declared = (document.documentElement.getAttribute("lang") || "").trim();
+    if (declared) return declared;
+    const sample = (document.body.innerText || "").slice(0, 20000);
+    const letters = (sample.match(/\p{L}/gu) || []).length;
+    const viet = (sample.match(/[ăâđêôơưàảãạáằẳẵặắầẩẫậấèẻẽẹéềểễệếìỉĩịíòỏõọóồổỗộốờởỡợớùủũụúừửữựứỳỷỹỵý]/giu) || []).length;
+    return letters && viet / letters > 0.03 ? "vi" : "en";
+  }
+
   const first = sel => { const el = document.querySelector(sel); return el ? getComputedStyle(el).fontFamily.split(",")[0].replace(/["']/g, "").trim() : null; };
   return {
     url: location.href,
     title: document.querySelector('meta[property="og:site_name"]')?.content || document.title || location.hostname,
     description: owned ? (document.querySelector('meta[name="description"]')?.content || "") : "",
     heading_font: first("h1") || first("h2"), body_font: first("main p") || first("p") || first("body"),
-    blocks: out, content_width: contentWidth,
+    blocks: out, content_width: contentWidth, lang: pageLang(),
   };
 }

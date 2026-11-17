@@ -21,6 +21,23 @@ const STEPS: { id: string; label: string; phase: string }[] = [
   { id: "B11", label: "Kiểm tra & chấm điểm", phase: "Hoàn thiện" },
   { id: "B12", label: "Bàn giao cho bạn", phase: "Hoàn thiện" },
 ];
+type Step = (typeof STEPS)[number];
+
+// Clone runs the same 12 steps, but the first four read the reference page instead of asking questions.
+const CLONE_STEPS: Step[] = [
+  { id: "B1", label: "Đọc URL & phân tích", phase: "Đọc trang mẫu" },
+  { id: "B2", label: "Tách các phần của trang", phase: "Đọc trang mẫu" },
+  { id: "B3", label: "Phong cách từ trang mẫu", phase: "Đọc trang mẫu" },
+  { id: "B4", label: "Font, ngôn ngữ & ảnh", phase: "Đọc trang mẫu" },
+  { id: "B5", label: "Hệ màu, chữ & khoảng cách", phase: "Thiết kế" },
+  { id: "B6", label: "Chọn layout từng phần", phase: "Thiết kế" },
+  { id: "B7", label: "Bạn duyệt kế hoạch", phase: "Thiết kế" },
+  { id: "B8", label: "Chuẩn bị khung & token", phase: "Dựng trang" },
+  { id: "B9", label: "Dựng wireframe", phase: "Dựng trang" },
+  { id: "B10", label: "Tô màu & điền nội dung", phase: "Dựng trang" },
+  { id: "B11", label: "Kiểm tra & đo độ giống", phase: "Hoàn thiện" },
+  { id: "B12", label: "Bàn giao template", phase: "Hoàn thiện" },
+];
 
 // One click from the empty screen: a complete prompt goes straight to the plan (agents/brief.py).
 const EXAMPLES: { tag: string; text: string }[] = [
@@ -100,8 +117,12 @@ const NEEDS: Record<string, string> = {
   product_md: "Mô tả sản phẩm", plan_md: "Kế hoạch bố cục", user_approval: "Bạn duyệt kế hoạch",
   design_system: "Cài đặt giao diện", sections_planned: "Danh sách phần trang", integrated: "Ghép trang", qa_passed: "Qua kiểm tra chất lượng",
 };
-const needLabel = (k: string) =>
-  NEEDS[k] ?? (k.startsWith("write:") ? `Dựng phần “${k.slice(6)}”` : k.startsWith("check:") ? `Kiểm tra phần “${k.slice(6)}”` : k);
+// Clone asks only for the link; everything else is read from the reference page.
+const CLONE_NEEDS: Record<string, string> = {
+  raw_prompt: "Dán link trang mẫu", domain: "Nhận loại trang (tự động)", "pillar:scope": "Đối tượng (tự động)",
+};
+const needLabel = (k: string, clone = false) =>
+  (clone ? CLONE_NEEDS[k] : undefined) ?? NEEDS[k] ?? (k.startsWith("write:") ? `Dựng phần “${k.slice(6)}”` : k.startsWith("check:") ? `Kiểm tra phần “${k.slice(6)}”` : k);
 
 const MODE_KEY = "chromaswarm-mode"; // the mode to open with after "Đổi chế độ" starts a new session
 
@@ -198,11 +219,15 @@ export function PipelineConsole() {
 
   const question = snap?.question ?? null;
   const step = snap?.state.step ?? "B1";
-  const stepIdx = STEPS.findIndex((s) => s.id === step);
   const empty = items.length === 0 && (!question || question.kind === "mode");
   const cloneMode = snap?.state.mode === "clone";
+  const cloneView = cloneMode || (empty && mode === "clone");  // the tracker follows the switch on the empty screen
+  const steps = cloneView ? CLONE_STEPS : STEPS;
+  const stepIdx = steps.findIndex((s) => s.id === step);
   // Clone fills its own form; every other question accepts plain chat (answers, questions, changes of mind).
-  const chatOpen = status === "open" && !cloneMode && question?.kind !== "clone_source";
+  // At handover a Clone takes plain text too: it is feedback to refine the page.
+  const cloneRefine = cloneMode && question?.kind === "handover";
+  const chatOpen = status === "open" && (cloneRefine || (!cloneMode && question?.kind !== "clone_source"));
 
   const answer = (a: Answer) => {
     if (!question) return;
@@ -223,6 +248,11 @@ export function PipelineConsole() {
       return;
     }
     setBusy(true);
+    if (cloneRefine) {
+      setItems((it) => [...it, { kind: "user", text: `Tinh chỉnh: ${t}` }]);
+      send({ type: "answer", value: { action: "refine", feedback: t } });
+      return;
+    }
     send({ type: "chat", text: t });
   };
 
@@ -256,12 +286,13 @@ export function PipelineConsole() {
     location.reload();
   };
 
-  const building = !!snap && !question && (snap.running || snap.finished) && stepIdx >= STEPS.findIndex((s) => s.id === "B8");
+  const building = !!snap && !question && (snap.running || snap.finished) && stepIdx >= steps.findIndex((s) => s.id === "B8");
   const lastQuestionIdx = items.map((i) => i.kind).lastIndexOf("question");
 
   return (
     <div className="flex h-dvh w-full overflow-hidden">
-      <SidePanel open={panelOpen} onClose={() => setPanelOpen(false)} snap={snap} status={status} stepIdx={stepIdx} onRestart={restart} />
+      <SidePanel open={panelOpen} onClose={() => setPanelOpen(false)} snap={snap} status={status} stepIdx={stepIdx} onRestart={restart}
+        steps={steps} clone={cloneView} />
 
       <main className="flex min-w-0 flex-1 flex-col">
         <header className={`flex h-14 shrink-0 items-center gap-3 border-b border-line px-4 ${empty ? "md:hidden" : ""}`}>
@@ -283,7 +314,7 @@ export function PipelineConsole() {
               {cloneMode ? "Clone · từ trang có sẵn" : "Creative · từ ý tưởng"}
             </span>
           )}
-          <span className="ml-auto truncate text-xs text-fg-2">Bước {stepIdx + 1} · {STEPS[stepIdx]?.label}</span>
+          <span className="ml-auto truncate text-xs text-fg-2">Bước {stepIdx + 1} · {steps[stepIdx]?.label}</span>
         </header>
 
         {empty ? (
@@ -306,8 +337,9 @@ export function PipelineConsole() {
                   ))}
                 </ul>
               </div>
+              {/* self-start: the card keeps its own height instead of stretching to the taller Creative panel */}
               <div data-hidden={mode !== "clone"} aria-hidden={mode !== "clone"}
-                className="rounded-3xl border border-line bg-elevated p-6 shadow-card">
+                className="self-start rounded-3xl border border-line bg-elevated p-6 shadow-card">
                 {/* inert while hidden: its fields must not take focus behind the Creative panel */}
                 <fieldset disabled={mode !== "clone"} className="contents">
                   <CloneSource busy={busy || status !== "open"} onAnswer={submitClone} />
@@ -363,7 +395,8 @@ export function PipelineConsole() {
             <div className="shrink-0 px-4 pb-4 pt-2">
               <div className="mx-auto w-full max-w-3xl">
                 <Composer value={draft} onChange={setDraft} onSubmit={() => submit(draft)} disabled={!chatOpen} busy={busy}
-                  placeholder={cloneMode ? "Clone mode: điền form trong hội thoại ở trên" : "Trả lời Chroma, hỏi lại (vd: “Bento là gì?”) hoặc đổi ý…"} />
+                  placeholder={cloneRefine ? "Ghi góp ý để tinh chỉnh trang này (vd: tông tối hơn, khoảng cách gọn hơn)…"
+                    : cloneMode ? "Clone mode: điền form trong hội thoại ở trên" : "Trả lời Chroma, hỏi lại (vd: “Bento là gì?”) hoặc đổi ý…"} />
                 <p className="mt-2 text-center text-xs text-fg-3">Chroma chỉ dựng sau khi bạn duyệt kế hoạch ở bước B7.</p>
               </div>
             </div>
@@ -487,9 +520,11 @@ function ModeSwitch({ mode, setMode }: { mode: "creative" | "clone"; setMode: (m
   );
 }
 
-function SidePanel({ open, onClose, snap, status, stepIdx, onRestart }: {
+function SidePanel({ open, onClose, snap, status, stepIdx, onRestart, steps, clone }: {
   open: boolean; onClose: () => void; snap: Snapshot | null; status: Status; stepIdx: number; onRestart: () => void;
+  steps: Step[]; clone: boolean;
 }) {
+  const STEPS = steps;
   const phases = [...new Set(STEPS.map((s) => s.phase))];
   const statusLabel = { open: "Đã kết nối", connecting: "Đang kết nối", closed: "Mất kết nối" }[status];
   return (
@@ -545,7 +580,7 @@ function SidePanel({ open, onClose, snap, status, stepIdx, onRestart }: {
             <p className="text-xs font-medium">Việc tiếp theo</p>
             <ul className="flex flex-col gap-1 text-xs text-fg-2">
               {snap.missing.slice(0, 5).map((m) => (
-                <li key={m} className="flex items-start gap-2"><span className="mt-1.5 size-1 shrink-0 rounded-full bg-fg-3" aria-hidden />{needLabel(m)}</li>
+                <li key={m} className="flex items-start gap-2"><span className="mt-1.5 size-1 shrink-0 rounded-full bg-fg-3" aria-hidden />{needLabel(m, clone)}</li>
               ))}
             </ul>
             <p className="text-xs text-fg-3">Đã rõ {Math.round(snap.clarity_score * 100)}% yêu cầu thiết kế</p>

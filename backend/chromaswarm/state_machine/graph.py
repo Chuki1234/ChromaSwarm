@@ -42,6 +42,7 @@ from urllib.parse import urlparse
 
 from chromaswarm.clone.reader import analyse as analyse_reference
 from chromaswarm.clone.reader import clone_limits, guess_domain, wants_exact_copy
+from chromaswarm.developer.i18n import normalise
 from chromaswarm.build.runtime import SectionCheck
 from chromaswarm.agents.brief import Brief, mode_from_background
 from chromaswarm.developer.content import build_copy
@@ -257,7 +258,7 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             "analysed": True, "title": a.title, "sections": [sec.model_dump() for sec in a.sections],
             "pillars": a.pillars, "heading_font": a.heading_font, "body_font": a.body_font,
             "content": a.content, "notes": a.notes,
-            "content_width": a.content_width, "fonts": a.fonts})
+            "content_width": a.content_width, "fonts": a.fonts, "lang": a.lang})
         if not p.clone.described:
             p.domain = guess_domain(a)  # sample copy and suggested pages follow the kind of site read
         pages, _ = agent.sitemap_for(p.domain)
@@ -273,6 +274,11 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             # "Giống 100%": said once, never asked — most people clone someone else's page.
             notice += (" Bố cục, phong cách và nhịp trang được dựng giống trang mẫu; chữ, ảnh và tên thương hiệu "
                        "của trang mẫu thuộc về chủ trang nên không được chép — bạn dán nội dung của mình vào template.")
+        if a.lang:
+            lang = normalise(a.lang)
+            notice += (f" Ngôn ngữ trang mẫu: {a.lang} — bản dựng giữ nguyên ngôn ngữ này."
+                       if lang == "en" and a.lang.lower().startswith("en") or lang == "vi" else
+                       f" Ngôn ngữ trang mẫu: {a.lang} — chưa có bộ chữ mẫu cho ngôn ngữ này, bản dựng dùng tiếng Anh.")
         if limits := clone_limits(a):
             notice += " Sẽ không giống trang mẫu ở: " + "; ".join(limits) + "."
         return {"pipeline": p, "notice": notice}
@@ -549,7 +555,8 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         if p.selected_page and p.selected_page not in p.page_routes:  # first page is "/", later ones "/<slug>"
             p.page_routes[p.selected_page] = "/" if not p.page_routes else f"/{p.selected_page}"
         p.advance()
-        return {"pipeline": p, "notice": f"B8 · Phòng Design đã cài tokens.css. Bắt đầu dựng {len(sections)} section."}
+        first = "wireframe (khung xám, chưa màu và chữ) cho" if p.mode is BuildMode.CLONE and not p.heal_history else "dựng"
+        return {"pipeline": p, "notice": f"B8 · Phòng Design đã cài tokens.css. Bắt đầu {first} {len(sections)} section."}
 
     async def b9(state: GraphState) -> dict:
         """One pipelined tick: Developer writes section N while Design measures N-1."""
@@ -566,6 +573,8 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
                     p.page_copy = await asyncio.to_thread(deps.copywriter, p, base)
                     p.page_copy_key = key
             if not p.preview_url:
+                if p.mode is BuildMode.CLONE and not p.heal_history and hasattr(deps.build, "begin_wireframe"):
+                    deps.build.begin_wireframe(p.session_id)  # designer passes: wireframe -> colour -> content
                 photos = build_copy(p).images
                 p.preview_url = await (deps.build.start_app(p.session_id, project, spec, route, photos) if photos
                                        else deps.build.start_app(p.session_id, project, spec, route))
@@ -600,7 +609,8 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         parts = []
         if to_write:
             p.sections_done.append(to_write.id)
-            parts.append(f"Dev viết “{to_write.name}”")
+            wire = getattr(deps.build, "wireframe_active", None)
+            parts.append(f"{'Wireframe' if wire and wire(p.session_id) else 'Dev viết'} “{to_write.name}”")
         if to_check:
             check = next(r for r in results if isinstance(r, SectionCheck))
             p.sections_checked.append(to_check)
@@ -620,6 +630,21 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
 
     async def b10(state: GraphState) -> dict:
         p = _copy(state)
+        active = getattr(deps.build, "wireframe_active", None)
+        if active and active(p.session_id):
+            # Designer passes, one per graph pass so the Studio sees each: colour first, then the content.
+            try:
+                if "colour" not in p.build_passes:
+                    await deps.build.colour(p.session_id)
+                    p.build_passes.append("colour")
+                    return {"pipeline": p, "notice": "B10 · Tô màu: hệ màu của DESIGN.md thay cho khung xám của wireframe."}
+                await deps.build.fill_content(p.session_id)
+                p.build_passes.append("content")
+                return {"pipeline": p, "notice": "B10 · Điền nội dung: chữ và ảnh vào từng phần, rồi ghép trang."}
+            except Exception as e:
+                log.exception("B10 pass failed")
+                p.build_error = f"B10: {e}"
+                return {"pipeline": p, "notice": f"Lỗi khi tô màu / điền nội dung: {e}"}
         try:
             report = await deps.build.integrate(p.session_id, p.sections_planned)
         except Exception as e:
@@ -698,14 +723,18 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         verdict = ("Master QA đạt 100% cả 4 bài." if p.qa_passed
                    else f"Master QA còn {len(p.qa_failures)} lỗi hệ thống chưa tự sửa được, bạn xem danh sách bên dưới.")
         options = [{"label": f"Dựng trang tiếp theo: {pending[0].title}", "value": {"action": "next", "page": pending[0].slug},
-                    "primary": True}] if pending else []
-        options.append({"label": "Tinh chỉnh trang này (ghi góp ý trong Studio)", "value": {"action": "refine"}})
+                    "primary": True, "sent": f"Đang lập kế hoạch cho “{pending[0].title}” — duyệt trong Studio."}] if pending else []
+        options.append({"label": "Tinh chỉnh trang này", "value": {"action": "refine"}, "feedback": True,
+                        "placeholder": "Ví dụ: tông tối hơn, khoảng cách gọn hơn, đổi màu nhấn sang xanh lá",
+                        "submit": "Gửi góp ý", "sent": "Đã nhận góp ý — duyệt lại kế hoạch trong Studio."})
         await deps.build.handover(p.session_id, options)
         answer = interrupt(Question(
             step="B12", kind="handover", key="handover", allow_free_text=True,
             recommended=pending[0].slug if pending else None,
-            text=(f"Trang đã sẵn sàng tại {p.preview_url}. {verdict}\n"
-                  "Cửa sổ trình duyệt giờ là của bạn: bấm thử mọi thứ. Sau đó chọn bước tiếp theo."),
+            text=(f"Đã bàn giao trang · {p.preview_url}. {verdict}\n"
+                  "Cửa sổ trình duyệt giờ là của bạn: bấm thử mọi thứ, rồi chọn một trong hai cách đi tiếp — "
+                  "dựng trang tiếp theo trong sitemap (giữ nguyên DESIGN.md), hoặc ghi góp ý để tinh chỉnh trang này "
+                  "(Chroma cập nhật kế hoạch để bạn duyệt lại rồi dựng lại)."),
             options=[Option(value=pg.slug, label=pg.title, hint=pg.purpose) for pg in pending],
         ).model_dump())
         data = answer if isinstance(answer, dict) else {"action": "refine", "feedback": str(answer)}

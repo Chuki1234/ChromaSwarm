@@ -89,3 +89,49 @@ def test_design_md_has_no_unformatted_placeholders():
     s.pillars.theme, s.pillars.layout, s.pillars.color, s.pillars.margins = "warm-organic", "catalog", "light", "balanced"
     md = render_design_md(build_design_spec(design_inputs(s, "X")))
     assert not re.search(r"\{[a-z_.]+\}", md) and "gutter 16px" in md
+
+
+UNACCENTED_VI = __import__("re").compile(r"\b(Xem|nhanh|Menu chinh)\b")
+VI_LETTERS = __import__("re").compile(r"[ăâđêôơưàảãạáằẳẵặắầẩẫậấèẻẽẹéềểễệếìỉĩịíòỏõọóồổỗộốờởỡợớùủũụúừửữựứỳỷỹỵý]", __import__("re").I)
+
+
+def test_an_english_reference_is_rebuilt_in_english(tmp_path):
+    from chromaswarm.agents.planner import design_inputs
+    from chromaswarm.developer.i18n import normalise
+    from chromaswarm.engines.design_spec import build_design_spec
+    assert normalise("en-US") == "en" and normalise("vi") == "vi" and normalise("de") == "en" and normalise(None) == "vi"
+    s = state(selected_page="clone", clone=CloneSource(url="https://x.com", lang="en-US"))
+    copy = build_copy(s)
+    assert copy.lang == "en" and copy.brand == "[Your name]" and copy.nav[0] == "Work"
+    words: dict = {}
+    code = ""
+    for sid, kind in [("site-header", "sticky-bar"), ("hero", "hero-text"), ("testimonials", "testimonials"),
+                      ("list-rows", "list-rows"), ("bento", "bento"), ("faq", "accordion"), ("site-footer", "footer-columns")]:
+        code += render_section(sec(sid, kind), copy, "", content=words).content
+    # No Vietnamese left anywhere on the page: code, lifted labels or sample copy.
+    assert not VI_LETTERS.search(code), VI_LETTERS.search(code)
+    assert not VI_LETTERS.search(str(words)), [w for w in str(words).split('"') if VI_LETTERS.search(w)][:5]
+    assert words["testimonials"]["heading"] == "What clients say"
+    s.pillars.theme, s.pillars.layout, s.pillars.color, s.pillars.margins = "warm-organic", "catalog", "light", "balanced"
+    files = {f.path: f.content for f in scaffold("X", build_design_spec(design_inputs(s, "X")))}
+    assert '<html lang="en">' in files["app/layout.tsx"]
+
+
+def test_vietnamese_pages_are_unchanged():
+    copy = build_copy(state())
+    assert copy.lang == "vi" and copy.nav[0] == "Dự án"
+
+
+def test_no_template_leaves_vietnamese_on_an_english_page():
+    from chromaswarm.developer.nextjs import BY_ID, BY_STRUCTURE
+    from chromaswarm.state_machine.pipeline_state import Domain
+    for dom in Domain:
+        s = PipelineState(session_id="s", raw_prompt="x", domain=dom, selected_page="clone",
+                          clone=CloneSource(url="https://x.com", lang="en"))
+        copy = build_copy(s)
+        for sid, kind in [(k, k) for k in BY_STRUCTURE] + [(i, "split-7-5") for i in BY_ID]:
+            words: dict = {}
+            code = render_section(sec(sid, kind), copy, "", content=words).content
+            lines = [ln for ln in (code + "\n" + str(words)).splitlines()
+                     if (VI_LETTERS.search(ln) or UNACCENTED_VI.search(ln)) and not ln.strip().startswith("//")]
+            assert not lines, (dom, sid, lines[:3])

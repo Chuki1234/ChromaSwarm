@@ -43,6 +43,7 @@ class CloneAnalysis(BaseModel):
     heading_font: str | None = None  # the reference's own font, when a free host serves it (clone/fonts.py)
     body_font: str | None = None
     fonts: list[dict] = []  # FontSource dumps for the kept fonts (where to load them, Vietnamese fallback)
+    lang: str | None = None  # the page's language: <html lang>, else measured from its letters
     content: dict | None = None  # per-section copy, owned sites only
     notes: list[str] = []
     content_width: int | None = None  # measured column width (8pt) when the reference is a narrow single column
@@ -342,7 +343,7 @@ def build_analysis(raw: dict, dna: StyleDNA, owned: bool, fonts: dict[str, FontS
     title = raw.get("title") or urlparse(raw.get("url", "")).hostname or "Trang mẫu"
     return CloneAnalysis(url=raw.get("url", ""), title=title[:80], owned=owned, sections=sections, pillars=pillars,
                          content=page_content(raw, sections) if owned else None, notes=notes, dna=dna,
-                         content_width=content_width, fonts=sources, **kept)
+                         content_width=content_width, fonts=sources, lang=raw.get("lang"), **kept)
 
 
 # ------------------------------------------------------------------ what the user is told

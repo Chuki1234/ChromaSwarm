@@ -130,6 +130,7 @@ class CloneSource(BaseModel):
     heading_font: str | None = None
     body_font: str | None = None
     fonts: list[dict] = Field(default_factory=list)  # kept reference fonts: load URL + Vietnamese fallback
+    lang: str | None = None  # the reference page's language (<html lang> or measured); the rebuild keeps it
     content: dict | None = None  # owned sites only
     notes: list[str] = Field(default_factory=list)
     content_width: int | None = None  # narrow single-column reference: its column width (px, 8pt)
@@ -195,6 +196,7 @@ class PipelineState(BaseModel):
     token_changes: list[str] = Field(default_factory=list)  # Design fixes written to tokens.css
     open_findings: list[str] = Field(default_factory=list)  # left for the Developer / B11
     integrated: bool = False
+    build_passes: list[str] = Field(default_factory=list)  # Clone designer passes done at B10: colour, content
     build_error: str | None = None  # a B8-B10 failure the user must see; stops the build loop
 
     # B11
@@ -327,6 +329,7 @@ class PipelineState(BaseModel):
         self.sections_done = []
         self.sections_checked = []
         self.integrated = False
+        self.build_passes = []
         self.step = Step.B8_DESIGN
         return self.step
 
@@ -385,6 +388,7 @@ class PipelineState(BaseModel):
         self.open_findings = []
         self.sections_done = []
         self.integrated = False
+        self.build_passes = []
         self.qa_passed = False
         self.heal_history = []
         self.escalated_to_user = False

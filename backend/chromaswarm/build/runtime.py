@@ -16,13 +16,14 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from playwright.async_api import Browser, Page, Playwright, async_playwright
+from playwright.async_api import Error as PlaywrightError
 from pydantic import BaseModel
 
 from chromaswarm.agents.planner import Section
 from chromaswarm.design.dept import TokenChange, TokenFile, fix_contrast, repair
 from chromaswarm.developer.content import PageCopy, copy_for
-from chromaswarm.developer.nextjs import (WorkspaceFile, content_file, heal_file, motion_file, page_file,
-                                         render_section, scaffold)
+from chromaswarm.developer.nextjs import (WorkspaceFile, content_file, heal_file, images_file, motion_file,
+                                         page_file, render_section, scaffold, skeleton, wireframe_file)
 from chromaswarm.mcp_motion.client import MotionEffect, build_effects
 from chromaswarm.mcp_motion.server import pick_effect
 from chromaswarm.developer.workspace import TOKENS_PATH, DevServer, Workspace
@@ -86,6 +87,9 @@ class _Session:
     handed_over: bool = False
     # Template content per page: section id -> (section, its words), in page order (content/<page>.ts).
     content: dict[str, dict[str, tuple[Section, dict]]] = field(default_factory=dict)
+    # Designer passes (Clone): wireframe (greys + skeleton copy) -> colour -> content. Photos wait for content.
+    wireframe: bool = False
+    photos: list[str] = field(default_factory=list)
 
 
 CREATE_ONLY = {"app/heal.css", "app/motion.css"}  # accumulate across pages and heal loops
@@ -107,13 +111,46 @@ HANDOVER_BAR_JS = r"""(options) => {
     button:focus-visible { outline: 2px solid #F5B400; outline-offset: 2px; }
     button.primary { background: #F5B400; border-color: #F5B400; color: #111; }
     button.primary:hover { filter: brightness(1.08); }
-  </style><div class="bar" role="region" aria-label="Bàn giao ChromaSwarm"><p>Trang đã bàn giao. Bạn có thể dùng thử ngay trên cửa sổ này.</p></div>`;
+    button:disabled { opacity: .5; cursor: default; }
+    h2 { margin: 0; font-size: 15px; font-weight: 600; color: #fff; }
+    textarea { min-height: 72px; padding: 10px 12px; border-radius: 8px; border: 1px solid rgb(255 255 255 / .35);
+      background: rgb(255 255 255 / .06); color: #fff; font: inherit; resize: vertical; }
+    textarea:focus-visible { outline: 2px solid #F5B400; outline-offset: 2px; }
+    .status { color: #F5B400; }
+  </style><div class="bar" role="region" aria-label="Bàn giao ChromaSwarm">
+    <h2>Đã bàn giao trang</h2>
+    <p>Dùng thử ngay trên cửa sổ này, rồi chọn bước tiếp theo:</p></div>`;
   const bar = root.querySelector('.bar');
+  const lock = (msg) => {
+    bar.querySelectorAll('button, textarea').forEach(x => x.disabled = true);
+    const s = document.createElement('p'); s.className = 'status'; s.setAttribute('role', 'status'); s.textContent = msg;
+    bar.appendChild(s);
+  };
   for (const o of options) {
     const b = document.createElement('button');
     b.textContent = o.label;
     if (o.primary) b.className = 'primary';
-    b.onclick = () => { bar.querySelectorAll('button').forEach(x => x.disabled = true); window.__chromaswarmChoice(o.value); };
+    if (o.feedback) {
+      // Refine: the feedback is written right here, no need to switch to the Studio.
+      b.onclick = () => {
+        if (bar.querySelector('textarea')) return;
+        const t = document.createElement('textarea');
+        t.placeholder = o.placeholder || '';
+        t.setAttribute('aria-label', o.label);
+        const send = document.createElement('button');
+        send.className = 'primary'; send.textContent = o.submit || 'OK';
+        send.onclick = () => {
+          const text = t.value.trim();
+          if (!text) { t.focus(); return; }
+          lock(o.sent || '');
+          window.__chromaswarmChoice({ ...o.value, feedback: text });
+        };
+        b.after(t, send);
+        t.focus();
+      };
+    } else {
+      b.onclick = () => { lock(o.sent || ''); window.__chromaswarmChoice(o.value); };
+    }
     bar.appendChild(b);
   }
   document.body.appendChild(host);
@@ -146,10 +183,13 @@ class LocalBuildRuntime:
     async def start_app(self, session: str, project: str, spec: DesignSpec, route: str = "/",
                         photos: list[str] | None = None) -> str:
         s = self._s(session)
-        for f in scaffold(project, spec, photos):
+        s.photos = list(photos or [])
+        for f in scaffold(project, spec, [] if s.wireframe else photos):
             if f.path in CREATE_ONLY and (s.workspace.root / f.path).exists():
                 continue
             s.workspace.write(Step.B9_DEVELOP, f)
+        if s.wireframe:
+            s.workspace.write(Step.B9_DEVELOP, wireframe_file(spec))
         s.route = route
         page_path = s.workspace.root / page_file([], route=route).path
         if not page_path.exists():
@@ -194,7 +234,41 @@ class LocalBuildRuntime:
         current[section.id] = (section, words[section.id])
         if keep is not None:  # a refined page may have dropped sections: keep only the page's own, in order
             s.content[page] = current = {sid: current[sid] for sid in keep if sid in current}
-        s.workspace.write(Step.B9_DEVELOP, content_file(page, list(current.values())))
+        s.workspace.write(Step.B9_DEVELOP, self._content_file(s, page))
+
+    def _content_file(self, s: _Session, page: str) -> WorkspaceFile:
+        rows = list(s.content.get(page, {}).values())
+        if s.wireframe:  # the real words are kept here and written by the content pass
+            rows = [(sec, skeleton(words)) for sec, words in rows]
+        return content_file(page, rows)
+
+    # -------------------------------------------------------------- designer passes (Clone)
+    def begin_wireframe(self, session: str) -> None:
+        """The next build starts as a wireframe: greys, skeleton copy, no photos."""
+        self._s(session).wireframe = True
+
+    def wireframe_active(self, session: str) -> bool:
+        return self._s(session).wireframe
+
+    async def colour(self, session: str) -> None:
+        """Colour pass: the design system's real palette replaces the greys (wireframe.css emptied)."""
+        s = self._s(session)
+        if s.overlay:
+            await s.overlay.note(Agent.COLOR, "Tô màu: áp hệ màu DESIGN.md lên wireframe")
+        s.workspace.write(Step.B9_DEVELOP, wireframe_file(None))
+
+    async def fill_content(self, session: str) -> None:
+        """Content pass: the words of every page and the photos go in."""
+        s = self._s(session)
+        if s.overlay:
+            await s.overlay.note(Agent.TYPOGRAPHY, "Điền nội dung: chữ và ảnh")
+        s.wireframe = False
+        for page in s.content:
+            s.workspace.write(Step.B9_DEVELOP, self._content_file(s, page))
+        s.workspace.write(Step.B9_DEVELOP, images_file(s.photos))
+        if s.page:
+            with contextlib.suppress(Exception):
+                await s.page.wait_for_load_state("load", timeout=15000)
 
     async def refresh_shared(self, session: str, section: Section, copy: PageCopy, pages: list[str]) -> None:
         """Re-render a shared section (the header) on pages built earlier, so their navigation
@@ -243,7 +317,18 @@ class LocalBuildRuntime:
         if not await self._wait_for(s, sel):  # HMR not landed yet: reload once
             await s.page.reload()
             await self._wait_for(s, sel, 15000)
-        report = (await design_pass(s.overlay, spec.typography, sections=[section_id])).sections[0]
+        for attempt in range(3):
+            try:
+                report = (await design_pass(s.overlay, spec.typography, sections=[section_id])).sections[0]
+                break
+            except PlaywrightError as e:
+                # Writing the next section rewrites the page's content file, and the dev server may do a
+                # full reload while Design is still measuring: wait for the new page and measure again.
+                if attempt == 2 or "context was destroyed" not in str(e) and "navigat" not in str(e):
+                    raise
+                with contextlib.suppress(Exception):
+                    await s.page.wait_for_load_state("load", timeout=15000)
+                await self._wait_for(s, sel, 15000)
         tokens = TokenFile(s.workspace.read(TOKENS_PATH))
         changes, leftover = repair(report, tokens)
         if changes:

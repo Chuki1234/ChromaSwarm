@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PipelineState } from "@/components/pipeline-console";
 
 export type Option = { value: string; label: string; hint: string };
@@ -235,8 +235,18 @@ function Approval({ state, busy, onAnswer }: { state: PipelineState; busy: boole
 /** B12: the page is the user's now. Build the next sitemap page, refine this one, or finish. */
 function Handover({ q, state, busy, onAnswer }: { q: Question; state: PipelineState; busy: boolean; onAnswer: Props["onAnswer"] }) {
   const [feedback, setFeedback] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+  // The build ends here: bring the handover into view (it sits under the build report otherwise).
+  useEffect(() => { ref.current?.scrollIntoView({ behavior: "smooth", block: "start" }); }, []);
   return (
-    <div className="flex flex-col gap-6">
+    <div ref={ref} className="flex flex-col gap-6 rounded-xl border border-accent p-4" data-swarm-section="handover">
+      <div className="flex flex-col gap-1">
+        <h3 className="text-base font-medium">Đã bàn giao trang</h3>
+        <p className="text-sm text-fg-2">
+          Dựng trang tiếp theo trong sitemap (giữ nguyên DESIGN.md, có kế hoạch mới để bạn duyệt), hoặc ghi góp ý để
+          tinh chỉnh trang này (Chroma cập nhật kế hoạch, bạn duyệt lại rồi Chroma dựng lại).
+        </p>
+      </div>
       {state.preview_url && (
         <a href={state.preview_url} target="_blank" rel="noreferrer" data-swarm-id="open-handover" data-swarm-role="link"
           className={`${primaryBtn} inline-flex items-center self-start`}>
@@ -283,6 +293,58 @@ function Handover({ q, state, busy, onAnswer }: { q: Question; state: PipelineSt
   );
 }
 
+const BACKEND_HTTP = (process.env.NEXT_PUBLIC_BACKEND_WS ?? "ws://localhost:8100").replace(/^ws/, "http");
+
+type Preview = { url: string; title: string; image: string };
+
+const validLink = (v: string) => {
+  try {
+    const u = new URL(v.trim());
+    return (u.protocol === "http:" || u.protocol === "https:") && u.hostname.includes(".") ? u.toString() : null;
+  } catch {
+    return null;
+  }
+};
+
+/** Clone, B1: a first-screen screenshot of the link as soon as it is valid, so the user can check it is the
+ *  right page before Chroma reads it. Debounced; a page that blocks screenshots simply shows no preview. */
+function LinkPreview({ url }: { url: string }) {
+  const link = validLink(url);
+  const [state, setState] = useState<{ link: string; preview?: Preview; error?: string } | null>(null);
+  useEffect(() => {
+    if (!link) return;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => {
+      setState({ link });
+      fetch(`${BACKEND_HTTP}/clone/preview?url=${encodeURIComponent(link)}`, { signal: ctrl.signal })
+        .then(async (r) => (r.ok ? setState({ link, preview: await r.json() }) : setState({ link, error: (await r.json()).detail })))
+        .catch((e) => { if (e.name !== "AbortError") setState({ link, error: "Không kết nối được tới backend." }); });
+    }, 600);
+    return () => { clearTimeout(timer); ctrl.abort(); };
+  }, [link]);
+  if (!link || !state || state.link !== link) return null;
+  return (
+    <figure className="flex flex-col gap-2" data-swarm-section="link-preview" aria-live="polite">
+      <div className="relative aspect-[16/10] overflow-hidden rounded-xl border border-line bg-surface">
+        {state.preview ? (
+          // eslint-disable-next-line @next/next/no-img-element -- a data URL screenshot, not an asset to optimise
+          <img src={state.preview.image} alt={`Bản xem trước của ${state.preview.title}`} className="size-full object-cover object-top" />
+        ) : (
+          <div className="grid size-full place-items-center p-4 text-center text-sm text-fg-3">
+            {state.error ? `Không xem trước được trang này (${state.error}). Bạn vẫn có thể đọc trang.` : "Đang tải bản xem trước…"}
+          </div>
+        )}
+      </div>
+      {state.preview && (
+        <figcaption className="flex min-w-0 items-baseline justify-between gap-4 text-xs">
+          <span className="truncate font-medium text-fg">{state.preview.title}</span>
+          <span className="shrink-0 font-mono text-fg-3">{new URL(state.preview.url).hostname}</span>
+        </figcaption>
+      )}
+    </figure>
+  );
+}
+
 /** Clone mode, B1: just the link. Copying the page's own words and photos is an opt-in
  *  behind a small link (moving one's own site), never a question asked of everyone. */
 export function CloneSource({ busy, onAnswer }: { busy: boolean; onAnswer: Props["onAnswer"] }) {
@@ -302,6 +364,7 @@ export function CloneSource({ busy, onAnswer }: { busy: boolean; onAnswer: Props
         <input id="clone-url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…" required
           className={`${input} h-12 py-0`} data-swarm-id="clone-url" data-swarm-role="input" />
       </label>
+      <LinkPreview url={url} />
       <p className="text-sm text-fg-2">
         Chroma dựng lại giao diện của trang mẫu — bố cục, màu, kiểu chữ, khoảng cách — thành một template.
         Chữ và hình ảnh của trang mẫu không được chép (bản quyền thuộc chủ trang); bạn dán nội dung của mình vào.

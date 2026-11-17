@@ -12,6 +12,7 @@ import re
 from pydantic import BaseModel
 
 from chromaswarm.agents.consultant import base_font_for, extract_cta, split_color
+from chromaswarm.developer.i18n import page_lang
 from chromaswarm.engines.design_spec import DesignInputs, DesignSpec
 from chromaswarm.engines.presets import Layout, Surface, Theme
 from chromaswarm.engines.spacing import Density
@@ -276,6 +277,7 @@ def design_inputs(state: PipelineState, project_name: str, dna: StyleDNA | None 
         clone_level=("full" if clone.owned else "structure") if clone else None,
         content_width=clone.content_width if clone else None,
         font_sources=clone.fonts if clone else [],
+        lang=page_lang(state),
         extra_rules=[f"User feedback (B7): {f}" for f in state.plan_feedback],
     )
 
