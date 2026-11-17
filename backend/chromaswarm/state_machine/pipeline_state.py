@@ -132,9 +132,8 @@ class CloneSource(BaseModel):
     content: dict | None = None  # owned sites only
     notes: list[str] = Field(default_factory=list)
     content_width: int | None = None  # narrow single-column reference: its column width (px, 8pt)
-    # The description asked for an exact copy ("100%", "y hệt") without the ownership tick: asked once at B1.
+    # The description asked for an exact copy ("100%", "y hệt"): the B2 notice says what is and is not copied.
     exact_requested: bool = False
-    exact_answered: bool = False
     # Owned clones: the user confirms ownership again at B3, shown the reference's own name. None = not asked.
     owner_confirmed: bool | None = None
 

@@ -314,23 +314,27 @@ def test_text_only_hero_and_narrow_column_are_kept(monkeypatch):
     assert "đo từ trang mẫu" in render_design_md(spec)
 
 
-def test_exact_copy_request_without_the_tick_is_explained_and_asked(tmp_path):
+def test_exact_copy_request_is_explained_once_never_asked(tmp_path):
     from chromaswarm.clone.reader import wants_exact_copy
     assert wants_exact_copy("yêu cầu giống hoàn toàn 100% từ giao diện đến effect")
     assert wants_exact_copy("copy y hệt trang này") and not wants_exact_copy(PROMPT)
     exact = PROMPT + ", giống 100% trang mẫu"
     runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=fake_reader({"sections": {}})))
-    snap = asyncio.run(drive(runner, "e1", ["clone", {"url": "https://gom-moc.vn", "prompt": exact, "owned": False}]))
-    assert snap["question"]["key"] == "clone_ownership" and "giả danh" in snap["question"]["text"]
-    snap = asyncio.run(runner.answer("e1", "structure"))
+    notices: list[str] = []
+
+    async def seen(snap):
+        if snap.get("notice"):
+            notices.append(snap["notice"])
+
+    async def run():
+        await runner.start("e1")
+        await runner.answer("e1", "clone")
+        return await runner.answer("e1", {"url": "https://gom-moc.vn", "prompt": exact, "owned": False}, seen)
+    snap = asyncio.run(run())
     p = snap["pipeline"]
-    assert p.clone.owned is False and p.clone.content is None
-    assert snap["question"]["key"] != "clone_owner_confirm"  # nothing of theirs is copied: no confirmation needed
-    # Choosing "this is my site" still goes through the named confirmation after reading.
-    runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=fake_reader({"sections": {}})))
-    asyncio.run(drive(runner, "e2", ["clone", {"url": "https://gom-moc.vn", "prompt": exact, "owned": False}]))
-    snap = asyncio.run(runner.answer("e2", "owned"))
-    assert snap["pipeline"].clone.owned is True and snap["question"]["key"] == "clone_owner_confirm"
+    # No question about ownership: most people clone someone else's page. Straight on to the plan.
+    assert p.step.value == "B7" and p.clone.exact_requested and p.clone.owned is False and p.clone.content is None
+    assert any("không được chép" in n and "template" in n for n in notices)
 
 
 def test_declining_ownership_at_confirmation_drops_the_read_content(tmp_path):

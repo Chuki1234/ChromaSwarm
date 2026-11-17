@@ -283,11 +283,13 @@ function Handover({ q, state, busy, onAnswer }: { q: Question; state: PipelineSt
   );
 }
 
-/** Clone mode, B1: link + a short description + whether the site belongs to the user. */
+/** Clone mode, B1: link + a short description. Copying the page's own words and photos is an opt-in
+ *  behind a small link (moving one's own site), never a question asked of everyone. */
 export function CloneSource({ busy, onAnswer }: { busy: boolean; onAnswer: Props["onAnswer"] }) {
   const [url, setUrl] = useState("");
   const [prompt, setPrompt] = useState("");
   const [owned, setOwned] = useState(false);
+  const [showOwned, setShowOwned] = useState(false);
   return (
     <form
       className="flex flex-col gap-4"
@@ -307,17 +309,25 @@ export function CloneSource({ busy, onAnswer }: { busy: boolean; onAnswer: Props
           placeholder="Ví dụ: Shop gốm thủ công Bát Tràng, khách 25–40 tuổi, muốn họ bấm “Nhắn tin đặt hàng”"
           data-swarm-id="clone-prompt" data-swarm-role="input" />
       </label>
-      <label className="flex items-start gap-3 rounded-lg border border-line p-4 text-sm">
-        <input id="clone-owned" type="checkbox" checked={owned} onChange={(e) => setOwned(e.target.checked)}
-          className="mt-1 size-4 accent-[var(--color-accent)]" data-swarm-id="clone-owned" data-swarm-role="input" />
-        <span className="flex flex-col gap-1">
-          <span className="font-medium">Đây là trang web của tôi</span>
-          <span className="text-fg-2">
-            Chroma sẽ sao chép cả chữ và ảnh. Nếu không đánh dấu, Chroma chỉ dựng lại cấu trúc và phong cách;
-            chữ và ảnh dùng nội dung của bạn.
+      <p className="text-sm text-fg-2">
+        Chroma dựng lại bố cục và phong cách của trang mẫu thành một template; bạn dán chữ và ảnh của mình vào.
+      </p>
+      {/* Rare case (moving one's own site to Next.js): kept out of the way, never asked of everyone. */}
+      {!showOwned ? (
+        <button type="button" onClick={() => setShowOwned(true)} data-swarm-id="clone-own-site" data-swarm-role="button"
+          className="self-start text-sm text-fg-2 underline underline-offset-4 hover:text-fg">
+          Chuyển trang của chính bạn sang Next.js?
+        </button>
+      ) : (
+        <label className="flex items-start gap-3 rounded-lg border border-line p-4 text-sm">
+          <input id="clone-owned" type="checkbox" checked={owned} onChange={(e) => setOwned(e.target.checked)}
+            className="mt-1 size-4 accent-[var(--color-accent)]" data-swarm-id="clone-owned" data-swarm-role="input" />
+          <span className="flex flex-col gap-1">
+            <span className="font-medium">Đây là trang web của tôi — chép cả chữ và ảnh</span>
+            <span className="text-fg-2">Chỉ dành cho trang bạn sở hữu hoặc được chủ trang cho phép. Chroma xác nhận lại tên trang sau khi đọc.</span>
           </span>
-        </span>
-      </label>
+        </label>
+      )}
       <button type="submit" disabled={busy || !url.trim() || prompt.trim().length < 12} data-swarm-id="clone-submit"
         data-swarm-role="button" className={`${primaryBtn} self-start`}>
         Đọc trang mẫu

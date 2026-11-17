@@ -211,23 +211,6 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             p.clone = CloneSource(url=url, owned=owned, exact_requested=not owned and wants_exact_copy(prompt))
             p.raw_prompt = prompt
             return {"pipeline": p, "notice": None}
-        if p.mode is BuildMode.CLONE and p.clone and p.clone.exact_requested and not p.clone.exact_answered:
-            # "Giống 100%" without the tick: explain why content is not copied and let the user choose.
-            answer = interrupt(Question(
-                step="B1", kind="choice", key="clone_ownership", allow_free_text=False,
-                text=("Bạn muốn giống 100% — cả chữ, ảnh và tên thương hiệu. Chroma chỉ chép nội dung khi đó là "
-                      "trang của bạn: chép trang của người khác là giả danh họ và dùng tác phẩm của họ. "
-                      "Trang này có phải của bạn không?"),
-                options=[Option(value="owned", label="Đây là trang của tôi",
-                                hint="Chép cả cấu trúc, chữ và ảnh; Chroma xác nhận lại tên trang sau khi đọc"),
-                         Option(value="structure", label="Dựng cấu trúc với nội dung của tôi",
-                                hint="Bố cục và phong cách giống trang mẫu; chữ, ảnh là của bạn, dán vào file nội dung")],
-            ).model_dump())
-            if answer not in ("owned", "structure"):
-                return {"pipeline": p, "notice": "Vui lòng chọn một trong hai cách."}
-            p.clone = p.clone.model_copy(update={"exact_answered": True, "owned": answer == "owned"})
-            return {"pipeline": p, "notice": None if answer == "owned" else
-                    "Chroma sẽ dựng giống bố cục và phong cách; chữ và ảnh để trống chỗ cho nội dung của bạn."}
         if not p.raw_prompt:
             answer = interrupt(Question(step="B1", kind="text", key="raw_prompt",
                                         text="Bạn muốn xây dựng trang web gì? Cứ mô tả bằng lời bình thường.").model_dump())
@@ -281,6 +264,10 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         kind = "cấu trúc, chữ và ảnh (trang của bạn)" if p.clone.owned else "cấu trúc và phong cách (chữ, ảnh là của bạn)"
         names = ", ".join(sec.name for sec in a.sections)
         notice = f"Đã đọc {len(a.sections)} section từ trang mẫu: {names}. Sẽ dựng lại {kind}."
+        if p.clone.exact_requested and not p.clone.owned:
+            # "Giống 100%": said once, never asked — most people clone someone else's page.
+            notice += (" Bố cục, phong cách và nhịp trang được dựng giống trang mẫu; chữ, ảnh và tên thương hiệu "
+                       "của trang mẫu thuộc về chủ trang nên không được chép — bạn dán nội dung của mình vào template.")
         if limits := clone_limits(a):
             notice += " Sẽ không giống trang mẫu ở: " + "; ".join(limits) + "."
         return {"pipeline": p, "notice": notice}
