@@ -369,7 +369,7 @@ def test_reading_notice_lists_what_will_not_match():
                                         content="Dựng lại từ section #2 — chưa có mẫu đúng kiểu, dựng bằng khối nội dung gần nhất (§2.5 quy tắc 4)")])
     limits = " | ".join(clone_limits(a))
     assert "font Switzer được giữ" in limits and "Be Vietnam Pro" in limits and "font Brand Sans là font riêng" in limits
-    assert "1 section" in limits and "hiệu ứng" in limits and "của bạn" in limits
+    assert "1 section" in limits and "của bạn" in limits
 
 
 def test_reference_fonts_are_kept_with_a_vietnamese_fallback():

@@ -135,3 +135,14 @@ def test_no_template_leaves_vietnamese_on_an_english_page():
             lines = [ln for ln in (code + "\n" + str(words)).splitlines()
                      if (VI_LETTERS.search(ln) or UNACCENTED_VI.search(ln)) and not ln.strip().startswith("//")]
             assert not lines, (dom, sid, lines[:3])
+
+
+def test_motion_markup_for_marquee_and_hover_preview():
+    copy = build_copy(state(selected_page="clone", clone=CloneSource(url="https://x.com", lang="en")))
+    strip = sec("logo-strip", "logo-strip").model_copy(update={"count": 4, "motion": ["marquee"]})
+    code = render_section(strip, copy, "", content={}).content
+    assert 'className="marquee"' in code and "length: 8" in code and "aria-hidden={i >= 4" in code
+    rows = sec("list-rows", "list-rows").model_copy(update={"motion": ["hover-image"]})
+    code = render_section(rows, copy, "", content={}).content
+    assert 'className="row-preview" aria-hidden="true"' in code and "<Art" in code
+    assert not VI_LETTERS.search(code) and 'data-swarm-mcp="2d-css"' in code

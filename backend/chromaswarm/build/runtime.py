@@ -267,8 +267,13 @@ class LocalBuildRuntime:
             s.workspace.write(Step.B9_DEVELOP, self._content_file(s, page))
         s.workspace.write(Step.B9_DEVELOP, images_file(s.photos))
         if s.page:
+            # Every page's content changed at once: let the dev server finish recompiling, then start from a
+            # clean load, so B10 never reads errors from a page caught between the old and the new modules.
+            await asyncio.sleep(1.5)
             with contextlib.suppress(Exception):
-                await s.page.wait_for_load_state("load", timeout=15000)
+                await s.page.reload(wait_until="load", timeout=30000)
+                await s.page.wait_for_load_state("networkidle", timeout=15000)
+            s.console_errors.clear()
 
     async def refresh_shared(self, session: str, section: Section, copy: PageCopy, pages: list[str]) -> None:
         """Re-render a shared section (the header) on pages built earlier, so their navigation
@@ -286,14 +291,16 @@ class LocalBuildRuntime:
     async def motion(self, session: str, section: Section, spec: DesignSpec, page: str = "") -> list[MotionEffect]:
         """Motion & 2D/3D MCP Specialist: asks the Motion MCP server for the PLAN.md effect and
         appends the returned CSS to app/motion.css."""
-        effect = pick_effect(section.effect or "")
-        if not self.motion_enabled or not effect:
+        # The PLAN.md effect (Creative) plus every effect read from the reference (Clone).
+        wanted = list(dict.fromkeys(e for e in [pick_effect(section.effect or ""), *section.motion] if e))
+        if not self.motion_enabled or not wanted:
             return []
         s = self._s(session)
         if s.overlay:
             await s.overlay.move(Agent.MOTION, f'[data-swarm-section="{section.id}"]')
-            await s.overlay.note(Agent.MOTION, f"B8.1 · MCP build_effect({effect})")
-        effects = await build_effects([(effect, section.id)], spec.motion_duration_ms, spec.motion_easing, page=page)
+            await s.overlay.note(Agent.MOTION, f"B8.1 · MCP build_effect({', '.join(wanted)})")
+        effects = await build_effects([(e, section.id) for e in wanted], spec.motion_duration_ms, spec.motion_easing,
+                                      page=page)
         current = s.workspace.read("app/motion.css") if (s.workspace.root / "app/motion.css").exists() else ""
         blocks = [b.strip("\n") for b in current.split("\n/* fx */\n")[1:]] if "/* fx */" in current else []
         for fx in effects:

@@ -299,6 +299,9 @@
         }
         if (y >= document.documentElement.scrollHeight - innerHeight) break;
       }
+      // The last smooth step may still be travelling: land on the very bottom before judging what is hidden,
+      // so scroll-driven reveals near the end of the page have really been reached.
+      scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" });
       await new Promise(r => setTimeout(r, 400));
       const stuck = [...document.body.querySelectorAll("*")].filter(el => {
         if (el.closest("[aria-hidden=true]")) return false;

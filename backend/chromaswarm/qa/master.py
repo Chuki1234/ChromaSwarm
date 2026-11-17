@@ -183,7 +183,7 @@ async def test_scroll(page: Page, swarm: SwarmOverlay) -> QaTest:
             break
     for sel in r["stuck"]:
         fails.append(QaFailure(test=2, rule="stuck-hidden", selector=sel, detail="phần tử kẹt ở opacity 0 sau khi cuộn",
-                               heal=f"{sel} {{ opacity: 1; }}"))
+                               heal=f"{sel} {{ opacity: 1; animation: none; }}"))  # an animation outranks a plain opacity
     for sel in r["broken_images"]:
         fails.append(QaFailure(test=2, rule="broken-image", selector=sel, detail="ảnh không tải được (naturalWidth = 0)"))
     return QaTest(test=2, name=TEST_NAMES[2], checked=len(r["sticky"]) + 1, failures=fails)

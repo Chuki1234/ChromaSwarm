@@ -14,6 +14,7 @@ so a structure clone of someone else's site carries the user's own copy.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 from pathlib import Path
 from urllib.parse import urlparse
@@ -28,7 +29,8 @@ from chromaswarm.engines.palette import Mode
 from chromaswarm.engines.presets import VIETNAMESE_FONTS, Layout, Theme
 from chromaswarm.engines.spacing import Density
 from chromaswarm.engines.style_dna import StyleDNA, analyze
-from chromaswarm.playwright_engine.style_dna_scraper import collect, open_settled
+from chromaswarm.clone import motion
+from chromaswarm.playwright_engine.style_dna_scraper import SETTLE_JS, collect, open_settled
 from chromaswarm.state_machine.pipeline_state import Domain
 
 READER_JS = Path(__file__).with_name("reader.js").read_text(encoding="utf-8")
@@ -44,6 +46,7 @@ class CloneAnalysis(BaseModel):
     body_font: str | None = None
     fonts: list[dict] = []  # FontSource dumps for the kept fonts (where to load them, Vietnamese fallback)
     lang: str | None = None  # the page's language: <html lang>, else measured from its letters
+    motion: dict = {}  # page-wide motion facts: libs, unsupported, smooth, sticky (clone/motion.py)
     content: dict | None = None  # per-section copy, owned sites only
     notes: list[str] = []
     content_width: int | None = None  # measured column width (8pt) when the reference is a narrow single column
@@ -220,6 +223,7 @@ def sections_from_blocks(blocks: list[dict]) -> list[Section]:
         where = (f"section #{i + 1}" if len(idx) == 1 else f"section #{i + 1}–#{idx[-1] + 1} (gộp {len(idx)} khối ảnh liên tiếp)")
         sections.append(Section(
             id=sid, name=NAMES[structure], structure=structure, count=images, sources=idx,
+            motion=list(dict.fromkeys(m for j in idx for m in blocks[j]["features"].get("motion", []))),
             content=(f"Dựng lại từ {where} của trang mẫu ({sum(blocks[j]['features']['height'] for j in idx)}px cao)"
                      + (" — chưa có mẫu đúng kiểu, dựng bằng khối nội dung gần nhất (§2.5 quy tắc 4)"
                         if structure == FALLBACK else "")),
@@ -296,9 +300,23 @@ async def analyse(url: str, owned: bool, width: int = 1440, height: int = 900) -
         browser = await pw.chromium.launch()
         try:
             page = await browser.new_page(viewport={"width": width, "height": height})
-            await open_settled(page, url)
+            # Opened like open_settled, with the motion probes around the settle scroll: what is hidden
+            # below the fold before it, what moves at another speed, what is visible after it.
+            await page.goto(url, wait_until="load", timeout=45_000)
+            with contextlib.suppress(Exception):
+                await page.wait_for_load_state("networkidle", timeout=8_000)
+            parallax: list[dict] = []
+            with contextlib.suppress(Exception):
+                await page.evaluate(motion.PRE_JS)
+                parallax = await page.evaluate(motion.PARALLAX_JS)
+            with contextlib.suppress(Exception):
+                await page.evaluate(SETTLE_JS)
             raw = await page.evaluate(READER_JS, owned)
             dna = analyze(await collect(page, url))
+            post: dict = {}
+            with contextlib.suppress(Exception):
+                post = await motion.probe(page)
+            raw["motion"] = motion.assign(raw["blocks"], post, parallax)
         finally:
             await browser.close()
     families = {f for f in (raw.get("heading_font"), raw.get("body_font")) if f}
@@ -319,6 +337,7 @@ def build_analysis(raw: dict, dna: StyleDNA, owned: bool, fonts: dict[str, FontS
     blocks, notes = prepare_blocks(raw)
     raw = {**raw, "blocks": blocks}
     sections = sections_from_blocks(blocks)
+    motion.page_wide(sections, raw.get("motion") or {})
     kept: dict[str, str] = {}
     sources: list[dict] = []
     for key in ("heading_font", "body_font"):
@@ -343,7 +362,8 @@ def build_analysis(raw: dict, dna: StyleDNA, owned: bool, fonts: dict[str, FontS
     title = raw.get("title") or urlparse(raw.get("url", "")).hostname or "Trang mẫu"
     return CloneAnalysis(url=raw.get("url", ""), title=title[:80], owned=owned, sections=sections, pillars=pillars,
                          content=page_content(raw, sections) if owned else None, notes=notes, dna=dna,
-                         content_width=content_width, fonts=sources, lang=raw.get("lang"), **kept)
+                         content_width=content_width, fonts=sources, lang=raw.get("lang"),
+                         motion=raw.get("motion") or {}, **kept)
 
 
 # ------------------------------------------------------------------ what the user is told
@@ -357,6 +377,20 @@ def wants_exact_copy(text: str) -> bool:
     return bool(_EXACT.search(text or ""))
 
 
+EFFECT_NAMES = {
+    "scroll-reveal": "hiện dần khi cuộn", "stagger-cards": "hiện lần lượt từng thẻ", "parallax": "parallax",
+    "marquee": "dải chạy ngang", "hover-lift": "nổi lên khi rê chuột", "hover-zoom": "phóng ảnh khi rê chuột",
+    "hover-image": "hiện ảnh xem trước khi rê chuột", "underline-link": "gạch chân link khi rê chuột",
+    "sticky-blur": "header dính, nền mờ", "smooth-scroll": "cuộn mượt",
+}
+
+
+def motion_summary(a: CloneAnalysis) -> str | None:
+    """The effects read from the reference that the rebuild will have, in the user's words."""
+    found = list(dict.fromkeys(m for s in a.sections for m in s.motion))
+    return ", ".join(EFFECT_NAMES.get(m, m) for m in found) if found else None
+
+
 def clone_limits(a: CloneAnalysis) -> list[str]:
     """What the rebuild will not match, said before the plan so the user is never surprised."""
     limits = []
@@ -368,8 +402,13 @@ def clone_limits(a: CloneAnalysis) -> list[str]:
     approx = sum("§2.5 quy tắc 4" in s.content for s in a.sections)
     if approx:
         limits.append(f"{approx} section chưa có mẫu đúng kiểu, dựng bằng khối nội dung gần nhất")
-    limits.append("hiệu ứng riêng của trang (hover, chuyển động khi cuộn, carousel) chưa được chép — "
-                  "bản dựng dùng hiệu ứng có sẵn")
+    facts = a.motion or {}
+    for thing in facts.get("unsupported", []):
+        limits.append(f"{thing} của trang mẫu chưa dựng lại được bằng CSS")
+    if any(lib in facts.get("libs", []) for lib in ("GSAP", "ScrollTrigger", "Framer", "Locomotive Scroll")):
+        limits.append("chuyển động theo kịch bản riêng (" + ", ".join(
+            lib for lib in facts["libs"] if lib in ("GSAP", "ScrollTrigger", "Framer", "Locomotive Scroll"))
+            + ") được dựng gần đúng bằng CSS")
     if not a.owned:
         limits.append("chữ, ảnh và tên thương hiệu là của bạn (để trống chỗ trong file nội dung)")
     return limits

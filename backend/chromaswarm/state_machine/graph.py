@@ -41,7 +41,7 @@ from chromaswarm.agents.planner import CLONE_PAGE, Section, design_inputs, page_
 from urllib.parse import urlparse
 
 from chromaswarm.clone.reader import analyse as analyse_reference
-from chromaswarm.clone.reader import clone_limits, guess_domain, wants_exact_copy
+from chromaswarm.clone.reader import clone_limits, guess_domain, motion_summary, wants_exact_copy
 from chromaswarm.developer.i18n import normalise
 from chromaswarm.build.runtime import SectionCheck
 from chromaswarm.agents.brief import Brief, mode_from_background
@@ -279,6 +279,8 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             notice += (f" Ngôn ngữ trang mẫu: {a.lang} — bản dựng giữ nguyên ngôn ngữ này."
                        if lang == "en" and a.lang.lower().startswith("en") or lang == "vi" else
                        f" Ngôn ngữ trang mẫu: {a.lang} — chưa có bộ chữ mẫu cho ngôn ngữ này, bản dựng dùng tiếng Anh.")
+        if effects := motion_summary(a):
+            notice += f" Hiệu ứng đọc được và sẽ dựng lại: {effects}."
         if limits := clone_limits(a):
             notice += " Sẽ không giống trang mẫu ở: " + "; ".join(limits) + "."
         return {"pipeline": p, "notice": notice}
@@ -596,7 +598,7 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
                 jobs.append(deps.build.check_section(p.session_id, to_check, spec))
             results = await asyncio.gather(*jobs)
             motion, motion_error = [], None
-            if to_check and by_id[to_check].effect and "mcp_motion" in tools_for(p.step):  # B8.1, optional
+            if to_check and (by_id[to_check].effect or by_id[to_check].motion) and "mcp_motion" in tools_for(p.step):
                 try:
                     motion = await deps.build.motion(p.session_id, by_id[to_check], spec, slug)
                 except Exception as e:  # an optional effect must never stop the build

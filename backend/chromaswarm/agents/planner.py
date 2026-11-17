@@ -36,6 +36,7 @@ class Section(BaseModel):
     surface: str | None = None  # "alt": tinted band (bg-surface) for rhythm between sections
     count: int = 0  # Clone mode: how many items the reference shows (e.g. images in a gallery)
     sources: list[int] = []  # Clone mode: indices of the reference blocks this section rebuilds
+    motion: list[str] = []  # Clone mode: effects read from the reference (mcp_motion catalogue ids)
 
 
 def _i(id_: str, role: str, behavior: str) -> Interactive:
@@ -351,7 +352,8 @@ def render_plan_md(state: PipelineState, spec: DesignSpec) -> str:
         lines.append(f"- **{s.id}** — Layout Cursor: đo gutter {spec.spatial.page_gutter_desktop}px / "
                      f"section {spec.spatial.section_padding_desktop}px; Color Cursor: kiểm tra tương phản trên "
                      f"`--bg-*`; Typography Cursor: thang chữ {spec.typography.ratio}, dòng ≤72ch"
-                     + (f"; **Motion/MCP Cursor (B8.1)**: {s.effect}" if s.effect else ""))
+                     + (f"; **Motion/MCP Cursor (B8.1)**: {s.effect}" if s.effect else "")
+                     + (f"; **Hiệu ứng từ trang mẫu**: {', '.join(s.motion)}" if s.motion else ""))
     lines += ["", "### Phòng DEVELOPER (Next.js, B9)", ""]
     for s in sections:
         comp = "".join(w.capitalize() for w in s.id.split("-"))

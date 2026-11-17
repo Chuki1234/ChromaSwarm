@@ -341,7 +341,7 @@ export function Art({{ label, ratio = "4 / 5", tone = 0, sizes = "(min-width: 10
 # ----------------------------------------------------------------- sections
 
 def _root(section: Section, cls: str, inner: str, tag: str = "section") -> str:
-    mcp = ' data-swarm-mcp="2d-css"' if section.effect else ""  # B8.1 target (FRONTEND_STANDARDS §4.4)
+    mcp = ' data-swarm-mcp="2d-css"' if section.effect or section.motion else ""  # B8.1 target (FRONTEND_STANDARDS §4.4)
     if section.surface == "alt":
         cls += " s-alt"  # tinted band: plain / tinted alternation gives the page rhythm
     return (f'<{tag} data-swarm-section="{section.id}"{mcp} className="s {cls}">\n'
@@ -587,7 +587,7 @@ def _footer(s: Section, c: PageCopy) -> str:
 
 def _hero_overlay(s: Section, c: PageCopy) -> str:
     """Full-bleed photo, dark scrim, copy on the photo (MODERN_UI_REFERENCES: Chamberlain, Marou)."""
-    mcp = ' data-swarm-mcp="2d-css"' if s.effect else ""
+    mcp = ' data-swarm-mcp="2d-css"' if s.effect or s.motion else ""
     jsx = f'''<section data-swarm-section="{s.id}"{mcp} className="s-hero-overlay">
       <Art label={{{_js(c.brand, "image_alt")}}} ratio="auto" sizes="100vw" />
       <div className="hero-scrim" aria-hidden />
@@ -940,6 +940,16 @@ def _gallery(s: Section, c: PageCopy) -> str:
 def _logo_strip(s: Section, c: PageCopy) -> str:
     """"As featured on" / client logos: a short caption over a row of marks (placeholders until real logos)."""
     marks = max(3, min(s.count or 4, 8))
+    if "marquee" in s.motion:  # the reference slides its logos: a duplicated track that loops seamlessly
+        inner = f'''        <p className="t-caption muted logo-caption">Được nhắc đến trên</p>
+        <div className="marquee" aria-label="Đối tác và báo chí">
+          <ul className="logo-strip marquee-track">
+            {{Array.from({{ length: {marks * 2} }}, (_, i) => (
+              <li key={{i}} className="logo-mark t-h4" aria-hidden={{i >= {marks} || undefined}}>Logo {{(i % {marks}) + 1}}</li>
+            ))}}
+          </ul>
+        </div>'''
+        return _component(s, _root(s, "s-logos", inner))
     inner = f'''        <p className="t-caption muted logo-caption">Được nhắc đến trên</p>
         <ul className="logo-strip" aria-label="Đối tác và báo chí">
           {{Array.from({{ length: {marks} }}, (_, i) => (
@@ -953,13 +963,17 @@ def _list_rows(s: Section, c: PageCopy) -> str:
     """A stacked list of one-line entries (posts + dates, work history + periods) with a show-all control."""
     rows = c.rows or [(t, "") for t, _ in c.story]
     title = SECTION_TITLES_VI.get(s.id, "Bài viết" if any(ch.isdigit() for _, m in rows for ch in m) else "Danh sách")
+    # The reference shows a preview image when a row is hovered: decorative, hidden from assistive tech.
+    preview = ('''
+                <span className="row-preview" aria-hidden="true"><Art label="" ratio="4 / 3" tone={i} /></span>'''
+               if "hover-image" in s.motion else "")
     inner = f'''        <h2 className="t-caption muted list-title">{title}</h2>
         <ul className="list-rows">
           {{(all ? ROWS : ROWS.slice(0, 5)).map(([entry, meta], i) => (
             <li key={{entry}}>
               <a href="#" className="list-row" data-swarm-id={{`list-row-${{i + 1}}`}} data-swarm-role="link">
                 <span className="t-body">{{entry}}</span><span className="list-dots" aria-hidden />
-                <span className="t-caption muted">{{meta}}</span>
+                <span className="t-caption muted">{{meta}}</span>{preview}
               </a>
             </li>
           ))}}
@@ -1254,6 +1268,8 @@ article.product:hover { transform: translateY(-2px); }  /* one- and two-line nam
 .list-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .list-dots { flex: 1; border-bottom: 1px dotted var(--border-subtle); min-width: 16px; }
 .list-more { margin-top: 24px; }
+.marquee-track.logo-strip { grid-template-columns: none; gap: 16px; }
+.marquee-track .logo-mark { min-width: 160px; }
 .text-cards { display: grid; gap: var(--grid-gap); }
 @media (min-width: 768px) { .text-cards { grid-template-columns: repeat(3, 1fr); } }
 .text-card { display: flex; flex-direction: column; gap: 8px; padding-top: 24px; border-top: 1px solid var(--border-subtle); }
