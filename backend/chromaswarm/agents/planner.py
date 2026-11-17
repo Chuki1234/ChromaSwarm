@@ -275,6 +275,7 @@ def design_inputs(state: PipelineState, project_name: str, dna: StyleDNA | None 
         body_font=clone.body_font if clone else (state.brief or {}).get("body_font"),
         clone_level=("full" if clone.owned else "structure") if clone else None,
         content_width=clone.content_width if clone else None,
+        font_sources=clone.fonts if clone else [],
         extra_rules=[f"User feedback (B7): {f}" for f in state.plan_feedback],
     )
 

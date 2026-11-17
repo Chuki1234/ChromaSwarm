@@ -79,3 +79,13 @@ def test_zip_has_the_app_without_packages_or_build_output(tmp_path):
     assert "trang-web/content/home.ts" in names and "trang-web/HUONG_DAN.md" in names
     assert "trang-web/public/images/.gitkeep" in names
     assert not any("node_modules" in n or ".next" in n for n in names)
+
+
+def test_design_md_has_no_unformatted_placeholders():
+    import re
+    from chromaswarm.agents.planner import design_inputs
+    from chromaswarm.engines.design_spec import build_design_spec, render_design_md
+    s = state(selected_page="clone", clone=CloneSource(url="https://x.vn", content_width=640))
+    s.pillars.theme, s.pillars.layout, s.pillars.color, s.pillars.margins = "warm-organic", "catalog", "light", "balanced"
+    md = render_design_md(build_design_spec(design_inputs(s, "X")))
+    assert not re.search(r"\{[a-z_.]+\}", md) and "gutter 16px" in md

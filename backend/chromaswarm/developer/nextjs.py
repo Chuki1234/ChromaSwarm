@@ -19,6 +19,7 @@ import urllib.parse
 from pydantic import BaseModel
 
 from chromaswarm.agents.planner import Section
+from chromaswarm.clone.fonts import google_css_url
 from chromaswarm.developer.content import PageCopy
 from chromaswarm.developer.surfaces import surface_css
 from chromaswarm.engines.design_spec import DesignSpec
@@ -103,8 +104,7 @@ def content_module(page: str) -> str:
 # ----------------------------------------------------------------- scaffold
 
 def scaffold(project: str, spec: DesignSpec, photos: list[str] | None = None) -> list[WorkspaceFile]:
-    fonts = sorted({spec.typography.heading_font, spec.typography.body_font})
-    families = "&".join("family=" + urllib.parse.quote_plus(f) + ":wght@400;500;600;700" for f in fonts)
+    links = "\n".join(f'        <link rel="stylesheet" href="{url}" />' for url in font_stylesheets(spec))
     return [
         WorkspaceFile(path="package.json", content=json.dumps({
             "name": "chromaswarm-workspace", "private": True,
@@ -142,7 +142,7 @@ export default function RootLayout({{ children }}: {{ children: React.ReactNode 
     <html lang="vi">
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?{families}&display=swap" />
+{links}
       </head>
       <body>{{children}}</body>
     </html>
@@ -207,6 +207,23 @@ Cách nhanh nhất: đẩy thư mục này lên GitHub rồi nhập vào https:/
 - `app/tokens.css`: màu, chữ, khoảng cách — mọi con số đã được kiểm tra độ tương phản và lưới 8pt.
 - `components/`: giao diện từng phần, đọc chữ từ thư mục `content/`.
 """
+
+
+def font_stylesheets(spec: DesignSpec) -> list[str]:
+    """Stylesheets for the page fonts: one Google Fonts request for every Google family (incl. the
+    Vietnamese fallbacks of kept reference fonts), plus one per Fontshare family."""
+    sources = {f["family"]: f for f in spec.inputs.font_sources}
+    google, others = [], []
+    for family in dict.fromkeys([spec.typography.heading_font, spec.typography.body_font]):
+        src = sources.get(family)
+        if src and src.get("provider") == "fontshare":
+            others.append(src["css_url"])
+        else:
+            google.append(family)
+        if src and not src.get("vietnamese") and src.get("fallback"):
+            google.append(src["fallback"])
+    google = sorted(dict.fromkeys(google))
+    return ([google_css_url(google)] if google else []) + others
 
 
 def heal_file(rules: list[str]) -> WorkspaceFile:

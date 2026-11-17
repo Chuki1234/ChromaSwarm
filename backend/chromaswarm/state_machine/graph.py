@@ -38,8 +38,10 @@ from chromaswarm.agents.consultant import (
     surface_question,
 )
 from chromaswarm.agents.planner import CLONE_PAGE, Section, design_inputs, page_sections, render_plan_md, render_product_md
+from urllib.parse import urlparse
+
 from chromaswarm.clone.reader import analyse as analyse_reference
-from chromaswarm.clone.reader import clone_limits, wants_exact_copy
+from chromaswarm.clone.reader import clone_limits, guess_domain, wants_exact_copy
 from chromaswarm.build.runtime import SectionCheck
 from chromaswarm.agents.brief import Brief, mode_from_background
 from chromaswarm.developer.content import build_copy
@@ -194,8 +196,7 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         if p.mode is BuildMode.CLONE and not p.clone:
             answer = interrupt(Question(
                 step="B1", kind="clone_source", key="clone_source",
-                text=("Gửi link trang bạn muốn dựng lại, kèm mô tả ngắn trang web của bạn "
-                      "(bán gì, cho ai, muốn khách bấm gì)."),
+                text="Gửi link trang bạn muốn dựng lại.",
             ).model_dump())
             data = answer if isinstance(answer, dict) else {}
             prompt = str(data.get("prompt") or "").strip()
@@ -205,11 +206,13 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
                 url = None
             if not url:
                 return {"pipeline": p, "notice": "Clone cần một link hợp lệ (ví dụ https://tenmien.vn)."}
-            if len(prompt) < 12:
-                return {"pipeline": p, "notice": "Bạn mô tả thêm một chút về trang web của bạn nhé (ít nhất một câu)."}
             owned = bool(data.get("owned"))
-            p.clone = CloneSource(url=url, owned=owned, exact_requested=not owned and wants_exact_copy(prompt))
-            p.raw_prompt = prompt
+            p.clone = CloneSource(url=url, owned=owned, described=bool(prompt),
+                                  exact_requested=not owned and wants_exact_copy(prompt))
+            # The link is enough: without a description the kind of site is read from the reference at B2.
+            p.raw_prompt = prompt or f"Dựng lại trang {urlparse(url).hostname or url}"
+            if not prompt:
+                p.domain = Domain.OTHER
             return {"pipeline": p, "notice": None}
         if not p.raw_prompt:
             answer = interrupt(Question(step="B1", kind="text", key="raw_prompt",
@@ -254,7 +257,9 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             "analysed": True, "title": a.title, "sections": [sec.model_dump() for sec in a.sections],
             "pillars": a.pillars, "heading_font": a.heading_font, "body_font": a.body_font,
             "content": a.content, "notes": a.notes,
-            "content_width": a.content_width})
+            "content_width": a.content_width, "fonts": a.fonts})
+        if not p.clone.described:
+            p.domain = guess_domain(a)  # sample copy and suggested pages follow the kind of site read
         pages, _ = agent.sitemap_for(p.domain)
         clone_page = SitemapPage(slug=CLONE_PAGE, title=f"Bản dựng lại · {a.title}"[:80],
                                  purpose=f"Dựng lại từ {p.clone.url}", status=PageStatus.BUILDING)

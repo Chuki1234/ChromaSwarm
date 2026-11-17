@@ -129,9 +129,11 @@ class CloneSource(BaseModel):
     pillars: dict[str, str] = Field(default_factory=dict)
     heading_font: str | None = None
     body_font: str | None = None
+    fonts: list[dict] = Field(default_factory=list)  # kept reference fonts: load URL + Vietnamese fallback
     content: dict | None = None  # owned sites only
     notes: list[str] = Field(default_factory=list)
     content_width: int | None = None  # narrow single-column reference: its column width (px, 8pt)
+    described: bool = True  # False: only a link was given (the default form); the kind of site is guessed at B2
     # The description asked for an exact copy ("100%", "y hệt"): the B2 notice says what is and is not copied.
     exact_requested: bool = False
     # Owned clones: the user confirms ownership again at B3, shown the reference's own name. None = not asked.

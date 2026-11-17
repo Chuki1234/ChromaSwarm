@@ -98,12 +98,28 @@ def test_clone_flow_reaches_approval_with_the_reference_sections(tmp_path):
     assert p.references[0].url == "https://gom-moc.vn"  # B5 learns its Style DNA from the same link
 
 
-def test_clone_asks_again_for_a_bad_link_or_a_missing_description(tmp_path):
+def test_clone_asks_again_for_a_bad_link_and_needs_nothing_but_the_link(tmp_path):
     runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=fake_reader()))
-    snap = asyncio.run(drive(runner, "c2", ["clone", {"url": "khong phai link", "prompt": PROMPT}]))
+    snap = asyncio.run(drive(runner, "c2", ["clone", {"url": "khong phai link"}]))
     assert snap["question"]["kind"] == "clone_source" and "link hợp lệ" in snap["notice"]
-    snap = asyncio.run(runner.answer("c2", {"url": "https://gom-moc.vn", "prompt": "gốm"}))
-    assert snap["question"]["kind"] == "clone_source" and "mô tả thêm" in snap["notice"]
+    # A link alone goes straight to the plan: no description, no domain question.
+    snap = asyncio.run(runner.answer("c2", {"url": "https://gom-moc.vn"}))
+    p = snap["pipeline"]
+    assert p.step.value == "B7" and p.clone.described is False and p.raw_prompt == "Dựng lại trang gom-moc.vn"
+    assert p.domain is not None and p.pillars.scope
+
+
+def test_kind_of_site_is_guessed_from_the_reference():
+    from chromaswarm.clone.reader import guess_domain
+    from chromaswarm.state_machine.pipeline_state import Domain
+
+    def a(title, kinds=("split-7-5",)):
+        return CloneAnalysis(url="https://x", title=title, owned=False, pillars={},
+                             sections=[Section(id=k, name=k, structure=k, content="x") for k in kinds])
+    assert guess_domain(a("Alexander Lehmann · Product Designer")) is Domain.PORTFOLIO
+    assert guess_domain(a("Anything", ("sticky-bar", "grid-4"))) is Domain.ECOMMERCE
+    assert guess_domain(a("Linear – The system for product development")) is Domain.OTHER
+    assert guess_domain(a("Vercel: Build and deploy on the AI Cloud")) is Domain.SAAS
 
 
 def test_unreachable_link_goes_back_to_the_link_question(tmp_path):
@@ -347,8 +363,39 @@ def test_declining_ownership_at_confirmation_drops_the_read_content(tmp_path):
 def test_reading_notice_lists_what_will_not_match():
     from chromaswarm.clone.reader import clone_limits
     a = CloneAnalysis(url="https://x.vn", title="X", owned=False, pillars={},
-                      notes=["Font 'Switzer' của trang mẫu chưa xác nhận có bộ chữ tiếng Việt; dùng font của preset."],
+                      notes=["Font 'Switzer' được giữ nguyên nhưng không có dấu tiếng Việt: chữ có dấu hiển thị bằng Be Vietnam Pro.",
+                             "Font 'Brand Sans' là font riêng của trang mẫu (không có nguồn tải miễn phí); dùng font gần giống của preset."],
                       sections=[Section(id="a", name="A", structure="split-5-7",
                                         content="Dựng lại từ section #2 — chưa có mẫu đúng kiểu, dựng bằng khối nội dung gần nhất (§2.5 quy tắc 4)")])
     limits = " | ".join(clone_limits(a))
-    assert "font Switzer" in limits and "1 section" in limits and "hiệu ứng" in limits and "của bạn" in limits
+    assert "font Switzer được giữ" in limits and "Be Vietnam Pro" in limits and "font Brand Sans là font riêng" in limits
+    assert "1 section" in limits and "hiệu ứng" in limits and "của bạn" in limits
+
+
+def test_reference_fonts_are_kept_with_a_vietnamese_fallback():
+    from chromaswarm.clone.fonts import font_note, resolve_font
+    from chromaswarm.clone.reader import build_analysis
+
+    def fake(responses):
+        return lambda url: next(((200, css) for host, css in responses.items() if host in url), (400, ""))
+    google_vi = fake({"fonts.googleapis.com": "/* vietnamese */ @font-face {} /* latin */ @font-face {}"})
+    inter = resolve_font("Inter", google_vi)
+    assert (inter.provider, inter.vietnamese, inter.fallback) == ("google", True, "Be Vietnam Pro")
+    latin = resolve_font("Instrument Serif", fake({"fonts.googleapis.com": "/* latin */ @font-face {}"}))
+    assert latin.provider == "google" and not latin.vietnamese and latin.fallback == "Playfair Display"
+    share = resolve_font("Switzer", fake({"api.fontshare.com": "@font-face {}"}))
+    assert share.provider == "fontshare" and "fontshare.com" in share.css_url
+    gone = resolve_font("Brand Sans", fake({}))
+    assert gone.provider is None and "font riêng" in font_note(gone) and font_note(resolve_font("Inter", google_vi)) is None
+
+    raw = {"url": "https://x.vn", "title": "X", "heading_font": "Instrument Serif", "body_font": "Brand Sans",
+           "blocks": [feat(tag="header", nav=True, height=80, index=0), feat(h1=True, index=1), feat(tag="footer", links=6, index=2)]}
+    a = build_analysis(raw, StyleDNA_stub(), owned=False, fonts={"Instrument Serif": latin, "Brand Sans": gone})
+    assert a.heading_font == "Instrument Serif" and a.body_font is None  # unloadable body font: preset stands in
+    assert [f["family"] for f in a.fonts] == ["Instrument Serif"]
+    assert any("Playfair Display" in n for n in a.notes) and any("Brand Sans" in n for n in a.notes)
+
+
+def StyleDNA_stub():
+    from tests.test_fidelity import dna
+    return dna()

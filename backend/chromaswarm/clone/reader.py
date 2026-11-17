@@ -13,6 +13,7 @@ so a structure clone of someone else's site carries the user's own copy.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 from urllib.parse import urlparse
@@ -21,12 +22,14 @@ from playwright.async_api import async_playwright
 from pydantic import BaseModel
 
 from chromaswarm.agents.planner import Interactive, Section
+from chromaswarm.clone.fonts import FontSource, fallback_for, font_note, google_css_url, resolve_font_cached
 from chromaswarm.engines.color import parse_css_color, to_hex
 from chromaswarm.engines.palette import Mode
 from chromaswarm.engines.presets import VIETNAMESE_FONTS, Layout, Theme
 from chromaswarm.engines.spacing import Density
 from chromaswarm.engines.style_dna import StyleDNA, analyze
 from chromaswarm.playwright_engine.style_dna_scraper import collect, open_settled
+from chromaswarm.state_machine.pipeline_state import Domain
 
 READER_JS = Path(__file__).with_name("reader.js").read_text(encoding="utf-8")
 
@@ -37,8 +40,9 @@ class CloneAnalysis(BaseModel):
     owned: bool
     sections: list[Section]
     pillars: dict[str, str]  # theme, layout, color, margins derived from the reference
-    heading_font: str | None = None  # kept only when it ships a Vietnamese subset
+    heading_font: str | None = None  # the reference's own font, when a free host serves it (clone/fonts.py)
     body_font: str | None = None
+    fonts: list[dict] = []  # FontSource dumps for the kept fonts (where to load them, Vietnamese fallback)
     content: dict | None = None  # per-section copy, owned sites only
     notes: list[str] = []
     content_width: int | None = None  # measured column width (8pt) when the reference is a narrow single column
@@ -296,7 +300,9 @@ async def analyse(url: str, owned: bool, width: int = 1440, height: int = 900) -
             dna = analyze(await collect(page, url))
         finally:
             await browser.close()
-    return build_analysis(raw, dna, owned)
+    families = {f for f in (raw.get("heading_font"), raw.get("body_font")) if f}
+    found = await asyncio.gather(*(asyncio.to_thread(resolve_font_cached, f) for f in families))
+    return build_analysis(raw, dna, owned, fonts={src.family: src for src in found})
 
 
 def prepare_blocks(raw: dict) -> tuple[list[dict], list[str]]:
@@ -306,19 +312,28 @@ def prepare_blocks(raw: dict) -> tuple[list[dict], list[str]]:
     return reading_order(blocks)
 
 
-def build_analysis(raw: dict, dna: StyleDNA, owned: bool) -> CloneAnalysis:
+def build_analysis(raw: dict, dna: StyleDNA, owned: bool, fonts: dict[str, FontSource] | None = None) -> CloneAnalysis:
+    """`fonts`: where each reference font can be loaded from (clone/fonts.py). Without it (offline),
+    only fonts known to ship Vietnamese on Google Fonts are kept."""
     blocks, notes = prepare_blocks(raw)
     raw = {**raw, "blocks": blocks}
     sections = sections_from_blocks(blocks)
-    fonts = {}
+    kept: dict[str, str] = {}
+    sources: list[dict] = []
     for key in ("heading_font", "body_font"):
         family = raw.get(key)
-        if family and family in VIETNAMESE_FONTS:
-            fonts[key] = family
-        elif family:
-            note = f"Font {family!r} của trang mẫu chưa xác nhận có bộ chữ tiếng Việt; dùng font của preset."
-            if note not in notes:
-                notes.append(note)
+        if not family:
+            continue
+        src = (fonts or {}).get(family) or FontSource(
+            family=family, provider="google" if family in VIETNAMESE_FONTS else None,
+            css_url=google_css_url([family]) if family in VIETNAMESE_FONTS else None,
+            vietnamese=family in VIETNAMESE_FONTS, fallback=fallback_for(family))
+        if src.provider:
+            kept[key] = family
+            if all(s["family"] != family for s in sources):
+                sources.append(src.model_dump())
+        if (note := font_note(src)) and note not in notes:
+            notes.append(note)
     pillars = derive_pillars(dna, sections, raw.get("heading_font"))
     measured = raw.get("content_width") or 0
     content_width = round(measured / 8) * 8 if 480 <= measured < NARROW_MAX else None
@@ -327,7 +342,7 @@ def build_analysis(raw: dict, dna: StyleDNA, owned: bool) -> CloneAnalysis:
     title = raw.get("title") or urlparse(raw.get("url", "")).hostname or "Trang mẫu"
     return CloneAnalysis(url=raw.get("url", ""), title=title[:80], owned=owned, sections=sections, pillars=pillars,
                          content=page_content(raw, sections) if owned else None, notes=notes, dna=dna,
-                         content_width=content_width, **fonts)
+                         content_width=content_width, fonts=sources, **kept)
 
 
 # ------------------------------------------------------------------ what the user is told
@@ -343,8 +358,12 @@ def wants_exact_copy(text: str) -> bool:
 
 def clone_limits(a: CloneAnalysis) -> list[str]:
     """What the rebuild will not match, said before the plan so the user is never surprised."""
-    limits = [f"font {m.group(1)} được thay bằng font có tiếng Việt"
-              for n in a.notes if (m := re.match(r"Font '(.+?)'", n))]
+    limits = []
+    for n in a.notes:
+        if m := re.match(r"Font '(.+?)' là font riêng", n):
+            limits.append(f"font {m.group(1)} là font riêng của trang mẫu, không tải được — dùng font gần giống")
+        elif m := re.match(r"Font '(.+?)' được giữ nguyên nhưng không có dấu tiếng Việt: chữ có dấu hiển thị bằng (.+)\.", n):
+            limits.append(f"font {m.group(1)} được giữ nhưng không có dấu tiếng Việt (chữ có dấu dùng {m.group(2)})")
     approx = sum("§2.5 quy tắc 4" in s.content for s in a.sections)
     if approx:
         limits.append(f"{approx} section chưa có mẫu đúng kiểu, dựng bằng khối nội dung gần nhất")
@@ -353,3 +372,24 @@ def clone_limits(a: CloneAnalysis) -> list[str]:
     if not a.owned:
         limits.append("chữ, ảnh và tên thương hiệu là của bạn (để trống chỗ trong file nội dung)")
     return limits
+
+
+_KIND_WORDS = [
+    (Domain.PORTFOLIO, r"portfolio|designer|developer|photograph|illustrat|freelanc|resume|\bcv\b|nhà thiết kế|nhiếp ảnh"),
+    (Domain.BOOKING, r"booking|book now|reserv|appointment|spa|salon|clinic|hotel|đặt lịch|đặt phòng|đặt bàn"),
+    (Domain.EDTECH, r"course|academy|learn|class|school|khóa học|học online|đào tạo"),
+    (Domain.ECOMMERCE, r"shop|store|cart|buy|theme|template|cửa hàng|mua"),
+    (Domain.SAAS, r"software|platform|app\b|api|cloud|ai\b|developer platform|sign up|dashboard|phần mềm"),
+]
+
+
+def guess_domain(a: CloneAnalysis) -> Domain:
+    """The kind of site, from the reference's layout (a priced product grid) and its page title.
+    Used only to pick sample copy and suggested pages; the user can change everything at B7."""
+    if any(s.structure in ("grid-4", "sidebar-grid-4") for s in a.sections):
+        return Domain.ECOMMERCE
+    title = (a.title or "").lower()
+    for domain, words in _KIND_WORDS:
+        if re.search(words, title):
+            return domain
+    return Domain.OTHER

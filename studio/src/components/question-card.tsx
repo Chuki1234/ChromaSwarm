@@ -283,11 +283,10 @@ function Handover({ q, state, busy, onAnswer }: { q: Question; state: PipelineSt
   );
 }
 
-/** Clone mode, B1: link + a short description. Copying the page's own words and photos is an opt-in
+/** Clone mode, B1: just the link. Copying the page's own words and photos is an opt-in
  *  behind a small link (moving one's own site), never a question asked of everyone. */
 export function CloneSource({ busy, onAnswer }: { busy: boolean; onAnswer: Props["onAnswer"] }) {
   const [url, setUrl] = useState("");
-  const [prompt, setPrompt] = useState("");
   const [owned, setOwned] = useState(false);
   const [showOwned, setShowOwned] = useState(false);
   return (
@@ -295,7 +294,7 @@ export function CloneSource({ busy, onAnswer }: { busy: boolean; onAnswer: Props
       className="flex flex-col gap-4"
       onSubmit={(e) => {
         e.preventDefault();
-        onAnswer({ value: { url: url.trim(), prompt: prompt.trim(), owned }, label: `${url.trim()}${owned ? " (trang của tôi)" : ""}` });
+        onAnswer({ value: { url: url.trim(), owned }, label: `${url.trim()}${owned ? " (trang của tôi)" : ""}` });
       }}
     >
       <label className="flex flex-col gap-2 text-sm">
@@ -303,14 +302,9 @@ export function CloneSource({ busy, onAnswer }: { busy: boolean; onAnswer: Props
         <input id="clone-url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…" required
           className={`${input} h-12 py-0`} data-swarm-id="clone-url" data-swarm-role="input" />
       </label>
-      <label className="flex flex-col gap-2 text-sm">
-        <span className="font-medium">Mô tả trang web của bạn</span>
-        <textarea id="clone-prompt" value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} required className={input}
-          placeholder="Ví dụ: Shop gốm thủ công Bát Tràng, khách 25–40 tuổi, muốn họ bấm “Nhắn tin đặt hàng”"
-          data-swarm-id="clone-prompt" data-swarm-role="input" />
-      </label>
       <p className="text-sm text-fg-2">
-        Chroma dựng lại bố cục và phong cách của trang mẫu thành một template; bạn dán chữ và ảnh của mình vào.
+        Chroma dựng lại giao diện của trang mẫu — bố cục, màu, kiểu chữ, khoảng cách — thành một template.
+        Chữ và hình ảnh của trang mẫu không được chép (bản quyền thuộc chủ trang); bạn dán nội dung của mình vào.
       </p>
       {/* Rare case (moving one's own site to Next.js): kept out of the way, never asked of everyone. */}
       {!showOwned ? (
@@ -328,7 +322,7 @@ export function CloneSource({ busy, onAnswer }: { busy: boolean; onAnswer: Props
           </span>
         </label>
       )}
-      <button type="submit" disabled={busy || !url.trim() || prompt.trim().length < 12} data-swarm-id="clone-submit"
+      <button type="submit" disabled={busy || !url.trim()} data-swarm-id="clone-submit"
         data-swarm-role="button" className={`${primaryBtn} self-start`}>
         Đọc trang mẫu
       </button>

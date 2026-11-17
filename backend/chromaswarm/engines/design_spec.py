@@ -46,8 +46,10 @@ class DesignInputs(BaseModel):
     extra_rules: list[str] = Field(default_factory=list)
     clone_level: str | None = None  # Clone mode: "structure" | "full" (§2.5); None = Creative (§2.4 applies)
     content_width: int | None = None  # Clone mode: the reference's measured column width (narrow single column)
-    heading_font: str | None = None  # Clone mode: the reference's font, when it ships Vietnamese
+    heading_font: str | None = None  # Clone mode: the reference's own font (clone/fonts.py)
     body_font: str | None = None
+    # Clone mode: where the reference fonts load from + their Vietnamese fallback (FontSource dumps)
+    font_sources: list[dict] = []
 
 
 CLONE_POLICY = {
@@ -214,6 +216,9 @@ def render_design_md(spec: DesignSpec) -> str:
         f"## 4. Typography (ratio {t.ratio}, base {t.base_px}px)",
         "",
         f"- Heading: **{t.heading_font}** · Body: **{t.body_font}**" + (f" · Mono: **{t.mono_font}**" if t.mono_font else ""),
+        *[f"- Font gốc của trang mẫu: **{f['family']}** ({f['provider']})"
+          + ("" if f.get("vietnamese") else f"; chữ có dấu tiếng Việt dùng **{f['fallback']}**")
+          for f in i.font_sources],
         f"- Độ dài dòng: {t.measure}",
         "",
         "| Cấp | Desktop | Mobile | CSS | Line-height | Tracking |",
@@ -224,7 +229,7 @@ def render_design_md(spec: DesignSpec) -> str:
         f"## 5. Không gian & Lề ({s.density})",
         "",
         f"- Container max-width: **{s.container_max}px**"
-        + (f" (cột nội dung {i.content_width}px đo từ trang mẫu + 2 gutter)" if i.content_width else "") + "; gutter {s.page_gutter_mobile}px (mobile) / {s.page_gutter_desktop}px (desktop)",
+        + (f" (cột nội dung {i.content_width}px đo từ trang mẫu + 2 gutter)" if i.content_width else "") + f"; gutter {s.page_gutter_mobile}px (mobile) / {s.page_gutter_desktop}px (desktop)",
         f"- Section padding: **{s.section_padding_desktop}px** desktop / {s.section_padding_mobile}px mobile",
         f"- Grid gap {s.grid_gap}px · Card padding {s.card_padding}px · Inline gap {s.inline_gap}px",
         f"- Luật gần kề: {s.inline_gap} < {s.card_padding} < {s.section_padding_desktop} ✓",
@@ -299,6 +304,17 @@ def action_tokens(spec: DesignSpec) -> dict[str, str]:
             "action-ink": "var(--accent-ink)", "band-action": "var(--accent)", "band-action-fg": "var(--accent-fg)"}
 
 
+def font_source(spec: DesignSpec, family: str) -> dict | None:
+    return next((f for f in spec.inputs.font_sources if f.get("family") == family), None)
+
+
+def font_stack(spec: DesignSpec, family: str, generic: str) -> str:
+    """'Family', [Vietnamese fallback when the family has no Vietnamese glyphs,] generic."""
+    src = font_source(spec, family)
+    extra = f", '{src['fallback']}'" if src and not src.get("vietnamese") and src.get("fallback") else ""
+    return f"'{family}'{extra}, {generic}"
+
+
 def render_tokens_css(spec: DesignSpec) -> str:
     """CSS variables for the generated workspace (Design department writes back here)."""
     out = [":root {"]
@@ -306,9 +322,9 @@ def render_tokens_css(spec: DesignSpec) -> str:
     out += [f"  --{k}: {v};" for k, v in action_tokens(spec).items()]
     out += [f"  --radius-{k}: {v}px;" for k, v in spec.radius.items()]
     out += [f"  --shadow-{k}: {v};" for k, v in shadow_tokens(spec).items()]
-    out += [f"  --font-heading: '{spec.typography.heading_font}', serif;" if spec.inputs.theme is Theme.EDITORIAL_LUXURY
-            else f"  --font-heading: '{spec.typography.heading_font}', system-ui, sans-serif;",
-            f"  --font-body: '{spec.typography.body_font}', system-ui, sans-serif;"]
+    heading_generic = "serif" if spec.inputs.theme is Theme.EDITORIAL_LUXURY else "system-ui, sans-serif"
+    out += [f"  --font-heading: {font_stack(spec, spec.typography.heading_font, heading_generic)};",
+            f"  --font-body: {font_stack(spec, spec.typography.body_font, 'system-ui, sans-serif')};"]
     if spec.typography.mono_font:
         out.append(f"  --font-mono: '{spec.typography.mono_font}', ui-monospace, monospace;")
     out += [f"  --text-{st.name}: {st.css_size};" for st in spec.typography.steps]
