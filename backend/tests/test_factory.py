@@ -282,3 +282,59 @@ def test_a_measured_header_links_to_the_sites_real_pages_and_gets_a_monogram_not
     code = render_section(sec, copy, "clone", content=words).content
     assert "m-mark" in code and "<Art" not in code
     assert words["site-header"]["href"] == copy.nav_links[0][1] and words["site-header"]["link"] == copy.nav_links[0][0]
+
+
+def test_reference_measuring_handles_split_headlines_carousels_wrappers_and_wordmarks():
+    """The reader's component JS on a page built to contain each trap the alex-lehmann.com clone hit."""
+    from playwright.async_api import async_playwright
+    from chromaswarm.clone.components import COMPONENTS_JS
+    html = """<body style="margin:0;font:16px sans-serif">
+    <section style="position:relative;height:900px">
+      <h1 style="position:absolute;inset:0;display:grid;grid-template-columns:1fr 1fr;align-items:start;font-size:120px;margin:0">
+        <span style="display:block;width:400px;margin:100px 0 0 100px">Left half</span>
+        <span style="display:block;width:400px;margin:100px 0 0 100px">Right half</span></h1>
+      <div style="display:contents;opacity:0"><p style="position:absolute;top:700px;left:100px;width:400px">Shown text</p></div>
+      <div style="position:absolute;top:500px;left:900px;width:300px;height:200px;overflow:hidden">
+        <img style="position:absolute;left:0;width:300px;height:200px" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
+        <img style="position:absolute;left:300px;width:300px;height:200px" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="></div>
+      <p style="position:absolute;top:780px;left:100px;opacity:0">Hover only</p>
+      <div aria-hidden="true" style="position:absolute;top:800px;left:0;width:1440px"><span style="font-size:80px">Wordmark</span></div>
+      <button style="position:absolute;top:400px;left:300px;background:none;border:0">
+        <span style="display:block;font-size:100px">mail@site</span><span style="display:block;font-size:12px">copy</span></button>
+    </section></body>"""
+
+    async def run():
+        async with async_playwright() as pw:
+            b = await pw.chromium.launch()
+            p = await b.new_page(viewport={"width": 1440, "height": 900})
+            await p.set_content(html)
+            r = await p.evaluate(COMPONENTS_JS, {"boxes": [{"key": "s", "top": 0, "left": 0, "width": 1440, "height": 900}],
+                                                 "built": False, "limit": 60})
+            await b.close()
+            return r["comps"]["s"]
+    got = asyncio.run(run())
+    kinds = [(c["kind"], c["fs"], c["chars"]) for c in got]
+    heads = [c for c in got if c["kind"] == "heading" and c["fs"] == 120]
+    assert len(heads) == 2 and all(c["w"] <= 420 for c in heads)  # two halves, not the 1440px h1 box
+    assert ("text", 16, 10) in kinds  # behind a box-less transparent wrapper: still visible
+    assert sum(c["kind"] == "image" for c in got) == 1  # the slide parked outside its frame is skipped
+    assert not any(c["chars"] == 10 and c["y"] > 770 and c["kind"] == "text" and c["fs"] == 16 and c["x"] == 100
+                   and c["y"] < 790 for c in got)  # hover-only paragraph skipped
+    assert any(c["fs"] == 80 for c in got)  # aria-hidden wordmark is still seen
+    assert ("link", 100, 9) in kinds and ("text", 12, 4) in kinds  # big email split from its small caption
+
+
+def test_one_line_and_centred_pieces_stay_one_line_and_centred():
+    from chromaswarm.agents.planner import Section
+    from chromaswarm.developer.content import build_copy
+    from chromaswarm.developer.nextjs import render_section
+    from chromaswarm.state_machine.pipeline_state import PipelineState
+    layout = [comp("heading", 651, 140, 138, 37, fs=37, chars=10).model_dump(),
+              comp("text", 120, 600, 1200, 120, fs=18, lh=1.5, chars=300).model_dump()]
+    sec = Section(id="site-footer", name="Footer", structure="footer-columns", content="x", layout=layout,
+                  layout_box={"top": 0, "left": 0, "width": 1440, "height": 800})
+    code = render_section(sec, build_copy(PipelineState(session_id="s", raw_prompt="x")), "clone", content={}).content
+    head_rule = next(line for line in code.split("\\n") if ".n1 {" in line)
+    assert "white-space: nowrap" in head_rule and "margin-left: auto" in head_rule and "text-align: center" in head_rule
+    body_rule = next(line for line in code.split("\\n") if ".n2 {" in line)
+    assert "nowrap" not in body_rule and "%" in body_rule

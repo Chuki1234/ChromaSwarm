@@ -137,11 +137,30 @@ class _Render:
             props["margin-left"] = "auto" if id(node) in self.elastic else f"{max(0.0, gap / pw * 100):.3f}%"
             props["margin-top"] = f"{max(0, round(node.y0 - parent_inner_y0(parent)))}px"
             props["flex"] = "none"
+        c = node.comp
+        one_line = c is not None and node.kind in ("heading", "text", "link", "button") and \
+            node.h < max(c.fs, 8) * (c.lh or 1.3) * 1.6
         if node.kind in ("button", "link"):
             props["width"] = "auto"
             props["min-width"] = f"{round(node.w)}px" if node.kind == "button" else "0"
+        elif one_line and axis == "rows":
+            props["width"] = "auto"  # a one-line label on the reference stays one line, at its own length
         else:
-            props["width"] = f"{min(100.0, node.w / pw * 100):.3f}%"
+            # In a row its box holds its place for the next column; stacked, the words' own run decides where
+            # the lines break (a 1344px heading block whose lines run 670px wraps like the reference).
+            w = node.w
+            if axis == "rows" and c is not None and c.tw and c.tw < node.w * 0.9:
+                w = c.tw * 1.04
+                # Centred / right-aligned words inside a wide box: the narrower block moves to where they start.
+                start = node.x0 + max(0, c.tx) - parent_inner_x0(parent)
+                props["margin-left"] = f"{max(0.0, start / pw * 100):.3f}%"
+            props["width"] = f"{min(100.0, w / pw * 100):.3f}%"
+        if one_line:
+            props["white-space"] = "nowrap"
+        # Centred on the reference (a closing line, a footer heading): centred here too, whatever its length.
+        pcx = parent_inner_x0(parent) + pw / 2
+        if axis == "rows" and node.w < pw * 0.8 and abs((node.x0 + node.x1) / 2 - pcx) < pw * 0.02:
+            props.update({"margin-left": "auto", "margin-right": "auto", "align-self": "center", "text-align": "center"})
         return props
 
     # ---------------------------------------------------------------- nodes
@@ -229,7 +248,8 @@ class _Render:
                     level = 2
                 self.has_h1 = self.has_h1 or level == 1
             self.rule(i, desk)
-            text = self.words.take("head", _chars(c))
+            # A giant line of type (≥160px) is a wordmark: the brand's name, not a sentence.
+            text = self.brand if c.fs >= 160 and self.brand else self.words.take("head", _chars(c))
             return f'<h{level} className="n{i} {_type_class(c)}" data-n="{i}">{{{self.js(text, "heading")}}}</h{level}>'
         if c.kind == "text":
             self.rule(i, desk)

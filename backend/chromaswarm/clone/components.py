@@ -81,15 +81,96 @@ COMPONENTS_JS = r"""(args) => {
   };
   const scope = built ? document.querySelectorAll("[data-swarm-section] *") : document.body.querySelectorAll("*");
   const taken = new Set();
+  const glCanvas = built ? [] : [...document.querySelectorAll("canvas")].map(c => c.getBoundingClientRect()).filter(c => c.width > 80 && c.height > 40);
+  const add = (el, cs, r, k, owner) => {
+    const key = rootOf(owner || el);
+    if (key === null || !(key in out) && !built) return false;
+    if (built && !(key in out)) out[key] = [];
+    if (out[key].length >= (limit || 60)) return false;
+    if (k[0] !== "card" && k[0] !== "image") taken.add(el);
+    const box = boxOf[key];
+    const fg = rgba(cs.color), bg = rgba(cs.backgroundColor);
+    // Text pieces: how many characters they hold (a number, never the words) and the size of their biggest
+    // glyphs (a link or button may carry its label in a larger inner span).
+    let chars = 0, fsMax = px(cs.fontSize), tw = 0, tx = 0;
+    if (["heading", "text", "link", "button"].includes(k[0])) {
+      chars = (el.textContent || "").replace(/\s+/g, " ").trim().length;
+      // How wide the words really run (a block heading is often far wider than its lines).
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const rs = [...range.getClientRects()].filter(q => q.width > 1);
+      if (rs.length) {
+        tw = Math.round(Math.max(...rs.map(q => q.right)) - Math.min(...rs.map(q => q.left)));
+        tx = Math.round(Math.min(...rs.map(q => q.left)) - r.left);  // where the words start inside the box
+      }
+      for (const d of el.querySelectorAll("*")) {
+        if ([...d.childNodes].some(x => x.nodeType === 3 && x.textContent.trim())) fsMax = Math.max(fsMax, px(getComputedStyle(d).fontSize));
+      }
+    }
+    const comp = {
+      kind: k[0], level: k[1],
+      x: Math.round(r.left - box.left), y: Math.round(r.top + sy - box.top), w: Math.round(r.width), h: Math.round(r.height),
+      fs: Math.round(fsMax * 10) / 10, fw: px(cs.fontWeight) || 400, chars, tw, tx,
+      lh: cs.lineHeight === "normal" ? 0 : Math.round(px(cs.lineHeight) / Math.max(px(cs.fontSize), 1) * 100) / 100,
+      ls: Math.round(px(cs.letterSpacing) * 10) / 10, tt: cs.textTransform === "uppercase" ? "uppercase" : "",
+      color: hex(fg), bg: opaque(bg) ? hex(bg) : null, radius: Math.round(px(cs.borderTopLeftRadius)),
+      pad: [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].map(v => Math.round(px(v))),
+      border: Math.round(px(cs.borderTopWidth)), shadow: cs.boxShadow !== "none",
+    };
+    if (built) {
+      const i = out[key].length;
+      el.setAttribute("data-cs-comp", `${key}:${i}`);
+      const cls = [...el.classList].filter(c => /^[a-z][a-z0-9-]*$/.test(c) && !c.startsWith("cs-")).slice(0, 2);
+      const id = el.getAttribute("data-swarm-id");
+      comp.sel = id ? `[data-swarm-id="${id}"]` : el.tagName.toLowerCase() + cls.map(c => "." + c).join("");
+      comp.i = i;
+    } else {
+      el.setAttribute("data-cs-ref", `${key}:${out[key].length}`);
+      comp.i = out[key].length;
+    }
+    out[key].push(comp);
+    return true;
+  };
+  // Reference only: a heading / link / button whose words sit in separate pieces (two halves of a headline
+  // either side of a picture; a huge email with a small caption) is measured piece by piece.
+  const split = (el, cs, r, k) => {
+    if (!["heading", "link", "button"].includes(k[0])) return false;
+    const parts = [...el.querySelectorAll("*")].filter(d => [...d.childNodes].some(x => x.nodeType === 3 && x.textContent.trim()))
+      .map(d => ({ d, r: d.getBoundingClientRect(), cs: getComputedStyle(d) })).filter(p => p.r.width >= 8 && p.r.height >= 8);
+    if (parts.length < 2 || parts.length > 6) return false;
+    const area = parts.reduce((a, p) => a + p.r.width * p.r.height, 0);
+    const sizes = parts.map(p => px(p.cs.fontSize)), big = Math.max(...sizes);
+    // Side by side with a real gap (two halves of a headline); lines stacked under each other are one piece.
+    const apart = area < 0.5 * r.width * r.height && parts.some(a => parts.some(b => a !== b
+      && Math.min(a.r.bottom, b.r.bottom) - Math.max(a.r.top, b.r.top) > 0 && b.r.left - a.r.right > 40));
+    const mixed = big >= 2 * Math.min(...sizes);
+    if (!apart && !mixed) return false;
+    taken.add(el);
+    for (const p of parts) {
+      const kind = px(p.cs.fontSize) >= 0.8 * big ? k : ["text", 0];
+      add(p.d, p.cs, p.r, kind, el);
+      taken.add(p.d);
+    }
+    return true;
+  };
   let n = 0;
   for (const el of scope) {
     if (++n > 12000) break;
-    if (el.closest("chromaswarm-overlay, chromaswarm-handover, [aria-hidden=true]")) continue;
+    // The rebuild's decorative copies (aria-hidden) are not components; on the reference, aria-hidden only
+    // hides from screen readers — a huge decorative wordmark is still part of what people see.
+    if (el.closest(built ? "chromaswarm-overlay, chromaswarm-handover, [aria-hidden=true]" : "chromaswarm-overlay, chromaswarm-handover")) continue;
     const cs = getComputedStyle(el);
-    if (cs.display === "none" || cs.visibility === "hidden") continue;
+    if (cs.display === "none") continue;
     const r = el.getBoundingClientRect();
     if (r.width < 8 || r.height < 8) continue;
-    if (!built) {
+    // Big words hidden in the DOM and painted by a canvas over the same spot (WebGL type) are what people see.
+    const gl = !built && px(cs.fontSize) >= 28 && ownText(el) && glCanvas.some(c => {
+      const ix = Math.max(0, Math.min(r.right, c.right) - Math.max(r.left, c.left));
+      const iy = Math.max(0, Math.min(r.bottom, c.bottom) - Math.max(r.top, c.top));
+      return ix * iy >= 0.5 * r.width * r.height;
+    });
+    if (cs.visibility === "hidden" && !gl) continue;
+    if (!built && !gl) {
       // The reference has been scrolled through, so what is still transparent is shown only on hover
       // (preview images, menus): not part of the resting layout. (The rebuild's scroll reveals may still be
       // transparent below the fold, so this is only done on the reference.)
@@ -113,50 +194,16 @@ COMPONENTS_JS = r"""(args) => {
     }
     const k = kindOf(el, cs, r);
     if (!k) continue;
+    // Decorative media (wave canvases, background art) stays out; a decorative wordmark is kept above.
+    if (!built && (k[0] === "image" || k[0] === "card") && el.closest("[aria-hidden=true]")) continue;
     // Text inside a heading / button / link already taken is part of it, not a component of its own.
     if (["text", "link", "heading"].includes(k[0])) {
       let p = el.parentElement, inside = false;
       while (p) { if (taken.has(p)) { inside = true; break; } p = p.parentElement; }
       if (inside) continue;
     }
-    const key = rootOf(el);
-    if (key === null || !(key in out) && !built) continue;
-    if (built && !(key in out)) out[key] = [];
-    if (out[key].length >= (limit || 60)) continue;
-    if (k[0] !== "card" && k[0] !== "image") taken.add(el);
-    const box = boxOf[key];
-    const fg = rgba(cs.color), bg = rgba(cs.backgroundColor);
-    // Text pieces: how many characters they hold (a number, never the words) and the size of their biggest
-    // glyphs (a link or button may carry its label in a larger inner span).
-    let chars = 0, fsMax = px(cs.fontSize);
-    if (["heading", "text", "link", "button"].includes(k[0])) {
-      chars = (el.textContent || "").replace(/\s+/g, " ").trim().length;
-      for (const d of el.querySelectorAll("*")) {
-        if ([...d.childNodes].some(x => x.nodeType === 3 && x.textContent.trim())) fsMax = Math.max(fsMax, px(getComputedStyle(d).fontSize));
-      }
-    }
-    const comp = {
-      kind: k[0], level: k[1],
-      x: Math.round(r.left - box.left), y: Math.round(r.top + sy - box.top), w: Math.round(r.width), h: Math.round(r.height),
-      fs: Math.round(fsMax * 10) / 10, fw: px(cs.fontWeight) || 400, chars,
-      lh: cs.lineHeight === "normal" ? 0 : Math.round(px(cs.lineHeight) / Math.max(px(cs.fontSize), 1) * 100) / 100,
-      ls: Math.round(px(cs.letterSpacing) * 10) / 10, tt: cs.textTransform === "uppercase" ? "uppercase" : "",
-      color: hex(fg), bg: opaque(bg) ? hex(bg) : null, radius: Math.round(px(cs.borderTopLeftRadius)),
-      pad: [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].map(v => Math.round(px(v))),
-      border: Math.round(px(cs.borderTopWidth)), shadow: cs.boxShadow !== "none",
-    };
-    if (built) {
-      const i = out[key].length;
-      el.setAttribute("data-cs-comp", `${key}:${i}`);
-      const cls = [...el.classList].filter(c => /^[a-z][a-z0-9-]*$/.test(c) && !c.startsWith("cs-")).slice(0, 2);
-      const id = el.getAttribute("data-swarm-id");
-      comp.sel = id ? `[data-swarm-id="${id}"]` : el.tagName.toLowerCase() + cls.map(c => "." + c).join("");
-      comp.i = i;
-    } else {
-      el.setAttribute("data-cs-ref", `${key}:${out[key].length}`);
-      comp.i = out[key].length;
-    }
-    out[key].push(comp);
+    if (!built && split(el, cs, r, k)) continue;
+    add(el, cs, r, k);
   }
   if (!built) {
     // A section's box covers all of its pieces (widened sideways where they lie outside its block).
@@ -224,6 +271,8 @@ class Comp(BaseModel):
     border: int = 0
     shadow: bool = False
     chars: int = 0  # text pieces: how many characters (never the text itself)
+    tw: int = 0  # text pieces: how wide the words actually run (px), often narrower than the box
+    tx: int = 0  # text pieces: where the words start inside the box (px from its left edge)
     sel: str | None = None  # rebuilt page only: a stable selector inside its section
     i: int | None = None  # index within its section (data-cs-comp / data-cs-ref attribute)
 
