@@ -46,6 +46,7 @@ async def build_site(site: dict, out: Path):
 
     ws = out / "ws"
     shutil.rmtree(ws, ignore_errors=True)
+    os.environ["CHROMASWARM_HEADED"] = "0"  # the B2 effect check runs headless too
     build = LocalBuildRuntime(ws, headed=False)
     runner = PipelineRunner(Deps(artifacts_root=ws, build=build, consultant=RuleBasedConsultant()))
     sid = site["name"]
@@ -53,11 +54,14 @@ async def build_site(site: dict, out: Path):
         await runner.start(sid)
         await runner.answer(sid, "clone")
         snap = await runner.answer(sid, {"url": site["url"], "owned": False, "prompt": site["prompt"]})
-        for _ in range(3):  # B3 may ask what the reference cannot tell (domain)
-            q = snap.get("question")
-            if not q or q.get("key") != "domain":
+        for _ in range(4):  # what the reference cannot tell: the domain; a picture-led page asks for content
+            q = snap.get("question") or {}
+            if q.get("key") == "domain":
+                snap = await runner.answer(sid, site.get("domain", "other"))
+            elif q.get("key") == "clone_content":  # comparable runs: always the template samples
+                snap = await runner.answer(sid, {"images": [], "texts": {}})
+            else:
                 break
-            snap = await runner.answer(sid, site.get("domain", "other"))
         p = snap["pipeline"]
         if p.step.value != "B7":
             return [], None, f"stopped at {p.step.value}: {snap.get('notice') or ''}"

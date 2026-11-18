@@ -399,3 +399,55 @@ def test_reference_fonts_are_kept_with_a_vietnamese_fallback():
 def StyleDNA_stub():
     from tests.test_fidelity import dna
     return dna()
+
+
+def test_picture_led_reference_warns_and_takes_the_users_photos_and_words(tmp_path):
+    import base64
+    from chromaswarm.clone.content_slots import image_slots, needs_content, save_images
+    from chromaswarm.state_machine.pipeline_state import Domain
+
+    secs = [Section(id=i, name=i, structure=k, content="x", count=c) for i, k, c in
+            [("site-header", "sticky-bar", 0), ("hero", "full-bleed-image", 1), ("feature-showcase", "feature-showcase", 1),
+             ("bento", "bento", 4), ("site-footer", "footer-columns", 0)]]
+    assert [s.count for s in image_slots(secs)] == [1, 1, 4]
+    assert needs_content(secs, 0.4, portfolio=False) and needs_content(secs[:2], 0.0, portfolio=True)
+    assert not needs_content(secs[:2], 0.1, portfolio=False)
+    assert not needs_content(secs, 0.11, portfolio=False) and needs_content(secs, 0.16, portfolio=False)  # 6 slots
+
+    png = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * 64).decode()
+    names = save_images([{"slot": "hero", "data": png}, {"slot": "x", "data": "data:text/html;base64,PGI+"},
+                         {"slot": "../../etc", "data": png}], tmp_path / "uploads")
+    assert names == ["01-hero.png", "03-etc.png"] and (tmp_path / "uploads" / "01-hero.png").exists()
+
+    async def reader(url, owned):
+        return CloneAnalysis(url=url, title="Alex · Product Designer", owned=False, sections=secs, media_share=0.4,
+                             pillars={"theme": "editorial-luxury", "layout": "visual-first", "color": "light #2238c7",
+                                      "margins": "airy"})
+    runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=reader))
+    snap = asyncio.run(drive(runner, "pc1", ["clone", {"url": "https://alex.example"}]))
+    q = snap["question"]
+    assert q["kind"] == "clone_content" and "không chép ảnh và nội dung" in q["text"] and "6 chỗ đặt ảnh" in q["text"]
+    assert [o["value"] for o in q["options"]] == ["hero", "feature-showcase", "bento"]
+    snap = asyncio.run(runner.answer("pc1", {"images": [{"slot": "hero", "data": png}],
+                                             "texts": {"name": "Minh Anh Studio", "headline": "Thiết kế phần mềm B2B",
+                                                       "projects": "Cổng đặt tour\nQuản lý đội tàu", "evil": "x"}}))
+    p = snap["pipeline"]
+    assert p.step.value == "B7" and p.clone.user_images == ["01-hero.png"] and "evil" not in p.clone.user_texts
+    copy = build_copy(p)
+    assert copy.brand == "Minh Anh Studio" and copy.headline == "Thiết kế phần mềm B2B" and copy.images == ["/images/01-hero.png"]
+    assert [c.name for c in copy.cards[:2]] == ["Cổng đặt tour", "Quản lý đội tàu"]
+    assert (tmp_path / "pc1" / "uploads" / "01-hero.png").exists() and p.domain is Domain.PORTFOLIO
+
+
+def test_skipping_the_content_step_keeps_the_template_samples(tmp_path):
+    secs = [Section(id="hero", name="Hero", structure="full-bleed-image", content="x", count=1),
+            Section(id="gallery", name="G", structure="gallery", content="x", count=8)]
+
+    async def reader(url, owned):
+        return CloneAnalysis(url=url, title="Gallery", owned=False, sections=secs, media_share=0.5,
+                             pillars={"theme": "warm-organic", "layout": "catalog", "color": "light", "margins": "balanced"})
+    runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=reader))
+    asyncio.run(drive(runner, "pc2", ["clone", {"url": "https://g.example"}]))
+    p = asyncio.run(runner.answer("pc2", {"images": [], "texts": {}}))["pipeline"]
+    assert p.step.value == "B7" and p.clone.content_asked and not p.clone.user_images
+    assert build_copy(p).brand.startswith("[")

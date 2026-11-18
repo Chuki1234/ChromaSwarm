@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -133,6 +134,21 @@ def download_template(session_id: str) -> Response:
         raise HTTPException(status_code=404, detail="Chưa có trang nào được dựng cho phiên này.")
     return Response(template_zip(app_dir), media_type="application/zip",
                     headers={"Content-Disposition": f'attachment; filename="chromaswarm-{session_id}.zip"'})
+
+
+_SAFE_SESSION = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+_SAFE_SHOT = re.compile(r"^[a-z0-9-]{1,80}-(ref|clone)\.jpg$")
+
+
+@app.get("/sessions/{session_id}/compare/{name}")
+def compare_shot(session_id: str, name: str) -> Response:
+    """Clone B11 1:1 acceptance: one section of the reference or of the rebuild (side by side in the Studio)."""
+    if not _SAFE_SESSION.match(session_id) or not _SAFE_SHOT.match(name):
+        raise HTTPException(status_code=404, detail="Không có ảnh này.")
+    path = WORKSPACES / session_id / "artifacts" / "compare" / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Không có ảnh này.")
+    return Response(path.read_bytes(), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/health")

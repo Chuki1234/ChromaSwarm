@@ -37,6 +37,11 @@ class Section(BaseModel):
     count: int = 0  # Clone mode: how many items the reference shows (e.g. images in a gallery)
     sources: list[int] = []  # Clone mode: indices of the reference blocks this section rebuilds
     motion: list[str] = []  # Clone mode: effects read from the reference (mcp_motion catalogue ids)
+    motion_params: dict[str, dict] = {}  # Clone mode: measured per effect (duration_ms, easing, distance_px...)
+    # Clone mode: the reference section's components (clone/components.py) and box. When set, the section
+    # is rendered from this measured layout (developer/measured.py) instead of its structure's template.
+    layout: list[dict] = []
+    layout_box: dict = {}
 
 
 def _i(id_: str, role: str, behavior: str) -> Interactive:

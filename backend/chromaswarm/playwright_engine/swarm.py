@@ -33,6 +33,7 @@ class Agent(StrEnum):
     COLOR = "color"
     TYPOGRAPHY = "typography"
     MOTION = "motion"
+    INSPECTOR = "inspector"
     MASTER = "master"
 
 
@@ -168,10 +169,28 @@ class SwarmOverlay:
                           "result": t.model_dump() if t else None})
         return t
 
-    async def note(self, agent: Agent, text: str | None) -> None:
-        await self._call("note", agent.value, text)
+    async def note(self, agent: Agent | str, text: str | None) -> None:
+        await self._call("note", getattr(agent, "value", agent), text)
 
     # ---------------------------------------------------------------- B11 / B12
+    # ---------------------------------------------------------------- factory workers
+    async def spawn(self, id_: str, label: str, color: str, parent: str | None = None, size: int = 18) -> None:
+        await self._call("spawn", id_, label, color, parent, size)
+
+    async def fly_to(self, id_: str, selector: str) -> Rect | None:
+        raw = await self._call("flyTo", id_, selector)
+        return Rect(**raw) if raw else None
+
+    async def crew(self, items: list[dict]) -> int:
+        """items: {id, label, color, from, sel, note, ok}: leaf workers, flown together per viewport."""
+        return await self._call("crew", items)
+
+    async def merge(self, ids: list[str], into: str) -> None:
+        await self._call("merge", ids, into)
+
+    async def retire(self, id_: str) -> None:
+        await self._call("retire", id_)
+
     async def master(self, on: bool = True) -> None:
         await self._call("master", on)
         await self._emit({"agent": "master", "action": "master", "on": on})

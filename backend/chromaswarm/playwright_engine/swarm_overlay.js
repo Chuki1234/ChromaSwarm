@@ -18,6 +18,7 @@
     color: { label: "Color OKLCH", color: "#F59E0B" },
     typography: { label: "Typography", color: "#8B5CF6" },
     motion: { label: "Motion MCP", color: "#10B981" },
+    inspector: { label: "Motion Inspector", color: "#10B981" },
     master: { label: "Master QA", color: "#F5B400" },
   };
   const FAIL = "#EF4444";
@@ -37,6 +38,7 @@
     .note { position: absolute; left: 14px; top: 36px; padding: 4px 8px; border-radius: 4px;
       background: rgb(17 17 17 / .88); color: #fff; white-space: nowrap; max-width: 360px;
       overflow: hidden; text-overflow: ellipsis; }
+    .tag.sm { left: 10px; top: 11px; padding: 1px 4px; font-size: 10px; }
     .master .tag { top: 40px; left: 34px; font-size: 13px; }
     .master .note { top: 64px; left: 34px; font-size: 12px; }
     .box { position: absolute; border: 1px solid; box-sizing: border-box; }
@@ -93,8 +95,9 @@
     if (cursors[agent]) return cursors[agent];
     const el = document.createElement("div");
     el.className = "cursor" + (agent === "master" ? " master" : "");
-    el.innerHTML = `${arrow(def.color, agent === "master" ? 48 : 22)}
-      <span class="tag" style="background:${def.color};${agent === "master" ? "color:#111" : ""}">${def.label}</span>`;
+    const size = def.size || (agent === "master" ? 48 : 22);
+    el.innerHTML = `${arrow(def.color, size)}
+      <span class="tag${size < 18 ? " sm" : ""}" style="background:${def.color};${agent === "master" ? "color:#111" : ""}">${def.label}</span>`;
     layer.appendChild(el);
     const idx = Object.keys(cursors).length;
     const c = { el, x: innerWidth - 120 - idx * 40, y: 80 + idx * 40 };
@@ -347,6 +350,65 @@
     },
 
     note(agent, text) { if (ensure()) { cursor(agent); note(agent, text); } },
+
+    // ---------------------------------------------------------------- factory (Clone B9 / B11)
+    /** A worker cursor born at its parent's position (section -> crew -> component). */
+    spawn(id, label, color, from, size) {
+      if (!ensure()) return false;
+      if (cursors[id]) { cursors[id].el.remove(); delete cursors[id]; }
+      AGENTS[id] = { label, color, size: size || 18 };
+      const c = cursor(id);
+      const p = from && cursors[from];
+      if (p) { c.x = p.x; c.y = p.y; place(c); }
+      return true;
+    },
+
+    async flyTo(id, selector) {
+      const el = await reach(id, selector);
+      return el ? rectOf(el) : null;
+    },
+
+    /** Workers go to their components together, one viewport at a time; each marks its component with
+     *  a box and a label (green-ish = matches the reference, red = still differs). */
+    async crew(items) {
+      if (!ensure()) return 0;
+      const found = items.map(it => ({ it, el: find(it.sel) })).filter(x => x.el);
+      found.sort((a, b) => (a.el.getBoundingClientRect().top - b.el.getBoundingClientRect().top));
+      let i = 0, done = 0;
+      while (i < found.length) {
+        const first = found[i].el.getBoundingClientRect();
+        if (first.top < 0 || first.top > innerHeight * 0.75) {
+          scrollBy({ top: first.top - 96, behavior: cfg.instant ? "auto" : "smooth" });
+          await settle();
+        }
+        const batch = [];
+        while (i < found.length && found[i].el.getBoundingClientRect().top < innerHeight - 40 && batch.length < 14) batch.push(found[i++]);
+        if (!batch.length) batch.push(found[i++]);
+        await Promise.all(batch.map(async ({ it, el }) => {
+          api.spawn(it.id, it.label, it.color, it.from, 14);
+          const r = el.getBoundingClientRect(), c = cursors[it.id];
+          await glide(c, Math.max(4, Math.min(innerWidth - 30, r.left + Math.min(12, r.width / 2))),
+                      Math.max(4, Math.min(innerHeight - 30, r.top + Math.min(8, r.height / 2))));
+          annotate(el, "comp", (node, rr) => node.appendChild(boxEl(rr, it.ok ? it.color : FAIL, it.note || it.label, !it.ok)));
+          done++;
+        }));
+        await sleep(450);
+      }
+      return done;
+    },
+
+    /** Workers fly back into their parent and disappear (components -> crew -> section -> master). */
+    async merge(ids, into) {
+      const target = cursors[into];
+      await Promise.all(ids.filter(id => cursors[id]).map(async id => {
+        const c = cursors[id];
+        if (target) await glide(c, target.x, target.y);
+        c.el.remove(); delete cursors[id]; delete AGENTS[id];
+      }));
+      return true;
+    },
+
+    retire(id) { if (cursors[id]) { cursors[id].el.remove(); delete cursors[id]; delete AGENTS[id]; } return true; },
 
     /** B11: the 2.2x Master cursor and its HUD pill. */
     master(on = true) {

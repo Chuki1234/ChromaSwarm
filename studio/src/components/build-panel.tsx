@@ -1,6 +1,7 @@
 "use client";
 
-import type { PipelineState } from "@/components/pipeline-console";
+import { useState } from "react";
+import type { CompareResult, CompareSection, PipelineState } from "@/components/pipeline-console";
 
 type Props = { state: PipelineState; notice: string | null; running: boolean };
 
@@ -74,6 +75,12 @@ export function BuildPanel({ state, notice, running }: Props) {
       )}
 
       {state.qa_summary && <QaPanel state={state} />}
+
+      {(state.factory_log?.length ?? 0) > 0 && (
+        <List title="Nhà máy cursor (B9): section → tổ → component" items={state.factory_log!} />
+      )}
+
+      {state.clone_compare && <ComparePanel result={state.clone_compare} session={state.session_id} />}
 
       {state.clone_fidelity != null && (
         <div className="flex flex-col gap-2 rounded-xl border border-line p-4" data-swarm-section="fidelity">
@@ -169,6 +176,72 @@ function QaPanel({ state }: { state: PipelineState }) {
         </ul>
       )}
     </div>
+  );
+}
+
+/** B11 Clone: the Master cursor's 1:1 acceptance — each section of the reference beside the rebuild. */
+function ComparePanel({ result, session }: { result: CompareResult; session: string }) {
+  const [open, setOpen] = useState<string | null>(result.sections.find((s) => s.score < 80)?.id ?? result.sections[0]?.id ?? null);
+  const shot = (name: string | null) => (name ? `${BACKEND_HTTP}/sessions/${encodeURIComponent(session)}/compare/${name}` : null);
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border border-line p-4" data-swarm-section="compare">
+      <div className="flex items-baseline justify-between gap-4">
+        <h3 className="text-sm font-medium">Nghiệm thu 1:1 với link gốc</h3>
+        <span className="font-mono text-sm">{Math.round(result.total)}%</span>
+      </div>
+      <p className="text-xs text-fg-2">
+        Từng component của trang mẫu được ghép với component cùng loại trên bản dựng: 40% đủ component · 30% vị trí và kích thước ·
+        20% kiểu chữ, bo góc, đổ bóng · 10% chiều cao. Chữ và ảnh không được so.
+        {result.rounds > 0 && ` ${result.rounds} vòng tinh chỉnh tự động.`}
+      </p>
+      <ul className="flex flex-col divide-y divide-line">
+        {result.sections.map((s) => (
+          <CompareRow key={s.id} s={s} open={open === s.id} onToggle={() => setOpen(open === s.id ? null : s.id)}
+            refSrc={shot(s.ref_image)} builtSrc={shot(s.built_image)} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function CompareRow({ s, open, onToggle, refSrc, builtSrc }: {
+  s: CompareSection; open: boolean; onToggle: () => void; refSrc: string | null; builtSrc: string | null;
+}) {
+  const tone = s.score >= 90 ? "text-accent" : s.score >= 75 ? "text-fg" : "text-danger";
+  return (
+    <li className="flex flex-col gap-3 py-2">
+      <button type="button" onClick={onToggle} aria-expanded={open} data-swarm-id={`compare-${s.id}`} data-swarm-role="button"
+        className="flex min-h-11 items-center justify-between gap-4 rounded-lg px-2 text-left text-sm hover:bg-surface">
+        <span className="truncate">{s.name || s.id}</span>
+        <span className={`font-mono text-xs ${tone}`}>{Math.round(s.score)}%</span>
+      </button>
+      {open && (
+        <div className="flex flex-col gap-3 px-2">
+          <div className="grid grid-cols-2 gap-2">
+            {[["Trang mẫu", refSrc], ["Bản dựng", builtSrc]].map(([label, src]) => (
+              <figure key={label} className="flex flex-col gap-1">
+                <figcaption className="text-xs text-fg-2">{label}</figcaption>
+                {src ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={src} alt={`${label}: ${s.name || s.id}`} loading="lazy"
+                    className="max-h-80 w-full rounded-lg border border-line object-cover object-top" />
+                ) : <div className="grid h-24 place-items-center rounded-lg border border-line text-xs text-fg-3">Chưa có ảnh</div>}
+              </figure>
+            ))}
+          </div>
+          <p className="font-mono text-xs text-fg-3">
+            component {Math.round(s.parts.components * 100)}% · vị trí {Math.round(s.parts.layout * 100)}% · kiểu {Math.round(s.parts.style * 100)}% ·
+            cao {s.ref_height}→{s.built_height}px
+          </p>
+          {(s.diffs.length > 0 || s.effects_missing.length > 0) && (
+            <ul className="flex flex-col gap-1 text-xs text-fg-2">
+              {s.diffs.map((d) => <li key={d}>— {d}</li>)}
+              {s.effects_missing.map((e) => <li key={e}>— thiếu hiệu ứng {e}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
+    </li>
   );
 }
 

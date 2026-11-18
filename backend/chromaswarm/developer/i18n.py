@@ -181,7 +181,7 @@ def copy_en(domain: Domain | None, brand: str) -> dict:
     cta = "Get in touch"
     return dict(
         headline=f"{brand}, done right down to the details", subhead="Clear about what you get, what it costs and when.",
-        cta=cta, cta_secondary="Learn more", nav=base["nav"], facts=base["facts"], story=story,
+        cta=cta, cta_secondary="See how it works", nav=base["nav"], facts=base["facts"], story=story,
         quotes=[(q, QUOTE_NOTE_EN) for q in QUOTES_EN.get(d, QUOTES_EN[Domain.ECOMMERCE])],
         cards=(_items(*[(t, n, "", "") for t, n in FEATURES_EN[d]]) if d in FEATURES_EN else base["items"]),
         items=base["items"], categories=base["categories"], faqs=base["faqs"],
@@ -213,7 +213,7 @@ UI_EN = {
     "Nhập email đầy đủ, ví dụ ten@email.com": "Enter a full email, e.g. name@email.com",
     "Những mẫu được chọn nhiều nhất": "Most chosen pieces", "Nổi bật": "Featured", "Phân loại": "Options",
     "Sản phẩm liên quan": "Related products", "Thu gọn": "Show less", "Thêm vào giỏ": "Add to cart",
-    "Thông báo": "Announcement", "Thư viện hình ảnh": "Gallery", "Tìm hiểu thêm": "Learn more", "Tìm kiếm": "Search",
+    "Thông báo": "Announcement", "Thư viện hình ảnh": "Gallery", "Tìm hiểu thêm": "See the details", "Tìm kiếm": "Search",
     "Tìm sản phẩm": "Search products", "Tất cả": "All", "Vận chuyển": "Shipping",
     "Xem tất cả (${ROWS.length})": "View all (${ROWS.length})",
     "Chưa có đánh giá": "No reviews yet", "Thêm đánh giá thật ở bước bàn giao": "Add real reviews at handover",
@@ -223,7 +223,7 @@ UI_EN = {
     "Đóng menu": "Close menu", "Đóng thông báo": "Dismiss", "Đóng tìm kiếm": "Close search", "Đăng ký": "Subscribe",
     "Đăng ký nhận tin": "Subscribe", "Đăng nhập": "Sign in", "Được nhắc đến trên": "Featured on",
     "Đối tác và báo chí": "Partners and press", "Đổi trả": "Returns", "Ảnh thương hiệu": "Brand image",
-    "Xem nhanh": "Quick view", "Xem chi tiết": "Learn more", "Liên hệ ngay": "Get in touch", "Menu": "Menu",
+    "Xem nhanh": "Quick view", "Xem chi tiết": "View details", "Liên hệ ngay": "Get in touch", "Menu": "Menu",
     "Chọn phân loại": "Choose an option", "sản phẩm": "products", "Hình": "Image",
     "Ẩn": "Hide", "Ảnh ${i + 1}": "Image ${i + 1}", "Tài khoản": "Account",
 }

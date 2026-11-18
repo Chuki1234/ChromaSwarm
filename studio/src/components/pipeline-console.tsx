@@ -7,7 +7,7 @@ import { CloneSource, QuestionCard, type Answer, type Question } from "@/compone
 const BACKEND_WS = process.env.NEXT_PUBLIC_BACKEND_WS ?? "ws://localhost:8100";
 
 // What each pipeline step means for the user, in their words (ids stay the backend's B1..B12).
-const STEPS: { id: string; label: string; phase: string }[] = [
+const STEPS: { id: string; label: string; phase: string; subs?: string[] }[] = [
   { id: "B1", label: "Lắng nghe ý tưởng", phase: "Thấu hiểu" },
   { id: "B2", label: "Chọn trang làm trước", phase: "Thấu hiểu" },
   { id: "B3", label: "Phong cách & khách hàng", phase: "Thấu hiểu" },
@@ -26,16 +26,19 @@ type Step = (typeof STEPS)[number];
 // Clone runs the same 12 steps, but the first four read the reference page instead of asking questions.
 const CLONE_STEPS: Step[] = [
   { id: "B1", label: "Đọc URL & phân tích", phase: "Đọc trang mẫu" },
-  { id: "B2", label: "Tách các phần của trang", phase: "Đọc trang mẫu" },
+  { id: "B2", label: "Tách phần & kiểm tra hiệu ứng", phase: "Đọc trang mẫu",
+    subs: ["Tách các phần và component của trang", "Kiểm tra hiệu ứng: Playwright cuộn, rê chuột, đo thời gian"] },
   { id: "B3", label: "Phong cách từ trang mẫu", phase: "Đọc trang mẫu" },
   { id: "B4", label: "Font, ngôn ngữ & ảnh", phase: "Đọc trang mẫu" },
   { id: "B5", label: "Hệ màu, chữ & khoảng cách", phase: "Thiết kế" },
   { id: "B6", label: "Chọn layout từng phần", phase: "Thiết kế" },
   { id: "B7", label: "Bạn duyệt kế hoạch", phase: "Thiết kế" },
   { id: "B8", label: "Chuẩn bị khung & token", phase: "Dựng trang" },
-  { id: "B9", label: "Dựng wireframe", phase: "Dựng trang" },
+  { id: "B9", label: "Dựng wireframe", phase: "Dựng trang",
+    subs: ["Cursor section → tổ chữ / nút / ảnh → cursor từng component", "Tinh chỉnh từng component theo trang mẫu, nhập về"] },
   { id: "B10", label: "Tô màu & điền nội dung", phase: "Dựng trang" },
-  { id: "B11", label: "Kiểm tra & đo độ giống", phase: "Hoàn thiện" },
+  { id: "B11", label: "Kiểm tra & nghiệm thu 1:1", phase: "Hoàn thiện",
+    subs: ["Master QA: 4 bài kiểm tra", "Master Cursor so 1:1 từng component với link gốc"] },
   { id: "B12", label: "Bàn giao template", phase: "Hoàn thiện" },
 ];
 
@@ -50,7 +53,10 @@ const EXAMPLES: { tag: string; text: string }[] = [
 export type PipelineState = {
   step: string;
   mode: "creative" | "clone" | null;
-  clone: { url: string; owned: boolean; title: string | null; notes: string[] } | null;
+  clone: {
+    url: string; owned: boolean; title: string | null; notes: string[];
+    motion_report?: MotionReport | null;
+  } | null;
   session_id: string;
   design_md: string | null;
   product_md: string | null;
@@ -69,6 +75,9 @@ export type PipelineState = {
   design_score: number | null;
   clone_fidelity?: number | null;
   clone_fidelity_notes?: string[];
+  clone_compare?: CompareResult | null;
+  compare_rounds?: number;
+  factory_log?: string[];
   design_critique: string[];
   heal_history: { iteration: number; failures: string[] }[];
   heal_rules: string[];
@@ -77,6 +86,17 @@ export type PipelineState = {
   motion_effects: string[];
   handover_closed: boolean;
 };
+
+export type MotionReport = {
+  has_motion: boolean; steps?: number; hovered?: number; libs?: string[]; unsupported?: string[]; error?: string;
+  items: { effect: string; section: string; label: string; how: string; params: Record<string, number | string> }[];
+};
+export type CompareSection = {
+  id: string; name: string; score: number; parts: Record<string, number>; matched: number;
+  diffs: string[]; effects_missing: string[]; ref_height: number; built_height: number;
+  ref_image: string | null; built_image: string | null;
+};
+export type CompareResult = { total: number; rounds: number; tuned: number; sections: CompareSection[] };
 
 type Snapshot = {
   state: PipelineState;
@@ -94,7 +114,8 @@ type Status = "connecting" | "open" | "closed";
 type Item =
   | { kind: "user"; text: string }
   | { kind: "assistant"; text: string; tone?: "error" }
-  | { kind: "question"; sig: string; q: Question; note: string | null };
+  | { kind: "question"; sig: string; q: Question; note: string | null }
+  | { kind: "motion"; report: MotionReport };
 
 function sessionId(): string {
   try {
@@ -148,6 +169,7 @@ export function PipelineConsole() {
   const wsRef = useRef<WebSocket | null>(null);
   const lastSig = useRef("");
   const lastNote = useRef<string | null>(null);
+  const motionShown = useRef(false); // the B2 effect-check report goes into the thread once
   const pendingPrompt = useRef<string | null>(null); // typed on the empty screen, sent once Chroma asks for it
   const pendingClone = useRef<Answer | null>(null); // Clone form filled on the empty screen, sent once Chroma asks for it
   const endRef = useRef<HTMLDivElement>(null);
@@ -180,6 +202,11 @@ export function PipelineConsole() {
         } else if (s.notice && s.notice !== lastNote.current) {
           lastNote.current = s.notice; // same question, new remark ("chưa hiểu rõ…", "đã ghi lại…")
           setItems((it) => [...it, { kind: "assistant", text: s.notice! }]);
+        }
+        const mr = s.state?.clone?.motion_report;
+        if (mr && !motionShown.current) {
+          motionShown.current = true;
+          setItems((it) => [...it, { kind: "motion", report: mr }]);
         }
         if (pendingClone.current && s.question?.kind === "clone_source") {
           const a = pendingClone.current;
@@ -361,6 +388,8 @@ export function PipelineConsole() {
                       <p className={`whitespace-pre-wrap leading-relaxed ${it.tone === "error" ? "text-danger" : "text-fg"}`}
                         role={it.tone === "error" ? "alert" : undefined}>{it.text}</p>
                     </Assistant>
+                  ) : it.kind === "motion" ? (
+                    <Assistant key={i}><MotionCard report={it.report} /></Assistant>
                   ) : i === lastQuestionIdx && question && it.sig === sigOf(snap!) ? (
                     <Assistant key={i}>
                       {question.kind === "handover" && <BuildPanel state={snap!.state} notice={null} running={false} />}
@@ -406,6 +435,50 @@ export function PipelineConsole() {
     </div>
   );
 }
+
+/** B2 effect check: what Playwright found by operating the reference page, and how each effect moves. */
+function MotionCard({ report }: { report: MotionReport }) {
+  const fmt = (p: Record<string, number | string>) =>
+    Object.entries(p).map(([k, v]) => `${PARAM_LABEL[k] ?? k} ${v}${PARAM_UNIT[k] ?? ""}`).join(" · ");
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border border-line p-4" data-swarm-section="motion-report">
+      <div className="flex items-baseline justify-between gap-4">
+        <h3 className="text-sm font-medium">Kiểm tra hiệu ứng (Playwright)</h3>
+        <span className={`font-mono text-xs ${report.has_motion ? "text-accent" : "text-fg-2"}`}>
+          {report.has_motion ? `${report.items.length} hiệu ứng` : "Không có hiệu ứng"}
+        </span>
+      </div>
+      <p className="text-sm text-fg-2">
+        {report.error ? `Không chạy được: ${report.error}` :
+          `Đã cuộn ${report.steps ?? 0} màn hình và rê chuột thật lên ${report.hovered ?? 0} phần tử trên trang mẫu.`}
+      </p>
+      {report.items.length > 0 && (
+        <ul className="flex flex-col divide-y divide-line">
+          {report.items.map((m, i) => (
+            <li key={i} className="flex flex-col gap-1 py-2">
+              <span className="flex items-baseline justify-between gap-4 text-sm">
+                <span className="font-medium">{m.label}</span>
+                <span className="font-mono text-xs text-fg-3">{m.section}</span>
+              </span>
+              <span className="text-sm text-fg-2">{m.how}</span>
+              {Object.keys(m.params).length > 0 && <span className="font-mono text-xs text-fg-3">{fmt(m.params)}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+      {(report.libs?.length ?? 0) > 0 && <p className="text-xs text-fg-2">Thư viện chuyển động: {report.libs!.join(", ")}</p>}
+      {(report.unsupported?.length ?? 0) > 0 && (
+        <p className="text-xs text-fg-2">Chưa dựng lại được bằng CSS: {report.unsupported!.join(", ")}</p>
+      )}
+    </div>
+  );
+}
+
+const PARAM_LABEL: Record<string, string> = {
+  duration_ms: "thời gian", easing: "easing", distance_px: "quãng", stagger_ms: "trễ thẻ", scale: "tỉ lệ",
+  cycle_s: "một vòng", blur_px: "blur",
+};
+const PARAM_UNIT: Record<string, string> = { duration_ms: "ms", distance_px: "px", stagger_ms: "ms", cycle_s: "s", blur_px: "px", scale: "×" };
 
 function Assistant({ children }: { children: React.ReactNode }) {
   return (
@@ -567,7 +640,16 @@ function SidePanel({ open, onClose, snap, status, stepIdx, onRestart, steps, clo
                         ) : state === "current" ? <span className="dot-live size-2 rounded-full bg-accent" /> : <span className="size-1.5 rounded-full bg-line" />}
                       </span>
                       <span className="w-5 text-right font-mono text-[11px] tabular-nums">{i + 1}</span>
-                      <span className="truncate">{s.label}</span>
+                      <span className="flex min-w-0 flex-col">
+                        <span className="truncate">{s.label}</span>
+                        {s.subs && state !== "todo" && (
+                          <span className="flex flex-col gap-0.5 pt-1">
+                            {s.subs.map((sub) => (
+                              <span key={sub} className="text-xs font-normal leading-snug text-fg-2">· {sub}</span>
+                            ))}
+                          </span>
+                        )}
+                      </span>
                     </li>
                   );
                 })}

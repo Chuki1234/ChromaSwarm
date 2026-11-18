@@ -51,10 +51,47 @@ PARALLAX_JS = r"""async () => {
   els.forEach((e, i) => {
     const r = e.getBoundingClientRect(), drift = (r.top - before[i]) + step;  // 0 = moves with the page
     if (Math.abs(drift) > 24 && getComputedStyle(e).position !== "fixed" && getComputedStyle(e).position !== "sticky")
-      out.push({ top: Math.round(r.top + scrollY), h: Math.round(r.height), drift: Math.round(drift) });
+      out.push({ top: Math.round(r.top + scrollY), h: Math.round(r.height), drift: Math.round(drift), ratio: Math.round(drift / step * 100) / 100 });
   });
   scrollTo(0, 0);
   return out;
+}"""
+
+STEP_JS = r"""async (y) => {
+  // One step of the slow inspection scroll: watch what starts revealing in this viewport and time it.
+  const ident = t => !t || t === "none" || t === "matrix(1, 0, 0, 1, 0, 0)";
+  const ty = t => { const m = /matrix\(([^)]+)\)/.exec(t || ""); return m ? parseFloat(m[1].split(",")[5]) : 0; };
+  const pre = window.__csPre || new Map();
+  const ids = window.__csParents || (window.__csParents = new Map());
+  scrollTo(0, y);
+  const vh = innerHeight, watch = [];
+  await new Promise(r => setTimeout(r, 30));
+  for (const [el, s] of pre) {
+    if (watch.length >= 8) break;
+    if (el.__csTimed || !el.isConnected) continue;
+    const r = el.getBoundingClientRect();
+    if (r.top < vh * 0.95 && r.bottom > 0) watch.push([el, s, { start: null, end: null }]);
+  }
+  const t0 = performance.now();
+  while (watch.length && performance.now() - t0 < 1800) {
+    await new Promise(r => setTimeout(r, 40));
+    const t = performance.now() - t0;
+    for (const [el, s, m] of watch) {
+      const cs = getComputedStyle(el), op = parseFloat(cs.opacity);
+      if (m.start === null && (Math.abs(op - s.op) > 0.02 || cs.transform !== s.tf || cs.clipPath !== s.clip)) m.start = t;
+      if (m.end === null && op >= 0.99 && ident(cs.transform) && cs.clipPath === "none") m.end = t;
+    }
+    if (watch.every(([, , m]) => m.end !== null)) break;
+  }
+  return watch.map(([el, s, m]) => {
+    el.__csTimed = true;
+    const cs = getComputedStyle(el), r = el.getBoundingClientRect(), p = el.parentElement;
+    if (!ids.has(p)) ids.set(p, ids.size);
+    const durs = (cs.transitionDuration + "," + cs.animationDuration).split(",").map(d => parseFloat(d) * (d.includes("ms") ? 1 : 1000)).filter(x => x > 0);
+    const ease = (cs.transitionDuration !== "0s" ? cs.transitionTimingFunction : cs.animationTimingFunction).split(",")[0].trim();
+    return { top: Math.round(r.top + scrollY), h: Math.round(r.height), parent: ids.get(p), fromOp: s.op, fromY: Math.round(ty(s.tf)),
+             start: m.start, end: m.end, cssMs: durs.length ? Math.max(...durs) : 0, ease };
+  });
 }"""
 
 POST_JS = r"""async () => {
@@ -80,7 +117,7 @@ POST_JS = r"""async () => {
     const t = a.effect && a.effect.target, timing = a.effect && a.effect.getTiming();
     if (!t || !timing || timing.iterations !== Infinity) continue;
     const frames = a.effect.getKeyframes().map(k => k.transform || "").join(" ");
-    if (/translate(X|3d)?\(/.test(frames)) out.marquee.push(abs(t.getBoundingClientRect()));
+    if (/translate(X|3d)?\(/.test(frames)) out.marquee.push({ ...abs(t.getBoundingClientRect()), cycle: (timing.duration || 0) / 1000 });
   }
   const tracks = [...document.querySelectorAll("body *")].filter(el => {
     const p = el.parentElement; if (!p) return false;
@@ -89,7 +126,11 @@ POST_JS = r"""async () => {
   }).slice(0, 12);
   const t0 = tracks.map(el => el.getBoundingClientRect().left);
   await new Promise(r => setTimeout(r, 450));
-  tracks.forEach((el, i) => { if (Math.abs(el.getBoundingClientRect().left - t0[i]) > 2) out.marquee.push(abs(el.parentElement.getBoundingClientRect())); });
+  tracks.forEach((el, i) => {
+    const moved = Math.abs(el.getBoundingClientRect().left - t0[i]);
+    if (moved > 2) out.marquee.push({ ...abs(el.parentElement.getBoundingClientRect()),
+                                      cycle: Math.round(el.getBoundingClientRect().width / 2 / (moved / 0.45)) });
+  });
 
   // Page-wide.
   const html = document.documentElement;
@@ -113,7 +154,10 @@ POST_JS = r"""async () => {
     let el = header;
     for (let i = 0; i < 3 && el && el !== document.body; i++, el = el.parentElement) {
       const cs = getComputedStyle(el);
-      if (cs.position === "sticky" || cs.position === "fixed") { out.sticky = true; out.blur = out.blur || cs.backdropFilter !== "none"; }
+      if (cs.position === "sticky" || cs.position === "fixed") {
+        out.sticky = true; out.blur = out.blur || cs.backdropFilter !== "none";
+        const m = /blur\(([\d.]+)px\)/.exec(cs.backdropFilter || ""); if (m) out.blurPx = Math.round(parseFloat(m[1]));
+      }
     }
   }
 
@@ -149,7 +193,8 @@ SNAP_JS = r"""(i) => {
     return r.width > 80 && r.height > 60 && parseFloat(getComputedStyle(m).opacity) > 0.5 && m.checkVisibility({ opacityProperty: true });
   }).length;
   const dur = Math.max(...cs.transitionDuration.split(",").map(d => parseFloat(d) * (d.includes("ms") ? 1 : 1000)), 0);
-  return { tf: cs.transform, shadow: cs.boxShadow, bgSize: cs.backgroundSize, deco: cs.textDecorationLine,
+  const ease = cs.transitionTimingFunction.split(",")[0].trim();
+  return { tf: cs.transform, shadow: cs.boxShadow, ease, bgSize: cs.backgroundSize, deco: cs.textDecorationLine,
            border: cs.borderBottomWidth + " " + cs.borderBottomStyle, imgTf: img ? getComputedStyle(img).transform : null,
            visibleImages, dur, top: el.getBoundingClientRect().top };
 }"""
@@ -184,13 +229,27 @@ def hover_effects(kind: str, before: dict, after: dict) -> list[str]:
     return found
 
 
-async def probe(page: Page) -> dict:
+def hover_params(before: dict, after: dict) -> dict:
+    """How the hover moves: duration, easing, lift (px), scale, image zoom."""
+    s0, y0 = _scale_y(before["tf"])
+    s1, y1 = _scale_y(after["tf"])
+    lift = min(y1 - y0, after["top"] - before["top"])
+    zoom = _scale_y(after["imgTf"])[0] / max(_scale_y(before["imgTf"])[0], 0.01) if before.get("imgTf") else 1.0
+    return {"duration_ms": round(before.get("dur") or 0), "easing": before.get("ease") or "",
+            "lift_px": round(-lift) if lift < -1 else 0, "scale": round(s1 / max(s0, 0.01), 3), "zoom": round(zoom, 3)}
+
+
+async def probe(page: Page, on_hover=None) -> dict:
     """Run after PRE_JS (before the settle scroll) and the settle scroll: reveals, marquees, page-wide
-    facts, and the hover sample hovered for real."""
+    facts, and the hover sample hovered for real. `on_hover(selector, index, total, kind)` is awaited
+    before each hover (the inspector's visible cursor)."""
     post = await page.evaluate(POST_JS)
     hovers = []
     for cand in post["hover"]:
         sel = f'[data-cs-hover="{cand["i"]}"]'
+        if on_hover:
+            with contextlib.suppress(Exception):
+                await on_hover(sel, cand["i"], len(post["hover"]), cand["kind"])
         with contextlib.suppress(Exception):
             # Bring it into view first: the hover's own scroll must not read as a "lift".
             await page.evaluate(f"document.querySelector('{sel}')?.scrollIntoView({{block: 'center'}})")
@@ -203,7 +262,8 @@ async def probe(page: Page) -> dict:
             after = await page.evaluate(SNAP_JS, cand["i"])
             await page.mouse.move(2, 2)
             if after:
-                hovers.append({**cand, "effects": hover_effects(cand["kind"], before, after)})
+                hovers.append({**cand, "effects": hover_effects(cand["kind"], before, after),
+                               "params": hover_params(before, after)})
     post["hover"] = hovers
     return post
 

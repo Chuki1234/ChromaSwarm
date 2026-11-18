@@ -23,6 +23,7 @@ from chromaswarm.clone.fonts import google_css_url
 from chromaswarm.developer.i18n import localize_code, localize_value
 from chromaswarm.developer.content import PageCopy
 from chromaswarm.developer.surfaces import surface_css
+from chromaswarm.developer.measured import measurable, render_measured
 from chromaswarm.engines.design_spec import DesignSpec
 
 NEXT_VERSION = "16.4.5"
@@ -134,6 +135,7 @@ import "./tokens.css";
 import "./base.css";
 import "./surface.css";
 import "./motion.css";
+import "./match.css";
 import "./heal.css";
 import "./wireframe.css";
 
@@ -155,6 +157,7 @@ export default function RootLayout({{ children }}: {{ children: React.ReactNode 
         WorkspaceFile(path="app/surface.css", content=surface_css(spec.inputs.surface)),
         heal_file([]),
         motion_file([]),
+        match_file(""),
         wireframe_file(None),
         WorkspaceFile(path="components/Art.tsx", content=art_component(spec, photos or [])),
         images_file(photos or []),
@@ -261,6 +264,14 @@ def skeleton(value):
     if isinstance(value, dict):
         return {k: skeleton(v) for k, v in value.items()}
     return value
+
+
+def match_file(body: str) -> WorkspaceFile:
+    """Clone: component tuning (factory cursors in B9, Master's 1:1 acceptance in B11) — the reference's
+    measured font sizes, weights, tracking, radii, button padding, card shadows; desktop only. Loaded
+    before heal.css so QA patches still win."""
+    head = "/* Component tuning to the reference page (Clone). Desktop only; heal.css still wins. */\n"
+    return WorkspaceFile(path="app/match.css", content=head + body + ("\n" if body else ""))
 
 
 def heal_file(rules: list[str]) -> WorkspaceFile:
@@ -999,10 +1010,26 @@ BY_STRUCTURE = {
 }
 
 
+def _measured_or(template):
+    """Clone: the section from the reference's own layout; its template when that layout cannot be built."""
+    def render(s: Section, c: PageCopy) -> str:
+        built = render_measured(s, c, _js)
+        if built is None:
+            if template is None:
+                raise ValueError(f"no Next.js template for structure {s.structure!r}")
+            return template(s, c)
+        jsx, css = built
+        inner = f"{jsx}\n        <style>{{{json.dumps(css)}}}</style>"
+        return _component(s, _root(s, "s-measured", inner))
+    return render
+
+
 def render_section(section: Section, copy: PageCopy, page: str = "", content: dict | None = None) -> WorkspaceFile:
     """One section component. With `content` (a dict), the section's copy is moved out of the code:
     `content[section.id]` receives it and the component reads it from the page's content file."""
     fn = BY_ID.get(section.id) or BY_STRUCTURE.get(section.structure)
+    if measurable(section):
+        fn = _measured_or(fn)
     if fn is None:
         raise ValueError(f"no Next.js template for structure {section.structure!r}")
     folder = f"components/sections/{page}" if page else "components/sections"

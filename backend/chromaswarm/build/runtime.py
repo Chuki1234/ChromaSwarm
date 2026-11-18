@@ -22,8 +22,12 @@ from pydantic import BaseModel
 from chromaswarm.agents.planner import Section
 from chromaswarm.design.dept import TokenChange, TokenFile, fix_contrast, repair
 from chromaswarm.developer.content import PageCopy, copy_for
-from chromaswarm.developer.nextjs import (WorkspaceFile, content_file, heal_file, images_file, motion_file,
+from chromaswarm.developer.nextjs import (WorkspaceFile, content_file, heal_file, images_file, match_file, motion_file,
                                          page_file, render_section, scaffold, skeleton, wireframe_file)
+from chromaswarm.clone import components as cmp
+from chromaswarm.clone import motion as motion_probe
+from chromaswarm.clone.motion_check import build_report as motion_report
+from chromaswarm.playwright_engine.style_dna_scraper import SETTLE_JS
 from chromaswarm.mcp_motion.client import MotionEffect, build_effects
 from chromaswarm.mcp_motion.server import pick_effect
 from chromaswarm.developer.workspace import TOKENS_PATH, DevServer, Workspace
@@ -42,6 +46,12 @@ class SectionCheck(BaseModel):
     section: str
     changes: list[TokenChange] = []
     open: list[Finding] = []
+    # Clone factory: 1:1 match of this section's components before / after the crews tuned them.
+    match_before: float | None = None
+    match_after: float | None = None
+    tuned: int = 0
+    components: int = 0
+    crews: list[str] = []
 
 
 class IntegrationReport(BaseModel):
@@ -90,9 +100,15 @@ class _Session:
     # Designer passes (Clone): wireframe (greys + skeleton copy) -> colour -> content. Photos wait for content.
     wireframe: bool = False
     photos: list[str] = field(default_factory=list)
+    # Clone: the reference's components / boxes per section (from B2) and match.css blocks per page+section.
+    ref_components: dict[str, list[dict]] = field(default_factory=dict)
+    ref_boxes: dict[str, dict] = field(default_factory=dict)
+    ref_names: dict[str, str] = field(default_factory=dict)
+    ref_page: str = ""
+    match: dict[str, dict[str, dict[str, str]]] = field(default_factory=dict)
 
 
-CREATE_ONLY = {"app/heal.css", "app/motion.css"}  # accumulate across pages and heal loops
+CREATE_ONLY = {"app/heal.css", "app/motion.css", "app/match.css"}  # accumulate across pages and heal loops
 
 
 HANDOVER_BAR_JS = r"""(options) => {
@@ -184,6 +200,11 @@ class LocalBuildRuntime:
                         photos: list[str] | None = None) -> str:
         s = self._s(session)
         s.photos = list(photos or [])
+        uploads = self.root / session / "uploads"  # the user's own photos (Clone B4), served from /images/
+        if uploads.is_dir():
+            for f in sorted(uploads.iterdir()):
+                if f.is_file():
+                    s.workspace.copy_file(Step.B9_DEVELOP, f, f"public/images/{f.name}")
         for f in scaffold(project, spec, [] if s.wireframe else photos):
             if f.path in CREATE_ONLY and (s.workspace.root / f.path).exists():
                 continue
@@ -299,8 +320,9 @@ class LocalBuildRuntime:
         if s.overlay:
             await s.overlay.move(Agent.MOTION, f'[data-swarm-section="{section.id}"]')
             await s.overlay.note(Agent.MOTION, f"B8.1 · MCP build_effect({', '.join(wanted)})")
-        effects = await build_effects([(e, section.id) for e in wanted], spec.motion_duration_ms, spec.motion_easing,
-                                      page=page)
+        # Clone: each effect with the parameters measured on the reference (duration, easing, distance...).
+        effects = await build_effects([(e, section.id, section.motion_params.get(e, {})) for e in wanted],
+                                      spec.motion_duration_ms, spec.motion_easing, page=page)
         current = s.workspace.read("app/motion.css") if (s.workspace.root / "app/motion.css").exists() else ""
         blocks = [b.strip("\n") for b in current.split("\n/* fx */\n")[1:]] if "/* fx */" in current else []
         for fx in effects:
@@ -309,6 +331,81 @@ class LocalBuildRuntime:
                 blocks.append(block)
         s.workspace.write(Step.B9_DEVELOP, motion_file(["/* fx */\n" + b for b in blocks]))
         return effects
+
+    # -------------------------------------------------------------- Clone: component factory
+    def set_reference(self, session: str, components: dict[str, list[dict]], boxes: dict[str, dict],
+                      names: dict[str, str] | None = None, page: str = "") -> None:
+        """What the factory tunes to: the reference's smallest pieces per section (read at B2)."""
+        s = self._s(session)
+        s.ref_components, s.ref_boxes, s.ref_names, s.ref_page = components or {}, boxes or {}, names or {}, page
+
+    def _write_match(self, s: _Session) -> None:
+        s.workspace.write(Step.B9_DEVELOP, match_file(cmp.render_rules(s.match)))
+
+    async def _built_components(self, s: _Session) -> tuple[dict[str, list[cmp.Comp]], dict[str, dict]]:
+        assert s.page
+        raw = await s.page.evaluate(cmp.COMPONENTS_JS, {"boxes": [], "built": True, "limit": 60})
+        return {k: cmp.comps(v) for k, v in raw["comps"].items()}, raw["boxes"]
+
+    async def _factory(self, s: _Session, section_id: str, index: int) -> SectionCheck | None:
+        """Section cursor -> crews (type / actions / media) -> one cursor per component. Each component is
+        measured against its reference counterpart; the crews' differences are tuned into match.css, the
+        section is measured again, and the workers merge back into the section cursor."""
+        ref = cmp.comps(s.ref_components.get(section_id, []))
+        ref_box = s.ref_boxes.get(section_id)
+        if not ref or not ref_box or not s.overlay or not s.page:
+            return None
+        ov = s.overlay
+        built, boxes = await self._built_components(s)
+        mine, box = built.get(section_id, []), boxes.get(section_id)
+        if not box:
+            return None
+        before, pairs = cmp.section_score(section_id, ref, mine, ref_box, box)
+        sec_id = f"sec-{section_id}"
+        name = s.ref_names.get(section_id, section_id)
+        await ov.spawn(sec_id, f"S{index} · {name}", "#F5B400", Agent.LAYOUT.value, 26)
+        await ov.fly_to(sec_id, f'[data-swarm-section="{section_id}"]')
+        await ov.note(sec_id, f"{len(mine)} component · khớp {before.score:.0f}%")
+        by_built = {p.built.i: p for p in pairs}
+        crews_used: list[str] = []
+        leaf_ids: dict[str, list[str]] = {}
+        for crew, (label, color, kinds) in cmp.CREWS.items():
+            members = [c for c in mine if c.kind in kinds]
+            if not members:
+                continue
+            crew_id = f"crew-{section_id}-{crew}"
+            crews_used.append(f"{label} ({len(members)})")
+            await ov.spawn(crew_id, f"{label} · {len(members)}", color, sec_id, 20)
+            await ov.fly_to(crew_id, f'[data-cs-comp="{section_id}:{members[0].i}"]')
+            items = []
+            for c in members:
+                pair = by_built.get(c.i)
+                note = (cmp.KIND_LABEL[c.kind] + (": " + ", ".join(pair.diffs[:2]) if pair and pair.diffs else
+                                                  " ✓" if pair else ": không có ở trang mẫu"))
+                items.append({"id": f"c-{section_id}-{c.i}", "label": cmp.KIND_LABEL[c.kind], "color": color, "from": crew_id,
+                              "sel": f'[data-cs-comp="{section_id}:{c.i}"]', "note": note,
+                              "ok": bool(pair and not pair.diffs)})
+            await ov.crew(items)
+            leaf_ids[crew_id] = [it["id"] for it in items]
+        rules = cmp.tune_rules(section_id, pairs, s.ref_page)
+        key = f"{s.ref_page}:{section_id}"
+        s.match[key], tuned = cmp.merge_rules(s.match.get(key, {}), rules)
+        after = before
+        if tuned:
+            await ov.note(sec_id, f"Tinh chỉnh {tuned} thuộc tính theo trang mẫu…")
+            self._write_match(s)
+            await asyncio.sleep(1.2)  # HMR applies match.css
+            built, boxes = await self._built_components(s)
+            if boxes.get(section_id):
+                after, _ = cmp.section_score(section_id, ref, built.get(section_id, []), ref_box, boxes[section_id])
+        for crew_id, ids in leaf_ids.items():
+            await ov.merge(ids, crew_id)
+        await ov.merge(list(leaf_ids), sec_id)
+        await ov.note(sec_id, f"Khớp {before.score:.0f}% → {after.score:.0f}%")
+        await asyncio.sleep(0.4)
+        await ov.retire(sec_id)
+        return SectionCheck(section=section_id, match_before=before.score, match_after=after.score, tuned=tuned,
+                            components=len(mine), crews=crews_used)
 
     async def _wait_for(self, s: _Session, selector: str, timeout_ms: int = 30000) -> bool:
         assert s.page
@@ -345,7 +442,40 @@ class LocalBuildRuntime:
             report = (await design_pass(s.overlay, spec.typography, sections=[section_id])).sections[0]
             leftover = report.findings
         await s.overlay.clear()
-        return SectionCheck(section=section_id, changes=changes, open=leftover)
+        factory = None
+        if s.ref_components.get(section_id):
+            try:
+                index = list(s.ref_boxes).index(section_id) + 1 if section_id in s.ref_boxes else 0
+                factory = await self._factory(s, section_id, index)
+            except PlaywrightError as e:  # the page reloaded under the crews (next section written): skip
+                log.info("factory skipped for %s: %s", section_id, e)
+            with contextlib.suppress(Exception):
+                await s.overlay.clear()
+        out = SectionCheck(section=section_id, changes=changes, open=leftover)
+        if factory:
+            out = out.model_copy(update=factory.model_dump(include={"match_before", "match_after", "tuned", "components", "crews"}))
+        return out
+
+    async def _wait_for_heal_css(self, s: _Session, tries: int = 6) -> None:
+        """QA after a heal loop must judge the patched page: wait until the last heal rule is in the page's
+        stylesheets (the dev server may still be recompiling heal.css), reloading between tries."""
+        path = s.workspace.root / "app/heal.css"
+        rules = [ln for ln in (path.read_text(encoding="utf-8").splitlines() if path.exists() else [])
+                 if ln.strip() and not ln.startswith("/*")]
+        if not rules or not s.page:
+            return
+        marker = rules[-1].split("{")[0].strip().split()[0][:60]  # e.g. [data-swarm-id="footer-newsletter-input"]
+        probe = ("(m) => [...document.styleSheets].some(sh => { try { return [...sh.cssRules]"
+                 ".some(r => r.cssText.includes(m)); } catch { return false; } })")
+        for _ in range(tries):
+            with contextlib.suppress(Exception):
+                if await s.page.evaluate(probe, marker):
+                    return
+            await asyncio.sleep(1)
+            with contextlib.suppress(Exception):
+                await s.page.reload(wait_until="load", timeout=30000)
+                await s.page.wait_for_load_state("networkidle", timeout=15000)
+        log.warning("heal.css rule %s not in the page after %d tries", marker, tries)
 
     async def heal(self, session: str, rules: list[str], contrast: list[dict]) -> list[TokenChange]:
         """B9 after a failed B11: Developer writes heal.css, Design repairs contrast in tokens.css."""
@@ -381,6 +511,7 @@ class LocalBuildRuntime:
         assert s.page and s.overlay
         await s.page.reload()
         await s.page.wait_for_load_state("networkidle")
+        await self._wait_for_heal_css(s)
         s.console_errors.clear()
         report = await run_master_qa(s.page, s.overlay, spec.typography, errors=s.console_errors,
                                      instant=not self.headed)
@@ -435,6 +566,135 @@ class LocalBuildRuntime:
         finally:
             for page in pages:
                 await page.close()
+
+    # -------------------------------------------------------------- B11 · Clone 1:1 acceptance
+    async def _hide_overlay(self, page: Page, hidden: bool) -> None:
+        with contextlib.suppress(Exception):
+            await page.evaluate("(h) => { const o = document.querySelector('chromaswarm-overlay');"
+                                " if (o) o.style.display = h ? 'none' : ''; }", hidden)
+
+    async def _shot(self, page: Page, box: dict, path: Path) -> str | None:
+        await self._hide_overlay(page, True)
+        # Scroll-driven reveals keep everything below the viewport at opacity 0 in a full-page shot: show the
+        # end state while photographing (removed right after).
+        with contextlib.suppress(Exception):
+            await page.add_style_tag(content="[data-swarm-section] *, [data-swarm-section] { animation: none !important; "
+                                             "transition: none !important; } /* cs-shot */")
+        try:
+            clip = {"x": 0, "y": max(0, box["top"]), "width": 1440, "height": max(40, min(box["height"], 2400))}
+            await page.screenshot(path=str(path), full_page=True, clip=clip, type="jpeg", quality=62)
+            return path.name
+        except Exception as e:  # noqa: BLE001
+            log.info("section shot failed: %s", e)
+            return None
+        finally:
+            await self._hide_overlay(page, False)
+            with contextlib.suppress(Exception):
+                await page.evaluate("() => [...document.querySelectorAll('style')]"
+                                    ".filter(x => x.textContent.includes('cs-shot')).forEach(x => x.remove())")
+
+    async def _built_motion(self, s: _Session, url: str, boxes: dict[str, dict]) -> dict[str, list[str]]:
+        """Effects the rebuilt page really has, found the same way as on the reference."""
+        assert s.browser
+        page = await s.browser.new_page(viewport={"width": 1440, "height": 900})
+        try:
+            await page.goto(url, wait_until="load", timeout=45000)
+            with contextlib.suppress(Exception):
+                await page.wait_for_load_state("networkidle", timeout=8000)
+            parallax: list[dict] = []
+            with contextlib.suppress(Exception):
+                await page.evaluate(motion_probe.PRE_JS)
+                parallax = await page.evaluate(motion_probe.PARALLAX_JS)
+            with contextlib.suppress(Exception):
+                await page.evaluate(SETTLE_JS)
+            post = await motion_probe.probe(page)
+            return motion_report(boxes, [], post, parallax, 0, header=None).per_section
+        except Exception as e:  # noqa: BLE001
+            log.info("built motion check failed: %s", e)
+            return {}
+        finally:
+            await page.close()
+
+    async def compare(self, session: str, reference_url: str, sections: list[Section], ref_boxes: dict[str, dict],
+                      page: str = "", shots: Path | None = None) -> dict | None:
+        """Master cursor, section by section, in both windows at once: the rebuild (with its overlay) and
+        the reference link (a second window). Every reference component is paired with the rebuilt one;
+        the Master visits each pair (red flag where they still differ), both sections are photographed for
+        the side-by-side view, measurable differences are tuned into match.css."""
+        s = self._s(session)
+        if not (s.browser and s.page and s.overlay):
+            return None
+        url = (s.base_url or s.page.url).rstrip("/") + (s.route if s.route != "/" else "")
+        names = {sec.id: sec.name for sec in sections}
+        wanted = {sec.id: sec.motion for sec in sections}
+        if shots:
+            shots.mkdir(parents=True, exist_ok=True)
+        ctx = await s.browser.new_context(viewport={"width": 1440, "height": 900})
+        ref = await ctx.new_page()
+        try:
+            await open_settled(ref, reference_url)
+            ref_ov = None
+            with contextlib.suppress(Exception):
+                ref_ov = await SwarmOverlay.attach(ref, instant=not self.headed, speed=self.speed)
+                await ref_ov.master(True)
+                await ref_ov.hud("Trang mẫu (link gốc) · Master Cursor đối chiếu")
+            keys = [sid for sid in names if sid in ref_boxes]
+            raw_ref = await cmp.measure_reference(ref, [{"key": k, **ref_boxes[k]} for k in keys])
+            await s.page.reload()
+            with contextlib.suppress(Exception):
+                await s.page.wait_for_load_state("networkidle", timeout=15000)
+            await self._wait_for_heal_css(s)
+            built, boxes = await self._built_components(s)
+            effects = await self._built_motion(s, url, boxes)
+            ov = s.overlay
+            await ov.master(True)
+            results: list[cmp.SectionCompare] = []
+            tuned = 0
+            for n, sid in enumerate(keys, 1):
+                if sid not in boxes:
+                    continue
+                ref_c = cmp.comps(raw_ref["comps"].get(sid, []))
+                ref_box = raw_ref["boxes"].get(sid) or ref_boxes[sid]  # widened to cover its pieces
+                res, pairs = cmp.section_score(sid, ref_c, built.get(sid, []), ref_box, boxes[sid], names[sid])
+                res.effects_missing = [e for e in wanted.get(sid, []) if e not in effects.get(sid, [])
+                                       and e not in ("smooth-scroll", "sticky-blur")]
+                await ov.hud(f"Nghiệm thu 1:1 · {n}/{len(keys)} · {names[sid]} · khớp {res.score:.0f}%")
+                if shots:
+                    res.built_image = await self._shot(s.page, boxes[sid], shots / f"{sid}-clone.jpg")
+                    res.ref_image = await self._shot(ref, raw_ref["boxes"].get(sid, ref_boxes[sid]), shots / f"{sid}-ref.jpg")
+                # Slow and thorough: differing pairs first, then the rest (capped per section).
+                visit = sorted(pairs, key=lambda p: (not p.diffs, p.ref.y))[:12]
+                for p in visit:
+                    b_sel, r_sel = f'[data-cs-comp="{sid}:{p.built.i}"]', f'[data-cs-ref="{sid}:{p.ref.i}"]'
+                    moves = [ov.move(Agent.MASTER, b_sel)]
+                    if ref_ov:
+                        moves.append(ref_ov.move(Agent.MASTER, r_sel))
+                    with contextlib.suppress(Exception):
+                        await asyncio.gather(*moves)
+                        if p.diffs:
+                            label = f"{cmp.KIND_LABEL[p.ref.kind]}: " + ", ".join(p.diffs[:2])
+                            await ov.flag(b_sel, label)
+                            if ref_ov:
+                                await ref_ov.flag(r_sel, "mẫu")
+                        else:
+                            await ov.pulse()
+                rules = cmp.tune_rules(sid, pairs, page)
+                key = f"{page}:{sid}"
+                s.match[key], changed = cmp.merge_rules(s.match.get(key, {}), rules)
+                tuned += changed
+                results.append(res)
+                with contextlib.suppress(Exception):
+                    await ov.clear("flag")
+                    if ref_ov:
+                        await ref_ov.clear("flag")
+            if tuned:
+                self._write_match(s)
+            await ov.hud(None)
+            await ov.master(False)
+            total = cmp.page_score(results)
+            return {"total": total, "sections": [r.model_dump() for r in results], "tuned": tuned}
+        finally:
+            await ctx.close()
 
     # -------------------------------------------------------------- B12
     async def handover(self, session: str, options: list[dict]) -> None:

@@ -261,6 +261,18 @@
   const contentWidth = extents.length
     ? Math.round(Math.max(...extents.map(e => e[1])) - Math.min(...extents.map(e => e[0]))) : null;
 
+  // How much of the page is pictures: area of visible media / area of the page (0-1). Pages where this is
+  // high (portfolios, galleries) look very different without their own photos.
+  function mediaShare() {
+    const pageArea = vw * Math.max(document.documentElement.scrollHeight, innerHeight);
+    let area = 0;
+    for (const m of document.querySelectorAll("img, picture, video, canvas")) {
+      const r = m.getBoundingClientRect();
+      if (r.width >= 120 && r.height >= 80 && m.checkVisibility({ opacityProperty: true })) area += r.width * r.height;
+    }
+    return Math.round(Math.min(1, area / pageArea) * 100) / 100;
+  }
+
   // Page language: the declared <html lang>; otherwise Vietnamese when a noticeable share of letters carry
   // Vietnamese diacritics. Only a ratio is computed, no text leaves the page.
   function pageLang() {
@@ -278,6 +290,6 @@
     title: document.querySelector('meta[property="og:site_name"]')?.content || document.title || location.hostname,
     description: owned ? (document.querySelector('meta[name="description"]')?.content || "") : "",
     heading_font: first("h1") || first("h2"), body_font: first("main p") || first("p") || first("body"),
-    blocks: out, content_width: contentWidth, lang: pageLang(),
+    blocks: out, content_width: contentWidth, lang: pageLang(), media_share: mediaShare(),
   };
 }

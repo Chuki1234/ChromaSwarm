@@ -8,6 +8,7 @@ an external server with the same `build_effect` tool contract.
 from __future__ import annotations
 
 import json
+import re
 import os
 import shlex
 import sys
@@ -23,6 +24,9 @@ class MotionEffect(BaseModel):
     kind: str
     css: str
     notes: str = ""
+
+
+_EASING = re.compile(r"^(cubic-bezier\([0-9.,\s-]+\)|ease|ease-in|ease-out|ease-in-out|linear)$")
 
 
 class MotionError(RuntimeError):
@@ -50,9 +54,10 @@ def _payload(result) -> dict:
     raise MotionError("empty MCP tool result")
 
 
-async def build_effects(requests: list[tuple[str, str]], duration_ms: int, easing: str,
+async def build_effects(requests: list[tuple], duration_ms: int, easing: str,
                         params: StdioServerParameters | None = None, page: str = "") -> list[MotionEffect]:
-    """One MCP session, one `build_effect` call per (effect, section_id)."""
+    """One MCP session, one `build_effect` call per (effect, section_id[, measured params]). Measured params
+    (Clone: duration_ms, easing, distance_px, scale, cycle_s, stagger_ms, blur_px) override the defaults."""
     if not requests:
         return []
     out: list[MotionEffect] = []
@@ -60,11 +65,19 @@ async def build_effects(requests: list[tuple[str, str]], duration_ms: int, easin
     async with stdio_client(params or server_params()) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            for effect, section_id in requests:
+            for req in requests:
+                effect, section_id = req[0], req[1]
+                measured = dict(req[2]) if len(req) > 2 and req[2] else {}
+                args = {"effect": effect, "section_id": section_id, "duration_ms": duration_ms, "easing": easing, "page": page}
+                if measured.get("duration_ms"):
+                    args["duration_ms"] = int(measured["duration_ms"])
+                if measured.get("easing") and _EASING.match(str(measured["easing"]).strip()):
+                    args["easing"] = str(measured["easing"]).strip()
+                for k in ("distance_px", "scale", "cycle_s", "stagger_ms", "blur_px"):
+                    if measured.get(k):
+                        args[k] = measured[k]
                 try:
-                    data = _payload(await session.call_tool("build_effect", {
-                        "effect": effect, "section_id": section_id, "duration_ms": duration_ms,
-                        "easing": easing, "page": page}))
+                    data = _payload(await session.call_tool("build_effect", args))
                 except MotionError as e:
                     error = str(e)
                     break

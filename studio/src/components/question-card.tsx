@@ -6,7 +6,7 @@ import type { PipelineState } from "@/components/pipeline-console";
 export type Option = { value: string; label: string; hint: string };
 export type Question = {
   step: string;
-  kind: "text" | "choice" | "mode" | "clone_source" | "assets" | "recommend_url" | "approval" | "info" | "handover";
+  kind: "text" | "choice" | "mode" | "clone_source" | "assets" | "recommend_url" | "clone_content" | "approval" | "info" | "handover";
   key: string;
   text: string;
   options: Option[];
@@ -49,6 +49,7 @@ export function QuestionCard({ question: q, notice, state, busy, onAnswer, chatM
       {q.kind === "clone_source" && <CloneSource busy={busy} onAnswer={onAnswer} />}
       {q.kind === "recommend_url" && <RecommendUrl busy={busy} onAnswer={onAnswer} />}
       {q.kind === "assets" && <Assets busy={busy} onAnswer={onAnswer} />}
+      {q.kind === "clone_content" && <CloneContent q={q} busy={busy} onAnswer={onAnswer} />}
       {q.kind === "approval" && <Approval state={state} busy={busy} onAnswer={onAnswer} />}
       {q.kind === "handover" && <Handover q={q} state={state} busy={busy} onAnswer={onAnswer} />}
     </div>
@@ -167,6 +168,116 @@ function Assets({ busy, onAnswer }: { busy: boolean; onAnswer: Props["onAnswer"]
       <button type="button" disabled={busy} onClick={submit} data-swarm-id="assets-done" data-swarm-role="button" className={`${primaryBtn} self-start`}>
         Đã gửi đủ
       </button>
+    </div>
+  );
+}
+
+const TEXT_FIELDS: { key: string; label: string; rows?: number; placeholder: string }[] = [
+  { key: "name", label: "Tên của bạn / thương hiệu", placeholder: "Ví dụ: Minh Anh Studio" },
+  { key: "headline", label: "Câu tiêu đề lớn ở đầu trang", placeholder: "Ví dụ: Thiết kế phần mềm phức tạp, giao diện gọn gàng" },
+  { key: "intro", label: "Một hai câu giới thiệu", rows: 2, placeholder: "Ví dụ: 6 năm thiết kế sản phẩm B2B…" },
+  { key: "projects", label: "Tên các dự án / sản phẩm (mỗi dòng một tên)", rows: 3, placeholder: "Cổng đặt tour B2B\nQuản lý đội tàu" },
+  { key: "email", label: "Email liên hệ", placeholder: "ban@email.com" },
+];
+
+/** Downscale a photo to at most 2000px on its long side (JPEG), so the answer stays small. */
+function toDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, 2000 / Math.max(img.width, img.height));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * k);
+      c.height = Math.round(img.height * k);
+      c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      resolve(c.toDataURL("image/jpeg", 0.85));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("not an image")); };
+    img.src = url;
+  });
+}
+
+/** Clone, B4 (picture/text-led reference): the warning, then the user's own similar photos by slot and words. */
+function CloneContent({ q, busy, onAnswer }: { q: Question; busy: boolean; onAnswer: Props["onAnswer"] }) {
+  const [images, setImages] = useState<Record<string, string[]>>({});
+  const [texts, setTexts] = useState<Record<string, string>>({});
+  const maxOf = (hint: string) => parseInt(hint, 10) || 1;
+  const add = async (slot: string, files: FileList | null, max: number) => {
+    if (!files) return;
+    const urls = await Promise.all([...files].slice(0, max).map((f) => toDataUrl(f).catch(() => "")));
+    setImages((m) => ({ ...m, [slot]: [...(m[slot] ?? []), ...urls.filter(Boolean)].slice(0, max) }));
+  };
+  const count = Object.values(images).reduce((n, l) => n + l.length, 0);
+  const filled = Object.values(texts).filter((v) => v.trim()).length;
+  const submit = () => {
+    const list = q.options.flatMap((o) => (images[o.value] ?? []).map((data) => ({ slot: o.value, data })));
+    onAnswer({ value: { images: list, texts }, label: `${count} ảnh, ${filled} mục nội dung của tôi` });
+  };
+  return (
+    <div className="flex flex-col gap-6" data-swarm-section="clone-content">
+      <div className="flex flex-col gap-3">
+        <h3 className="text-sm font-medium">Ảnh của bạn, theo từng chỗ trên trang</h3>
+        {q.options.map((o) => {
+          const max = maxOf(o.hint ?? "1");
+          const got = images[o.value] ?? [];
+          return (
+            <div key={o.value} className="flex flex-col gap-2 rounded-xl border border-line p-3">
+              <div className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
+                <span className="font-medium">{o.label}</span>
+                <span className="text-xs text-fg-3">{o.hint} · đã chọn {got.length}/{max}</span>
+              </div>
+              {got.length > 0 && (
+                <ul className="flex flex-wrap gap-2" aria-label={`Ảnh đã chọn cho ${o.label}`}>
+                  {got.map((src, i) => (
+                    <li key={i} className="relative">
+                      {/* eslint-disable-next-line @next/next/no-img-element -- a local preview of the chosen file */}
+                      <img src={src} alt={`Ảnh ${i + 1}`} className="size-16 rounded-lg border border-line object-cover" />
+                      <button type="button" aria-label={`Bỏ ảnh ${i + 1}`} disabled={busy}
+                        onClick={() => setImages((m) => ({ ...m, [o.value]: got.filter((_, j) => j !== i) }))}
+                        className="absolute -right-2 -top-2 grid size-6 place-items-center rounded-full border border-line bg-elevated text-xs">×</button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {got.length < max && (
+                <label className="self-start">
+                  <span className={`${secondaryBtn} inline-flex cursor-pointer items-center`}>Chọn ảnh</span>
+                  <input type="file" accept="image/*" multiple className="sr-only" disabled={busy}
+                    data-swarm-id={`clone-images-${o.value}`} data-swarm-role="input"
+                    onChange={(e) => { add(o.value, e.target.files, max - got.length); e.target.value = ""; }} />
+                </label>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex flex-col gap-3">
+        <h3 className="text-sm font-medium">Nội dung của bạn</h3>
+        {TEXT_FIELDS.map((f) => (
+          <label key={f.key} className="flex flex-col gap-2 text-sm">
+            <span className="text-fg-2">{f.label}</span>
+            {f.rows ? (
+              <textarea rows={f.rows} value={texts[f.key] ?? ""} placeholder={f.placeholder} className={input}
+                onChange={(e) => setTexts((t) => ({ ...t, [f.key]: e.target.value }))} data-swarm-id={`clone-text-${f.key}`} data-swarm-role="input" />
+            ) : (
+              <input value={texts[f.key] ?? ""} placeholder={f.placeholder} className={`${input} h-12 py-0`}
+                onChange={(e) => setTexts((t) => ({ ...t, [f.key]: e.target.value }))} data-swarm-id={`clone-text-${f.key}`} data-swarm-role="input" />
+            )}
+          </label>
+        ))}
+      </div>
+      <div className="flex flex-col gap-3 sm:flex-row">
+        <button type="button" disabled={busy || (count === 0 && filled === 0)} onClick={submit}
+          data-swarm-id="clone-content-submit" data-swarm-role="button" className={primaryBtn}>
+          Dùng ảnh và nội dung này
+        </button>
+        <button type="button" disabled={busy} data-swarm-id="clone-content-skip" data-swarm-role="button" className={secondaryBtn}
+          onClick={() => onAnswer({ value: { images: [], texts: {} }, label: "Bỏ qua, dùng ảnh và chữ mẫu" })}>
+          Bỏ qua, dùng ảnh và chữ mẫu
+        </button>
+      </div>
     </div>
   );
 }

@@ -131,6 +131,11 @@ class CloneSource(BaseModel):
     body_font: str | None = None
     fonts: list[dict] = Field(default_factory=list)  # kept reference fonts: load URL + Vietnamese fallback
     lang: str | None = None  # the reference page's language (<html lang> or measured); the rebuild keeps it
+    media_share: float = 0.0  # share of the reference page that is pictures
+    # Structure clone of a picture/text-led page: the user's own similar photos and words, by slot (B4).
+    content_asked: bool = False
+    user_images: list[str] = Field(default_factory=list)  # file names in workspaces/<session>/uploads, slot order
+    user_texts: dict[str, str] = Field(default_factory=dict)  # name, headline, intro, email, projects
     content: dict | None = None  # owned sites only
     notes: list[str] = Field(default_factory=list)
     content_width: int | None = None  # narrow single-column reference: its column width (px, 8pt)
@@ -139,6 +144,12 @@ class CloneSource(BaseModel):
     exact_requested: bool = False
     # Owned clones: the user confirms ownership again at B3, shown the reference's own name. None = not asked.
     owner_confirmed: bool | None = None
+    # Per section of the reference: its box and its smallest pieces (geometry + computed style only).
+    boxes: dict[str, dict] = Field(default_factory=dict)
+    components: dict[str, list[dict]] = Field(default_factory=dict)
+    # B2 effect check (clone/motion_check.py): the page operated with Playwright, effects timed.
+    motion_checked: bool = False
+    motion_report: dict | None = None
 
 
 class Asset(BaseModel):
@@ -223,6 +234,10 @@ class PipelineState(BaseModel):
     design_critique: list[str] = Field(default_factory=list)  # "where: problem → fix"
     clone_fidelity: float | None = None  # Clone mode, B11: closeness to the reference, 0-100 (clone/fidelity.py)
     clone_fidelity_notes: list[str] = Field(default_factory=list)
+    # Clone B11 1:1 acceptance (Master cursor, section by section against the reference link).
+    clone_compare: dict | None = None  # {"total", "rounds", "sections": [SectionCompare dumps], "tuned"}
+    compare_rounds: int = 0  # acceptance rounds that changed match.css (max 2, then hand over)
+    factory_log: list[str] = Field(default_factory=list)  # B9 factory: what each section's crews tuned
 
     # B12
     handover_closed: bool = False  # user chose "finish": no further page in this session
@@ -400,6 +415,9 @@ class PipelineState(BaseModel):
         self.design_critique = []
         self.clone_fidelity = None
         self.clone_fidelity_notes = []
+        self.clone_compare = None
+        self.compare_rounds = 0
+        self.factory_log = []
 
 
 class GateError(RuntimeError):

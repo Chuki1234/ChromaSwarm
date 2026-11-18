@@ -30,6 +30,7 @@ from chromaswarm.engines.presets import VIETNAMESE_FONTS, Layout, Theme
 from chromaswarm.engines.spacing import Density
 from chromaswarm.engines.style_dna import StyleDNA, analyze
 from chromaswarm.clone import motion
+from chromaswarm.clone.components import merge_blocks, measure_reference
 from chromaswarm.playwright_engine.style_dna_scraper import SETTLE_JS, collect, open_settled
 from chromaswarm.state_machine.pipeline_state import Domain
 
@@ -47,10 +48,15 @@ class CloneAnalysis(BaseModel):
     fonts: list[dict] = []  # FontSource dumps for the kept fonts (where to load them, Vietnamese fallback)
     lang: str | None = None  # the page's language: <html lang>, else measured from its letters
     motion: dict = {}  # page-wide motion facts: libs, unsupported, smooth, sticky (clone/motion.py)
+    media_share: float = 0.0  # share of the page area that is pictures (0-1)
     content: dict | None = None  # per-section copy, owned sites only
     notes: list[str] = []
     content_width: int | None = None  # measured column width (8pt) when the reference is a narrow single column
     dna: StyleDNA | None = None
+    # Per section (reference page px): its box and its smallest pieces (clone/components.py, geometry and
+    # computed style only) — what the factory cursors tune to and the 1:1 acceptance compares against.
+    boxes: dict[str, dict] = {}
+    components: dict[str, list[dict]] = {}
 
 
 # ------------------------------------------------------------------ classification
@@ -300,23 +306,20 @@ async def analyse(url: str, owned: bool, width: int = 1440, height: int = 900) -
         browser = await pw.chromium.launch()
         try:
             page = await browser.new_page(viewport={"width": width, "height": height})
-            # Opened like open_settled, with the motion probes around the settle scroll: what is hidden
-            # below the fold before it, what moves at another speed, what is visible after it.
             await page.goto(url, wait_until="load", timeout=45_000)
             with contextlib.suppress(Exception):
                 await page.wait_for_load_state("networkidle", timeout=8_000)
-            parallax: list[dict] = []
-            with contextlib.suppress(Exception):
-                await page.evaluate(motion.PRE_JS)
-                parallax = await page.evaluate(motion.PARALLAX_JS)
+            # Motion is read by its own step afterwards (clone/motion_check.py), on a fresh page.
             with contextlib.suppress(Exception):
                 await page.evaluate(SETTLE_JS)
             raw = await page.evaluate(READER_JS, owned)
             dna = analyze(await collect(page, url))
-            post: dict = {}
+            raw["components"] = {}
             with contextlib.suppress(Exception):
-                post = await motion.probe(page)
-            raw["motion"] = motion.assign(raw["blocks"], post, parallax)
+                boxes = [{"key": str(b["features"]["index"]), **{k: b["features"][k] for k in ("top", "left", "width", "height")}}
+                         for b in raw["blocks"]]
+                found = await measure_reference(page, boxes)
+                raw["components"], raw["component_boxes"] = found["comps"], found["boxes"]
         finally:
             await browser.close()
     families = {f for f in (raw.get("heading_font"), raw.get("body_font")) if f}
@@ -360,10 +363,29 @@ def build_analysis(raw: dict, dna: StyleDNA, owned: bool, fonts: dict[str, FontS
     if content_width:
         notes.append(f"Trang mẫu là một cột hẹp ở giữa (~{content_width}px): bản dựng giữ đúng bề rộng cột này.")
     title = raw.get("title") or urlparse(raw.get("url", "")).hostname or "Trang mẫu"
+    boxes: dict[str, dict] = {}
+    pieces: dict[str, list[dict]] = {}
+    for sec in sections:
+        if sec.sources:
+            found, box = merge_blocks(raw.get("components") or {}, blocks, sec.sources, raw.get("component_boxes"))
+            if box:
+                boxes[sec.id] = box
+                pieces[sec.id] = found
+    if not owned:  # structure clones are rebuilt from the reference's own layout (owned ones map their copy by kind)
+        from chromaswarm.agents.planner import Interactive
+        from chromaswarm.clone.components import comps as as_comps
+        from chromaswarm.clone.layout import usable
+        from chromaswarm.developer.measured import TEMPLATE_ONLY, measured_interactive
+        for sec in sections:
+            if sec.id in pieces and sec.structure not in TEMPLATE_ONLY and usable(as_comps(pieces[sec.id])):
+                sec.layout, sec.layout_box = pieces[sec.id], boxes[sec.id]
+                sec.content += " — dựng theo đúng bố cục component đo được"
+                sec.interactive = [Interactive(id=a, role=b, behavior=c) for a, b, c in measured_interactive(sec)]
     return CloneAnalysis(url=raw.get("url", ""), title=title[:80], owned=owned, sections=sections, pillars=pillars,
                          content=page_content(raw, sections) if owned else None, notes=notes, dna=dna,
                          content_width=content_width, fonts=sources, lang=raw.get("lang"),
-                         motion=raw.get("motion") or {}, **kept)
+                         motion=raw.get("motion") or {}, media_share=float(raw.get("media_share") or 0),
+                         boxes=boxes, components=pieces, **kept)
 
 
 # ------------------------------------------------------------------ what the user is told

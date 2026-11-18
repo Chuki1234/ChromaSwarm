@@ -42,6 +42,18 @@ class Workspace:
             target.write_text(f.content, encoding="utf-8")  # unchanged files keep their mtime (no HMR churn)
         return target
 
+    def copy_file(self, step: Step, source: Path, path: str) -> Path:
+        """Copy a binary file (the user's own photo) into the workspace, same gate as a written file."""
+        self._check(step, "write_workspace_file")
+        target = (self.root / path).resolve()
+        if self.root.resolve() not in target.parents:
+            raise GateError(f"refusing to write outside the workspace: {path}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        data = source.read_bytes()
+        if not target.exists() or target.read_bytes() != data:
+            target.write_bytes(data)
+        return target
+
     def read(self, path: str) -> str:
         return (self.root / path).read_text(encoding="utf-8")
 

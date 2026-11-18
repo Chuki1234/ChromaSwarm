@@ -41,6 +41,8 @@ from chromaswarm.agents.planner import CLONE_PAGE, Section, design_inputs, page_
 from urllib.parse import urlparse
 
 from chromaswarm.clone.reader import analyse as analyse_reference
+from chromaswarm.clone.content_slots import clean_texts, image_slots, needs_content, save_images
+from chromaswarm.clone.content_slots import warning as content_warning
 from chromaswarm.clone.reader import clone_limits, guess_domain, motion_summary, wants_exact_copy
 from chromaswarm.developer.i18n import normalise
 from chromaswarm.build.runtime import SectionCheck
@@ -48,6 +50,9 @@ from chromaswarm.agents.brief import Brief, mode_from_background
 from chromaswarm.developer.content import build_copy
 from chromaswarm.developer.copywriter import copy_key
 from chromaswarm.clone.fidelity import render_markdown as render_fidelity
+from chromaswarm.clone.components import render_compare
+from chromaswarm.clone.motion_check import inspect_motion
+from chromaswarm.clone.motion_check import summary as motion_check_summary
 from chromaswarm.qa.critic import render_markdown
 from chromaswarm.qa.master import heal_css
 from chromaswarm.engines.design_spec import (
@@ -89,6 +94,8 @@ class Deps(BaseModel):
     artifacts_root: Path = Path(__file__).resolve().parents[3] / "workspaces"
     scrape: Any = None  # async (url) -> StyleDNA; None disables URL scraping
     clone_reader: Any = None  # async (url, owned) -> CloneAnalysis; None = real Playwright reader
+    # async (url, boxes) -> MotionReport; None = real Playwright check, skipped when a fake reader is injected
+    motion_check: Any = None
     build: Any = None  # BuildRuntime for B8-B10; None stops after approval (B1-B7 only)
     brief_reader: Any = None  # (prompt) -> agents.brief.Brief | None; None = never read a brief
     copywriter: Any = None  # (state, base PageCopy) -> validated copy dict | None; None = rule-based copy
@@ -246,7 +253,10 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         return b2_creative(p)
 
     async def b2_clone(p: PipelineState) -> dict:
-        """Read the reference page: structure, style and (owned) content."""
+        """Read the reference page: structure, style and (owned) content; then, as a pass of its own,
+        operate it with Playwright to find and time its effects."""
+        if p.clone and p.clone.analysed and not p.clone.motion_checked:
+            return await b2_motion(p)
         reader = deps.clone_reader or analyse_reference
         try:
             a = await reader(p.clone.url, p.clone.owned)
@@ -258,7 +268,8 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             "analysed": True, "title": a.title, "sections": [sec.model_dump() for sec in a.sections],
             "pillars": a.pillars, "heading_font": a.heading_font, "body_font": a.body_font,
             "content": a.content, "notes": a.notes,
-            "content_width": a.content_width, "fonts": a.fonts, "lang": a.lang})
+            "content_width": a.content_width, "fonts": a.fonts, "lang": a.lang, "media_share": a.media_share,
+            "boxes": a.boxes, "components": a.components})
         if not p.clone.described:
             p.domain = guess_domain(a)  # sample copy and suggested pages follow the kind of site read
         pages, _ = agent.sitemap_for(p.domain)
@@ -266,7 +277,12 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
                                  purpose=f"Dựng lại từ {p.clone.url}", status=PageStatus.BUILDING)
         p.sitemap = [clone_page] + pages
         p.selected_page = CLONE_PAGE
-        p.advance()
+        check = deps.motion_check or (inspect_motion if deps.clone_reader is None else None)
+        if check:
+            p.clone.motion_checked = False  # next pass: the effect check (b2_motion), then B3
+        else:
+            p.clone.motion_checked = True
+            p.advance()
         kind = "cấu trúc, chữ và ảnh (trang của bạn)" if p.clone.owned else "cấu trúc và phong cách (chữ, ảnh là của bạn)"
         names = ", ".join(sec.name for sec in a.sections)
         notice = f"Đã đọc {len(a.sections)} section từ trang mẫu: {names}. Sẽ dựng lại {kind}."
@@ -283,7 +299,33 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             notice += f" Hiệu ứng đọc được và sẽ dựng lại: {effects}."
         if limits := clone_limits(a):
             notice += " Sẽ không giống trang mẫu ở: " + "; ".join(limits) + "."
+        if check:
+            notice += " Tiếp theo: kiểm tra hiệu ứng — Playwright cuộn và rê chuột trên trang mẫu."
         return {"pipeline": p, "notice": notice}
+
+    async def b2_motion(p: PipelineState) -> dict:
+        """B2 · effect check: does the reference move, where and how (timed), per section."""
+        check = deps.motion_check or inspect_motion
+        try:
+            report = await check(p.clone.url, p.clone.boxes)
+        except Exception as e:  # never blocks the clone: the page is rebuilt without effects
+            log.warning("motion check failed for %s: %s", p.clone.url, e)
+            p.clone.motion_checked = True
+            p.clone.motion_report = {"has_motion": False, "items": [], "error": str(e)[:160]}
+            p.advance()
+            return {"pipeline": p, "notice": f"Kiểm tra hiệu ứng không chạy được ({str(e)[:100]}); dựng lại không kèm hiệu ứng."}
+        sections = []
+        for raw in p.clone.sections:
+            sec = dict(raw)
+            found = report.per_section.get(sec["id"], [])
+            sec["motion"] = list(dict.fromkeys([*sec.get("motion", []), *found]))
+            sec["motion_params"] = report.params.get(sec["id"], {})
+            sections.append(sec)
+        p.clone.sections = sections
+        p.clone.motion_checked = True
+        p.clone.motion_report = report.model_dump()
+        p.advance()
+        return {"pipeline": p, "notice": motion_check_summary(report)}
 
     def b2_creative(p: PipelineState) -> dict:
         if not p.brief_read and deps.brief_reader:
@@ -346,7 +388,8 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
                 p.pillars.scope = p.raw_prompt
             if p.can_advance():
                 p.advance()
-                return {"pipeline": p, "notice": "Đã lấy 4 trụ cột từ trang mẫu và đối tượng từ mô tả của bạn."}
+                return {"pipeline": p, "notice": ("Đã lấy 4 trụ cột từ trang mẫu và đối tượng từ mô tả của bạn." if p.clone.described
+                                                 else "Đã lấy phong cách, bố cục, màu và độ thoáng từ trang mẫu.")}
         if p.mode is not BuildMode.CLONE and p.brief and not p.brief_applied:
             p.brief_applied = True
             brief = Brief.model_validate(p.brief)
@@ -421,6 +464,27 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             # The reference itself is the resource; B5 reads its Style DNA from the URL.
             if not any(r.url == p.clone.url for r in p.references):
                 p.references.append(Reference.model_validate({"url": p.clone.url}))
+            sections = [Section.model_validate(s) for s in p.clone.sections]
+            if (not p.clone.owned and not p.clone.content_asked
+                    and needs_content(sections, p.clone.media_share, p.domain is Domain.PORTFOLIO)):
+                # A picture/text-led page: say how much of its look is its own photos and words, and ask
+                # for similar ones by slot. The answer may be empty: the template keeps samples.
+                answer = interrupt(Question(
+                    step="B4", kind="clone_content", key="clone_content",
+                    text=content_warning(sections, p.clone.media_share),
+                    options=[Option(value=sl.id, label=sl.label, hint=f"{sl.count} ảnh · {sl.hint}")
+                             for sl in image_slots(sections)],
+                ).model_dump())
+                data = answer if isinstance(answer, dict) else {}
+                names = save_images(list(data.get("images") or []), deps.artifacts_root / p.session_id / "uploads")
+                texts = clean_texts(data.get("texts") or {})
+                p.clone = p.clone.model_copy(update={"content_asked": True, "user_images": names, "user_texts": texts})
+                total = sum(sl.count for sl in image_slots(sections))
+                notice = (f"Đã nhận {len(names)}/{total} ảnh và {len(texts)} mục nội dung của bạn."
+                          if names or texts else "Bỏ qua — bản dựng dùng ảnh và chữ mẫu, bạn thay sau trong content/.")
+                p.assets_confirmed = True
+                p.advance()
+                return {"pipeline": p, "notice": notice}
             p.assets_confirmed = True
             p.advance()
             return {"pipeline": p, "notice": None}
@@ -584,6 +648,10 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
                 healed = await deps.build.heal(p.session_id, p.heal_rules, p.heal_contrast)
                 p.token_changes += [f"{c.token}: {c.old} → {c.new} (B11: {c.reason})" for c in healed]
                 p.heal_contrast = []
+            if p.mode is BuildMode.CLONE and p.clone and p.clone.components and hasattr(deps.build, "set_reference"):
+                # The factory cursors tune each section's components to the reference's (B2 reading).
+                deps.build.set_reference(p.session_id, p.clone.components, p.clone.boxes,
+                                         {s.id: s.name for s in sections}, slug)
             to_write = next((s for s in sections if s.id not in p.sections_done), None)
             to_check = next((x for x in p.sections_done if x not in p.sections_checked), None)
             jobs = []
@@ -620,8 +688,17 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             p.open_findings += [f"{f.section}: {f.detail}" for f in check.open]
             fixed = f", sửa {len(check.changes)} token" if check.changes else ""
             parts.append(f"Design đo “{by_id[to_check].name}”{fixed}")
+            if check.match_before is not None:
+                line = (f"{by_id[to_check].name}: {check.components} component · {', '.join(check.crews)} · "
+                        f"khớp {check.match_before:.0f}% → {check.match_after:.0f}%"
+                        + (f" (chỉnh {check.tuned} thuộc tính)" if check.tuned else ""))
+                p.factory_log = [x for x in p.factory_log if not x.startswith(by_id[to_check].name + ":")] + [line]
+                parts.append(f"Nhà máy cursor: {len(check.crews)} tổ, {check.components} component, khớp "
+                             f"{check.match_before:.0f}→{check.match_after:.0f}%")
             for fx in motion:
-                p.motion_effects.append(f"{fx.section_id}: {fx.effect} ({fx.kind}, qua MCP)")
+                line = f"{fx.section_id}: {fx.effect} ({fx.kind}, qua MCP)"
+                if line not in p.motion_effects:  # a heal loop rebuilds the sections: list each effect once
+                    p.motion_effects.append(line)
                 parts.append(f"Motion thêm {fx.effect} qua MCP")
             if motion_error:
                 p.motion_effects.append(f"{to_check}: bỏ qua hiệu ứng ({motion_error[:80]})")
@@ -666,9 +743,12 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
     # ---------------------------------------------------------------- B11
     async def b11(state: GraphState) -> dict:
         """Master QA. PASS -> B12. FAIL -> patches for Dev/Design and back to B8 (max 3 loops),
-        or straight to the user when nothing left is patchable."""
+        or straight to the user when nothing left is patchable. Clone: after QA passes, the 1:1
+        acceptance against the reference (its own pass)."""
         p = _copy(state)
-        _, spec, _ = build_context(p)
+        _, spec, sections = build_context(p)
+        if p.qa_passed and p.mode == BuildMode.CLONE and p.clone and getattr(deps.build, "compare", None):
+            return await b11_accept(p, spec, sections)
         try:
             report = await deps.build.master_qa(p.session_id, spec)
         except Exception as e:
@@ -680,6 +760,10 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         if report.passed:
             p.qa_passed = True
             notice = "B11 · Master Cursor: 100% PASSED — cả 4 bài kiểm tra đều đạt."
+            accept = getattr(deps.build, "compare", None)
+            if p.mode == BuildMode.CLONE and p.clone and accept:
+                # Next pass: the 1:1 acceptance against the reference link (b11_accept).
+                return {"pipeline": p, "notice": notice + " Tiếp theo: Master Cursor nghiệm thu 1:1 với link gốc."}
             # Design critic (vision model): QA proves the page is not wrong, this grades how good it looks.
             if critic := getattr(deps.build, "critique", None):
                 context = f"{p.raw_prompt or ''} · trang {p.selected_page or ''} · phong cách {p.pillars.theme}"
@@ -715,6 +799,50 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         p.heal_contrast = contrast
         return {"pipeline": p, "notice": f"B11 · {len(report.failures)} lỗi, vòng tự sửa {iteration}: "
                                           f"Dev vá {len(new_rules)} điểm CSS, Design sửa {len(contrast)} cặp màu. Dựng lại…"}
+
+    async def b11_accept(p: PipelineState, spec, sections: list[Section]) -> dict:
+        """Master cursor compares every section with the reference link, component by component.
+        Differences it can measure are tuned into match.css and checked again (QA re-runs, max 2 rounds)."""
+        try:
+            shots = deps.artifacts_root / p.session_id / "artifacts" / "compare"
+            result = await deps.build.compare(p.session_id, p.clone.url, sections, p.clone.boxes,
+                                              p.selected_page or "", shots)
+        except Exception as e:
+            log.exception("1:1 acceptance failed")
+            result = None
+            notice_err = f" (nghiệm thu 1:1 lỗi: {str(e)[:100]})"
+        else:
+            notice_err = ""
+        notice = "B11 · Nghiệm thu 1:1"
+        if result:
+            rounds = p.compare_rounds + (1 if result.get("tuned") else 0)
+            p.clone_compare = {**result, "rounds": rounds}
+            if result.get("tuned") and p.compare_rounds < 2:
+                p.compare_rounds += 1
+                p.qa_passed = False  # the page changed: Master QA checks it again before the next comparison
+                return {"pipeline": p, "notice": (f"B11 · Nghiệm thu 1:1 vòng {p.compare_rounds}: giống {result['total']:.0f}% — "
+                                                  f"chỉnh {result['tuned']} thuộc tính cho khớp trang mẫu, kiểm tra lại…")}
+            notice += f": giống {result['total']:.0f}% theo từng component"
+            low = [s for s in result["sections"] if s["score"] < 80]
+            if low:
+                notice += " · cần xem: " + ", ".join(f"{s['name'] or s['id']} {s['score']:.0f}%" for s in low[:4])
+        notice += notice_err
+        if critic := getattr(deps.build, "critique", None):
+            context = f"{p.raw_prompt or ''} · trang {p.selected_page or ''} · phong cách {p.pillars.theme}"
+            if c := await critic(p.session_id, context):
+                p.design_score = c.overall
+                p.design_critique = [f"{i.where}: {i.problem} → {i.fix}" for i in c.issues]
+                write_artifact(p, "CRITIQUE.md", render_markdown(c))
+        if measure := getattr(deps.build, "fidelity", None):
+            if f := await measure(p.session_id, p.clone.url):
+                p.clone_fidelity = f.total
+                p.clone_fidelity_notes = f.notes
+                write_artifact(p, "FIDELITY.md", render_fidelity(f, p.clone.url))
+                notice += f" · độ giống toàn trang {f.total:.0f}/100"
+        if p.clone_compare:
+            write_artifact(p, "COMPARE.md", render_compare(p.clone_compare, p.clone.url))
+        p.advance()
+        return {"pipeline": p, "notice": notice + "."}
 
     # ---------------------------------------------------------------- B12
     async def b12(state: GraphState) -> dict:

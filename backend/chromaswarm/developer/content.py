@@ -303,6 +303,7 @@ def build_copy(state: PipelineState) -> PageCopy:
         # Structure clone: the page is a template for the user's own words. The lines a visitor reads
         # first are clear placeholders (never the reference's text, never a name guessed from the prompt).
         copy = copy.model_copy(update=CLONE_PLACEHOLDERS if lang == "vi" else CLONE_PLACEHOLDERS_EN)
+        copy = user_clone_content(copy, clone.user_texts, clone.user_images)
     return copy
 
 
@@ -371,6 +372,29 @@ CLONE_PLACEHOLDERS = {
     "subhead": "[Một hai câu giới thiệu ngắn về bạn hoặc sản phẩm của bạn]",
     "footer_line": "© [Tên của bạn]. Sửa nội dung trong thư mục content/.",
 }
+
+
+def user_clone_content(copy: PageCopy, texts: dict[str, str], images: list[str]) -> PageCopy:
+    """Structure clone: the photos and words the user brought at B4 (by slot) replace placeholders and samples."""
+    updates: dict = {}
+    if images:
+        updates["images"] = [f"/images/{name}" for name in images]
+    if name := texts.get("name"):
+        updates["brand"] = name[:60]
+        updates["footer_line"] = f"© {name[:60]}"
+    if headline := texts.get("headline"):
+        updates["headline"] = headline
+    if intro := texts.get("intro"):
+        updates["subhead"] = intro
+    projects = [p.strip() for p in re.split(r"[\n;]", texts.get("projects", "")) if p.strip()]
+    if projects:
+        cards = [it.model_copy(update={"name": title[:80]}) for it, title in zip(copy.cards or copy.items, projects)]
+        cards += [Item(name=title[:80], note="") for title in projects[len(cards):]]
+        updates["cards"] = cards[:8]
+        updates["items"] = cards[:8]
+        story = list(copy.story)
+        updates["story"] = [(title, story[i][1] if i < len(story) else "") for i, title in enumerate(projects[:6])]
+    return copy.model_copy(update=updates) if updates else copy
 
 
 def _rot(xs: list, k: int) -> list:
