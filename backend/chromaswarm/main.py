@@ -183,7 +183,10 @@ async def resume(session_id: str, value) -> dict:
     Clone sessions are written to Supabase as they go (clone/history.py; no-op without its settings)."""
     async def progress(snap: dict) -> None:
         await history.record_snapshot(snap)  # every step's notice, also the passes that do not stream
-        if snap["pipeline"].step in BUILD_STEPS:  # only long-running build work streams
+        # Long-running build work streams; so does Clone's reading (B1-B6 run by themselves, one pass per step),
+        # so the Studio shows what Chroma is doing at each step instead of a silent wait.
+        p = snap["pipeline"]
+        if p.step in BUILD_STEPS or p.mode is BuildMode.CLONE:
             await broadcast(session_id, to_message(snap))
 
     async with LOCKS[session_id]:
