@@ -56,6 +56,7 @@ export type PipelineState = {
   clone: {
     url: string; owned: boolean; title: string | null; notes: string[];
     motion_report?: MotionReport | null;
+    analysis?: string | null;
   } | null;
   session_id: string;
   design_md: string | null;
@@ -115,7 +116,8 @@ type Item =
   | { kind: "user"; text: string }
   | { kind: "assistant"; text: string; tone?: "error" }
   | { kind: "question"; sig: string; q: Question; note: string | null }
-  | { kind: "motion"; report: MotionReport };
+  | { kind: "motion"; report: MotionReport }
+  | { kind: "analysis"; text: string };
 
 function sessionId(): string {
   try {
@@ -170,6 +172,7 @@ export function PipelineConsole() {
   const lastSig = useRef("");
   const lastNote = useRef<string | null>(null);
   const motionShown = useRef(false); // the B2 effect-check report goes into the thread once
+  const analysisShown = useRef(false); // and the top-down analysis
   const pendingPrompt = useRef<string | null>(null); // typed on the empty screen, sent once Chroma asks for it
   const pendingClone = useRef<Answer | null>(null); // Clone form filled on the empty screen, sent once Chroma asks for it
   const endRef = useRef<HTMLDivElement>(null);
@@ -207,6 +210,11 @@ export function PipelineConsole() {
         if (mr && !motionShown.current) {
           motionShown.current = true;
           setItems((it) => [...it, { kind: "motion", report: mr }]);
+        }
+        const an = s.state?.clone?.analysis;
+        if (an && !analysisShown.current) {
+          analysisShown.current = true;
+          setItems((it) => [...it, { kind: "analysis", text: an }]);
         }
         if (pendingClone.current && s.question?.kind === "clone_source") {
           const a = pendingClone.current;
@@ -390,6 +398,15 @@ export function PipelineConsole() {
                     </Assistant>
                   ) : it.kind === "motion" ? (
                     <Assistant key={i}><MotionCard report={it.report} /></Assistant>
+                  ) : it.kind === "analysis" ? (
+                    <Assistant key={i}>
+                      <details className="rounded-xl border border-line p-4" data-swarm-section="analysis">
+                        <summary className="cursor-pointer text-sm font-medium" data-swarm-id="toggle-analysis" data-swarm-role="button">
+                          Phân tích trang mẫu: tổng quan, rồi từng phần từ trên xuống
+                        </summary>
+                        <pre className="mt-3 max-h-[480px] overflow-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-fg-2">{it.text}</pre>
+                      </details>
+                    </Assistant>
                   ) : i === lastQuestionIdx && question && it.sig === sigOf(snap!) ? (
                     <Assistant key={i}>
                       {question.kind === "handover" && <BuildPanel state={snap!.state} notice={null} running={false} />}

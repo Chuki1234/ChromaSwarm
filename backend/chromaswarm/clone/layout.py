@@ -195,4 +195,4 @@ def leaves(node: Node) -> list[Node]:
 def usable(comps: list[Comp]) -> bool:
     """Worth rebuilding from components: a few real pieces, not a wall of hundreds."""
     real = [c for c in comps if c.kind != "card"]
-    return 2 <= len(real) <= 48 and any(c.kind in ("heading", "text", "image", "button") for c in real)
+    return 2 <= len(real) <= 240 and any(c.kind in ("heading", "text", "image", "button") for c in real)

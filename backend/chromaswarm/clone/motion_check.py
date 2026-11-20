@@ -26,6 +26,8 @@ import statistics
 from collections import Counter, defaultdict
 
 from playwright.async_api import async_playwright
+
+from chromaswarm.playwright_engine.style_dna_scraper import goto_ready
 from pydantic import BaseModel
 
 from chromaswarm.clone import motion
@@ -47,6 +49,23 @@ class MotionItem(BaseModel):
     params: dict = {}
 
 
+class Model3D(BaseModel):
+    """A canvas on the reference (3D scene, WebGL animation): what the rebuild cannot redraw, measured so the
+    template keeps a placeholder of exactly its size and the user knows how it behaves."""
+    section: str
+    top: int
+    left: int
+    w: int
+    h: int
+    webgl: bool
+    animating: bool  # frames change on their own
+    motion: float  # share of pixels changing per 0.4s (0-1)
+    pointer: bool  # reacts to the mouse moving over it
+    colour: str  # dominant colour (hex)
+    dark: bool
+    how: str
+
+
 class MotionReport(BaseModel):
     has_motion: bool
     items: list[MotionItem] = []
@@ -55,6 +74,8 @@ class MotionReport(BaseModel):
     steps: int = 0  # viewports scrolled
     hovered: int = 0  # elements hovered for real
     per_section: dict[str, list[str]] = {}  # section id -> effect ids
+    models: list[Model3D] = []  # canvases (3D / WebGL scenes) per section
+    controls: list[dict] = []  # every button / link hovered: section, kind, size, what changes on hover
     params: dict[str, dict[str, dict]] = {}  # section id -> effect id -> measured parameters
 
 
@@ -149,6 +170,73 @@ def build_report(boxes: dict[str, dict], timed: list[dict], post: dict, parallax
                         steps=steps, hovered=len(post.get("hover", [])), per_section=dict(per), params=dict(params))
 
 
+CANVAS_JS = r"""() => [...document.querySelectorAll("canvas")].map(c => {
+  const r = c.getBoundingClientRect();
+  let webgl = false;
+  try { webgl = !!(c.getContext("webgl2") || c.getContext("webgl")); } catch (e) {}
+  return { top: Math.round(r.top + scrollY), left: Math.round(r.left), w: Math.round(r.width), h: Math.round(r.height), webgl };
+}).filter(c => c.w >= 150 && c.h >= 150)"""
+
+DIFF_JS = r"""async (shots) => {
+  // Pixel difference between consecutive screenshots of one canvas + its dominant colour (in the browser).
+  const load = src => new Promise(ok => { const i = new Image(); i.onload = () => ok(i); i.src = src; });
+  const imgs = await Promise.all(shots.map(load));
+  const W = 96, H = Math.max(1, Math.round(96 * imgs[0].height / imgs[0].width));
+  const px = imgs.map(i => { const c = document.createElement("canvas"); c.width = W; c.height = H;
+                             const g = c.getContext("2d"); g.drawImage(i, 0, 0, W, H); return g.getImageData(0, 0, W, H).data; });
+  const changed = (a, b) => { let n = 0; for (let k = 0; k < a.length; k += 4)
+    if (Math.abs(a[k] - b[k]) + Math.abs(a[k+1] - b[k+1]) + Math.abs(a[k+2] - b[k+2]) > 30) n++; return n / (a.length / 4); };
+  const diffs = []; for (let k = 1; k < px.length; k++) diffs.push(changed(px[k - 1], px[k]));
+  let r = 0, g = 0, b = 0; const d = px[0];
+  for (let k = 0; k < d.length; k += 4) { r += d[k]; g += d[k+1]; b += d[k+2]; }
+  const n = d.length / 4; r = Math.round(r / n); g = Math.round(g / n); b = Math.round(b / n);
+  return { diffs, colour: "#" + [r, g, b].map(v => v.toString(16).padStart(2, "0")).join(""), lum: (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 };
+}"""
+
+
+async def probe_models(page, boxes: dict[str, dict], overlay=None) -> list[Model3D]:
+    """Watch every large canvas for a moment: does it move on its own, does it follow the mouse."""
+    import base64
+    out: list[Model3D] = []
+    for c in (await page.evaluate(CANVAS_JS))[:6]:
+        sid = next((k for k, b in boxes.items() if b["top"] <= c["top"] + c["h"] / 2 <= b["top"] + max(b["height"], 1)), "page")
+        await page.evaluate("(y) => scrollTo(0, y)", max(0, c["top"] - 120))
+        await asyncio.sleep(0.5)
+        top = await page.evaluate("(y) => y - scrollY", c["top"])
+        clip = {"x": max(0, c["left"]), "y": max(0, top), "width": min(c["w"], 1440 - max(0, c["left"])), "height": min(c["h"], 880)}
+        if clip["width"] < 20 or clip["height"] < 20:
+            continue
+        if overlay:
+            with contextlib.suppress(Exception):
+                await overlay.note(Agent.INSPECTOR, f"Quan sát canvas {c['w']}×{c['h']}px: chuyển động, phản ứng chuột")
+        shots = []
+        for _ in range(3):
+            shots.append("data:image/png;base64," + base64.b64encode(await page.screenshot(clip=clip)).decode())
+            await asyncio.sleep(0.4)
+        await page.mouse.move(clip["x"] + clip["width"] * 0.2, clip["y"] + clip["height"] * 0.5)
+        await asyncio.sleep(0.2)
+        a = await page.screenshot(clip=clip)
+        await page.mouse.move(clip["x"] + clip["width"] * 0.8, clip["y"] + clip["height"] * 0.3, steps=8)
+        await asyncio.sleep(0.4)
+        b = await page.screenshot(clip=clip)
+        await page.mouse.move(2, 2)
+        idle = await page.evaluate(DIFF_JS, shots)
+        moved = await page.evaluate(DIFF_JS, ["data:image/png;base64," + base64.b64encode(x).decode() for x in (a, b)])
+        motion = max(idle["diffs"] or [0])
+        animating = motion > 0.01
+        pointer = moved["diffs"][0] > max(0.02, motion * 2.5)
+        kind = "mô hình 3D (WebGL)" if c["webgl"] else "hình vẽ canvas"
+        how = (f"{kind.capitalize()} {c['w']}×{c['h']}px, "
+               + (f"tự chuyển động liên tục (~{round(motion * 100)}% điểm ảnh đổi mỗi 0,4s)" if animating else "đứng yên khi không tương tác")
+               + (", phản ứng khi rê chuột" if pointer else ", không phản ứng khi rê chuột")
+               + f", tông {'tối' if idle['lum'] < 0.35 else 'sáng'} (màu chủ đạo {idle['colour']}). "
+               + "Chưa vẽ lại được bằng CSS: bản dựng chừa đúng khung này.")
+        out.append(Model3D(section=sid, top=c["top"], left=c["left"], w=c["w"], h=c["h"], webgl=c["webgl"],
+                           animating=animating, motion=round(motion, 3), pointer=pointer, colour=idle["colour"],
+                           dark=idle["lum"] < 0.35, how=how))
+    return out
+
+
 def _headed() -> bool:
     return os.environ.get("CHROMASWARM_HEADED", "1") != "0"
 
@@ -161,7 +249,7 @@ async def inspect_motion(url: str, boxes: dict[str, dict], headed: bool | None =
         browser = await pw.chromium.launch(headless=not headed)
         try:
             page = await browser.new_page(viewport={"width": width, "height": height})
-            await page.goto(url, wait_until="load", timeout=45_000)
+            await goto_ready(page, url)
             with contextlib.suppress(Exception):
                 await page.wait_for_load_state("networkidle", timeout=8_000)
             overlay = None
@@ -203,12 +291,28 @@ async def inspect_motion(url: str, boxes: dict[str, dict], headed: bool | None =
             post: dict = {}
             with contextlib.suppress(Exception):
                 post = await motion.probe(page, on_hover=on_hover if overlay else None)
+            models: list[Model3D] = []
+            with contextlib.suppress(Exception):
+                models = await probe_models(page, boxes, overlay)
+            controls: list[dict] = []
+            with contextlib.suppress(Exception):
+                controls = await motion.sweep_controls(page, on_hover=on_hover if overlay else None)
             if overlay:
                 with contextlib.suppress(Exception):
                     await overlay.hud(None)
         finally:
             await browser.close()
-    return build_report(boxes, timed, post, parallax, steps)
+    report = build_report(boxes, timed, post, parallax, steps)
+    for m in models:
+        report.items.append(MotionItem(effect="canvas-3d", section=m.section, label="Mô hình 3D / canvas", how=m.how,
+                                       params={"w": m.w, "h": m.h}))
+    report.models = models
+    for ctl in controls:
+        ctl["section"] = next((k for k, b in boxes.items() if b["top"] <= ctl["top"] + ctl["h"] / 2 <= b["top"] + max(b["height"], 1)), "page")
+    report.controls = controls
+    report.hovered = max(report.hovered, len(controls))
+    report.has_motion = report.has_motion or any(m.animating for m in models)
+    return report
 
 
 def summary(report: MotionReport) -> str:

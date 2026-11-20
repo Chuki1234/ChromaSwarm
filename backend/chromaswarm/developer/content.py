@@ -294,8 +294,11 @@ def build_copy(state: PipelineState) -> PageCopy:
     clone = state.clone
     if state.selected_page == "clone" and clone and clone.owned and clone.content:
         return owned_clone_copy(copy, clone.content)
-    # No photos of their own: free-license stock photos picked by topic (§1.3, never grey boxes)
-    if photos := stock_photos(f"{state.raw_prompt or ''} {brand} {state.pillars.scope or ''}", state.domain):
+    # No photos of their own: free-license stock photos picked by topic (§1.3, never grey boxes) — Creative only.
+    # A Clone never adds pictures the reference did not have: its picture slots stay exact-size skeletons
+    # (the Art placeholder) until the user brings their own (B4 uploads).
+    is_clone = state.selected_page == "clone" and clone is not None
+    if not is_clone and (photos := stock_photos(f"{state.raw_prompt or ''} {brand} {state.pillars.scope or ''}", state.domain)):
         copy = copy.model_copy(update={"images": photos})
     if state.page_copy and lang == "vi":  # written (in Vietnamese) by the LLM copywriter and validated there
         copy = apply_written_copy(copy, state.page_copy)

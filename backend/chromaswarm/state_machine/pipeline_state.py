@@ -150,6 +150,7 @@ class CloneSource(BaseModel):
     # B2 effect check (clone/motion_check.py): the page operated with Playwright, effects timed.
     motion_checked: bool = False
     motion_report: dict | None = None
+    analysis: str | None = None  # B2 top-down analysis (clone/analysis.py, ANALYSIS.md): measurements only
 
 
 class Asset(BaseModel):

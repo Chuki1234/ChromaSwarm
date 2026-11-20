@@ -22,7 +22,7 @@ from chromaswarm.agents.planner import Section
 from chromaswarm.clone.components import Comp, comps
 from chromaswarm.clone.layout import Node, build_tree
 from chromaswarm.developer.content import PageCopy
-from chromaswarm.engines.color import parse_css_color, wcag_luminance
+from chromaswarm.engines.color import OKLCH, apca_lc, oklch_to_srgb, parse_css_color, srgb_to_oklch, wcag_contrast, wcag_luminance
 
 # Structures whose behaviour a static layout cannot carry keep their template.
 TEMPLATE_ONLY = {"accordion", "horizontal-scroller", "list-rows", "logo-strip",
@@ -31,7 +31,10 @@ DESKTOP = "@media (min-width: 1200px)"
 
 
 def measurable(section: Section) -> bool:
-    return bool(section.layout) and section.structure not in TEMPLATE_ONLY
+    if not section.layout:
+        return False
+    # An accordion keeps its own look too: its rows (cards) open and close for real (<details>).
+    return section.structure == "accordion" or section.structure not in TEMPLATE_ONLY
 
 
 class _Words:
@@ -95,6 +98,15 @@ def _lum(hex_: str | None) -> float | None:
     return wcag_luminance(parsed[0]) if parsed else None
 
 
+def _over(fg: tuple, bg: OKLCH) -> OKLCH:
+    """A translucent colour composited over its background (what the eye sees)."""
+    colour, alpha = fg
+    if alpha >= 0.99:
+        return colour
+    a, b = oklch_to_srgb(colour), oklch_to_srgb(bg)
+    return srgb_to_oklch(tuple(x * alpha + y * (1 - alpha) for x, y in zip(a, b)))
+
+
 def _type_class(c: Comp) -> str:
     if c.kind == "heading":
         return "t-display" if c.fs >= 56 else "t-h1" if c.fs >= 40 else "t-h2" if c.fs >= 28 else "t-h3" if c.fs >= 21 else "t-h4"
@@ -109,14 +121,43 @@ class _Render:
         self.css: list[str] = []
         self.sel = f'[data-swarm-section="{section.id}"]'
         self.has_h1 = False
-        self.filled = False
+        self.paints: list[str] = []
+        box = section.layout_box or {}
+        self.bgs: list[str | None] = [box.get("bg") or box.get("page")]  # what is painted beneath, innermost last
         self.nav = list(copy.nav_links) if section.structure == "sticky-bar" else []
         self.brand = copy.brand or ""
+        self.has_photos = bool(copy.images)  # the user's own (B4 uploads / owned site): otherwise skeletons
         self.buttons = 0
         self.elastic: set[int] = set()
         self.tone = 0
         texts = [x for x in comps(section.layout) if x.kind == "heading"] or [x for x in comps(section.layout) if x.kind == "text"]
         self.ink = _lum(texts[0].color) if texts else None
+
+    def readable(self, fg: str | None, bg: str | None, large: bool) -> bool:
+        """The measured colour is used only where it still reads on what this rebuild paints beneath it
+        (white words over a photo on the reference would vanish on our light section)."""
+        if not fg or not bg:
+            return False
+        f, b = parse_css_color(fg), parse_css_color(bg)
+        if not f or not b or f[1] < 0.35:
+            return False
+        seen = _over(f, b[0])
+        return (wcag_contrast(seen, b[0]) >= (3.0 if large else 4.5)
+                and abs(apca_lc(seen, b[0])) >= (45 if large else 60))  # QA checks both (standards §2.1)
+
+    def ink_for(self, bg: str | None) -> str:
+        """Black or white, whichever reads on this background (when the measured colour does not)."""
+        b = parse_css_color(bg or "") if bg else None
+        if not b:
+            return ""
+        dark, light = parse_css_color("#111111")[0], parse_css_color("#ffffff")[0]
+        return "#111111" if wcag_contrast(dark, b[0]) >= wcag_contrast(light, b[0]) else "#ffffff"
+
+    def paint(self, i: int, props: dict[str, str]) -> None:
+        """The reference's own colours, at every width (layout is desktop-only, colour is not)."""
+        props = {k: v for k, v in props.items() if v}
+        if props:
+            self.paints.append(f"{self.sel} .n{i} {{ " + " ".join(f"{k}: {v};" for k, v in props.items()) + " }")
 
     def rule(self, i: int, props: dict[str, str]) -> None:
         if props:
@@ -155,12 +196,14 @@ class _Render:
                 start = node.x0 + max(0, c.tx) - parent_inner_x0(parent)
                 props["margin-left"] = f"{max(0.0, start / pw * 100):.3f}%"
             props["width"] = f"{min(100.0, w / pw * 100):.3f}%"
-        if one_line:
-            props["white-space"] = "nowrap"
         # Centred on the reference (a closing line, a footer heading): centred here too, whatever its length.
         pcx = parent_inner_x0(parent) + pw / 2
         if axis == "rows" and node.w < pw * 0.8 and abs((node.x0 + node.x1) / 2 - pcx) < pw * 0.02:
-            props.update({"margin-left": "auto", "margin-right": "auto", "align-self": "center", "text-align": "center"})
+            props.update({"margin-left": "auto", "margin-right": "auto", "align-self": "center"})
+            if c is not None:  # containers centre as blocks only: their children decide their own alignment
+                props["text-align"] = "center"  # Clone keeps centred copy centred (QA's house rule is waived there)
+                if one_line:
+                    props["white-space"] = "nowrap"
         return props
 
     # ---------------------------------------------------------------- nodes
@@ -179,6 +222,9 @@ class _Render:
             return f'<div className="n{i} m-layer" data-n="{i}">\n{body}\n</div>'
         if node.kind in ("rows", "cols", "card"):
             inner_axis = "cols" if node.kind == "cols" else "rows"
+            card_bg = node.comp.bg if node.kind == "card" and node.comp and node.comp.bg else None
+            if card_bg:
+                self.bgs.append(card_bg)
             if node.kind == "cols" and len(node.children) > 1:
                 gaps = [(b.x0 - a.x1, b) for a, b in zip(node.children, node.children[1:])]
                 widest, child = max(gaps, key=lambda g: g[0])
@@ -189,6 +235,8 @@ class _Render:
                 kids.append(self.node(child, node, last, inner_axis))
                 last = child
             body = "\n".join(kids)
+            if card_bg:
+                self.bgs.pop()
             if node.kind == "card":
                 c = node.comp
                 assert c is not None
@@ -201,6 +249,13 @@ class _Render:
                 if not node.children:
                     desk["min-height"] = f"{round(node.h)}px"
                 self.rule(i, desk)
+                self.paint(i, {"background": c.bg or "transparent"})
+                if self.s.structure == "accordion" and node.children:
+                    # A question row of the reference, closed like it; the answer (sample) opens below it.
+                    answer = self.js(self.words.take("body", 140), "answer")
+                    return (f'<details className="n{i} card m-card m-acc" data-n="{i}">\n'
+                            f'<summary data-swarm-id="{self.s.id}-item-{i}" data-swarm-role="button">\n{body}\n</summary>\n'
+                            f'<p className="t-body m-answer">{{{answer}}}</p>\n</details>')
                 return f'<div className="n{i} card m-card" data-n="{i}">\n{body}\n</div>'
             desk["gap"] = "0"
             self.rule(i, desk)
@@ -208,18 +263,47 @@ class _Render:
             return f'<div className="n{i} {cls}" data-n="{i}">\n{body}\n</div>'
         return self.leaf(node, i, desk)
 
+    def skeleton_img(self, c: Comp, label: str = "") -> str:
+        """An exact-size placeholder for a picture the rebuild does not have (translucent grey: reads on any
+        background, never a stand-in photo)."""
+        w, h = max(1, round(c.w)), max(1, round(c.h))
+        text = (f'<text x="{w / 2:.0f}" y="{h / 2 + 6:.0f}" font-family="sans-serif" font-size="16" fill="#808080" '
+                f'text-anchor="middle">{label}</text>') if label else ""
+        svg = ("data:image/svg+xml;utf8," + urllib.parse.quote(
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">'
+            f'<rect width="{w}" height="{h}" rx="{c.radius}" fill="#808080" fill-opacity="0.16"/>{text}</svg>'))
+        return f'<img alt="" src="{svg}" width={{{w}}} height={{{h}}} style={{{{ width: "100%", height: "auto" }}}} />'
+
+    def picture_label(self, c: Comp) -> str | None:
+        """None: use the user's photo (Art). Otherwise the skeleton's label ("" = none)."""
+        if c.media == "canvas":
+            return "3D"
+        if c.media == "video":
+            return "Video"
+        return None if self.has_photos else ""
+
     def back(self, node: Node, layer: Node) -> str:
         """A picture behind the layer's flowing content, at its measured place (desktop)."""
         i = self.n
         self.n += 1
         c = node.comp
         assert c is not None
+        box = self.s.layout_box or {}
+        if c.w >= 0.9 * float(box.get("width") or 1440) and c.h >= 0.8 * float(box.get("height") or 1):
+            # Covering the whole section on the reference (a background texture / photo): a faint frame only,
+            # the section's own measured colour shows through instead of a stand-in picture.
+            self.rule(i, {"position": "absolute", "z-index": "0", "margin": "0", "inset": "0", "width": "100%", "height": "100%"})
+            return f'<div className="n{i} m-back m-bgframe" data-n="{i}" aria-hidden="true" />'
+
         lw = max(layer.w, 1)
         self.rule(i, {"position": "absolute", "z-index": "0", "margin": "0",
                       "left": f"{(node.x0 - layer.x0) / lw * 100:.3f}%", "top": f"{round(node.y0 - layer.y0)}px",
                       "width": f"{node.w / lw * 100:.3f}%", "border-radius": f"{c.radius}px"})
         if node.kind == "back-card":
             return f'<div className="n{i} m-back m-panel" data-n="{i}" aria-hidden="true" />'
+        label = self.picture_label(c)
+        if label is not None:
+            return f'<div className="n{i} m-back m-media m-skel" data-n="{i}">{self.skeleton_img(c, label)}</div>'
         self.tone += 1
         alt = self.words.take("short", 20)
         return (f'<div className="n{i} m-back m-media" data-n="{i}"><Art label={{{self.js(alt, "image_alt")}}} '
@@ -231,16 +315,17 @@ class _Render:
         assert c is not None
         sid = self.s.id
         if c.kind in ("heading", "text", "link", "button"):
-            # Two weights per family (standards §2.2): the reference's weight lands on 400 or 600.
-            desk.update({"font-size": f"{c.fs:g}px", "font-weight": "600" if c.fw >= 550 else "400", "max-width": "none"})
+            # The reference's own type, as measured (Clone keeps its weights and sizes, decision 11).
+            desk.update({"font-size": f"{c.fs:g}px", "font-weight": f"{round(c.fw / 100) * 100:.0f}", "max-width": "none"})
             if abs(c.ls) > 0.05:
                 desk["letter-spacing"] = f"{c.ls:g}px"
             if c.lh and c.kind != "button":
-                desk["line-height"] = f"{max(c.lh, 1.4) if c.kind == 'text' and _chars(c) > 120 else c.lh:g}"
+                desk["line-height"] = f"{c.lh:g}"
             if c.tt:
                 desk["text-transform"] = c.tt
-            if c.kind == "text" and _chars(c) > 120 and c.fs < 16:
-                desk["font-size"] = "16px"  # long text stays readable (standards ch.7, QA)
+            if c.kind != "button":
+                large = c.fs >= 24 or (c.fs >= 18.6 and c.fw >= 700)
+                self.paint(i, {"color": c.color if self.readable(c.color, self.bgs[-1], large) else self.ink_for(self.bgs[-1])})
         if c.kind == "heading":
             level = c.level or (1 if c.fs >= 40 else 2 if c.fs >= 24 else 3)
             if level == 1:
@@ -273,12 +358,14 @@ class _Render:
             return (f'<a href="#" className="n{i} m-link m-link-plain" data-n="{i}" data-swarm-id="{sid}-btn-{i}" data-swarm-role="link">'
                     f'{{{self.js(text, "link")}}}</a>')
         if c.kind == "button":
-            desk.update({"border-radius": f"{c.radius}px",
-                         "padding": f"{max(12, c.pad[0])}px {max(16, c.pad[1])}px"})
+            # Desktop: the reference's own size (tap targets are checked on phones, where .btn keeps 48px).
+            desk.update({"border-radius": f"{c.radius}px", "padding": f"{c.pad[0]}px {c.pad[1]}px", "min-height": "24px"})
             self.rule(i, desk)
-            filled = c.bg is not None and (_lum(c.bg) or 1) < 0.85 and not self.filled
-            self.filled = self.filled or filled  # one primary action per section (anti-slop §2.6, QA)
-            cls = "btn-primary" if filled else "btn-ghost"
+            cls = "btn-primary" if c.bg is not None else "btn-ghost"
+            fill = c.bg or self.bgs[-1]
+            if self.readable(c.color, fill, c.fs >= 24):
+                self.paint(i, {"background": c.bg or "transparent", "color": c.color,
+                               "border-color": f"color-mix(in oklch, {c.color} 35%, transparent)" if c.border and not c.bg else ""})
             self.buttons += 1  # the page's two actions first, then short labels: never the same label twice
             text = self.words.take("cta" if self.buttons <= 2 else "short", _chars(c))
             return (f'<a href="#" className="n{i} btn {cls}" data-n="{i}" data-swarm-id="{sid}-btn-{i}" data-swarm-role="button">'
@@ -286,6 +373,9 @@ class _Render:
         if c.kind == "input":
             desk["border-radius"] = f"{c.radius}px"
             self.rule(i, desk)
+            if ink := self.ink_for(self.bgs[-1]):  # field, label and border read on whatever is painted beneath
+                self.paints.append(f"{self.sel} .n{i}, {self.sel} .n{i} .input {{ color: {ink}; }} "
+                                   f"{self.sel} .n{i} .input {{ background: transparent; border-color: {ink}; }}")
             label = self.js("Email", "label")
             return (f'<label className="n{i} m-field" data-n="{i}"><span className="t-caption">{{{label}}}</span>'
                     f'<input className="input" type="email" autoComplete="email" placeholder="name@example.com" '
@@ -293,15 +383,20 @@ class _Render:
         # image
         desk["border-radius"] = f"{c.radius}px"
         self.rule(i, desk)
-        if c.w <= 72 and c.h <= 72:
-            # A logo / icon slot: a neutral monogram, never a stock photo (the user's own logo goes in public/).
-            letter = (self.brand[:1] or "•").upper()
+        if c.w <= 120 and c.h <= 72:
+            # A logo / icon slot (proprietary on the reference): a skeleton of its exact measured size, never a
+            # stand-in picture. Translucent grey reads on light and dark sections alike; the user's logo goes in public/.
+            w, h = max(1, round(c.w)), max(1, round(c.h))
             svg = ("data:image/svg+xml;utf8," + urllib.parse.quote(
-                f'<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">'
-                f'<rect width="64" height="64" rx="14" fill="#1a1a1a"/><text x="32" y="42" font-family="sans-serif" '
-                f'font-size="30" font-weight="600" fill="#ffffff" text-anchor="middle">{html.escape(letter)}</text></svg>'))
-            return (f'<img className="n{i} m-mark" data-n="{i}" alt={{{self.js(self.brand, "brand")}}} src="{svg}" '
-                    f'width={{{round(c.w)}}} height={{{round(c.h)}}} />')
+                f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">'
+                f'<rect width="{w}" height="{h}" rx="{min(8, h // 4)}" fill="#808080" fill-opacity="0.28"/></svg>'))
+            return (f'<img className="n{i} m-mark m-skel" data-n="{i}" alt={{{self.js(self.brand or "Logo", "brand")}}} src="{svg}" '
+                    f'width={{{w}}} height={{{h}}} />')
+        label = self.picture_label(c)
+        if label is not None:
+            # A 3D scene / video, or a picture the user has not brought yet: an exact-size skeleton holds its place
+            # (how a 3D scene moves is in the analysis and the effect report).
+            return f'<div className="n{i} m-media m-skel" data-n="{i}">{self.skeleton_img(c, label)}</div>'
         self.tone += 1
         ratio = f"{max(1, round(c.w))} / {max(1, round(c.h))}"
         alt = self.words.take("short", 20)
@@ -348,6 +443,15 @@ def render_measured(section: Section, copy: PageCopy, js) -> tuple[str, str] | N
     left = tree.x0 / 1440 * 100
     right = max(0.0, (width - tree.x1)) / 1440 * 100
     top, bottom = round(tree.y0), round(max(0.0, height - tree.y1)) if height else 64
+    # A dark band (or a light one on a dark page): everything inside takes its colours from the band.
+    band_css = (f"""{sel}.s-band .muted {{ color: color-mix(in oklch, currentColor 78%, transparent); }}
+{sel}.s-band .btn-primary {{ background: var(--band-action); color: var(--band-action-fg); }}
+{sel}.s-band .btn-ghost {{ color: inherit; border-color: currentColor; }}
+{sel}.s-band .m-card, {sel}.s-band .m-panel {{ background: color-mix(in oklch, currentColor 8%, transparent);
+  border-color: color-mix(in oklch, currentColor 20%, transparent); color: inherit; }}
+{sel}.s-band .input {{ background: transparent; color: inherit; border-color: currentColor; }}
+""" if box.get("band") else "")
+    section_bg = f"{sel}.s {{ background: {box['bg']}; }}\n" if box.get("bg") else ""
     base = f"""{sel} {{ overflow-x: clip; }}
 {sel} .m-rows {{ display: flex; flex-direction: column; align-items: flex-start; gap: 16px; }}
 {sel} .m-cols {{ display: flex; flex-wrap: wrap; align-items: flex-start; gap: 24px; }}
@@ -357,23 +461,36 @@ def render_measured(section: Section, copy: PageCopy, js) -> tuple[str, str] | N
 {sel} .m-card {{ gap: 16px; }}
 {sel} .m-media {{ width: 100%; overflow: hidden; }}
 {sel} .m-media .art {{ display: block; width: 100%; height: auto; border-radius: inherit; }}
-{sel} .m-link {{ display: inline-flex; align-items: center; min-height: 48px; color: inherit; text-decoration: underline;
+{sel} .btn:hover {{ filter: brightness(0.92); }}
+{sel} .m-link {{ min-height: 24px; }}  /* WCAG 2.2 AA target size; a tiny link must stay under the pointer */
+@media (max-width: 767px) {{ {sel} .m-link, {sel} .btn {{ min-height: 48px; }} }}  /* after it: phones need 48px (QA) */
+{sel} .m-link {{ display: inline-flex; align-items: center; color: inherit; text-decoration: underline;
   text-underline-offset: 4px; transition: opacity var(--duration) var(--ease); }}
 {sel} .m-link:hover {{ opacity: 0.72; }}
 {sel} .m-nav {{ text-decoration: none; }}
 {sel} .btn-ghost:hover {{ background: color-mix(in oklch, currentColor 10%, transparent); }}
-{sel} .m-mark {{ display: block; width: 40px; height: auto; }}
+{sel} .m-mark {{ display: block; max-width: 100%; height: auto; }}
 {sel} .m-link-plain {{ text-decoration: none; font-family: var(--font-heading); line-height: 1.1; }}
 {sel} .m-link:focus-visible, {sel} .btn:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
 {sel} .m-field {{ display: flex; flex-direction: column; gap: 8px; }}
+{sel} .m-acc > summary {{ display: flex; flex-direction: column; list-style: none; cursor: pointer; border-radius: inherit;
+  transition: opacity var(--duration) var(--ease); }}
+{sel} .m-acc > summary::-webkit-details-marker {{ display: none; }}
+{sel} .m-acc > summary:hover {{ opacity: 0.8; }}
+{sel} .m-acc > summary:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
+{sel} .m-acc[open] > .m-answer {{ margin-top: 12px; }}
 {sel} .m-layer {{ display: flex; flex-direction: column; gap: 24px; }}
 {sel} .m-layer > :first-child {{ position: relative; z-index: 1; }}
 {sel} .m-panel {{ min-height: 120px; border-radius: var(--radius-md); background: var(--bg-surface); }}
+{sel} .m-bgframe {{ background: color-mix(in oklch, currentColor 4%, transparent); pointer-events: none; }}
+{band_css}{section_bg}{chr(10).join(r.paints)}
 {DESKTOP} {{
   {sel}.s {{ padding-top: {top}px; padding-bottom: {bottom}px; }}
   {sel} > .container {{ max-width: none; padding-left: {left:.3f}vw; padding-right: {right:.3f}vw; }}
   {sel} .m-rows, {sel} .m-cols {{ gap: 0; }}
-  {sel} .m-cols {{ flex-wrap: nowrap; }}
+  /* A row that no longer fits (controls grown to tap-target size, longer sample words) wraps its last piece
+     to a new line instead of pushing it off the page, where nobody could reach it. */
+  {sel} .m-cols {{ flex-wrap: wrap; }}
 {chr(10).join(r.css)}
 }}"""
     return jsx, base

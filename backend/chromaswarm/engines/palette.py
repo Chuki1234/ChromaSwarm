@@ -117,6 +117,8 @@ REQUIRED = [
     ("accent-fg", "accent", 60, 4.5),
     ("accent-ink", "bg-primary", 60, 4.5),
     ("accent-ink", "bg-surface", 60, 4.5),
+    ("danger", "bg-primary", 60, 4.5),  # error borders and messages sit on the page
+    ("danger", "bg-surface", 60, 4.5),
 ]
 
 
@@ -176,8 +178,9 @@ def generate_palette(seed: str | OKLCH, mode: Mode = Mode.LIGHT, exact: bool = F
     page_bgs = [OKLCH(*NEUTRALS[mode][n], neutral_h) for n in ("bg-primary", "bg-surface")]
     tokens.append(Token.of("accent-ink", Role.ACCENT, _search_ink(accent, page_bgs, mode is Mode.DARK)))
     for name, h in SEMANTIC_HUES.items():
-        sem, _ = _search_accent(OKLCH(accent.l, 0.16, h), light_fg, dark_fg)
-        tokens.append(Token.of(name, Role.ACCENT, sem))
+        # Status colours are drawn on the page (an invalid field's border, an error line), so they must read
+        # there: text contrast on both page backgrounds, not just a readable label on top of them.
+        tokens.append(Token.of(name, Role.ACCENT, _search_ink(OKLCH(accent.l, 0.16, h), page_bgs, mode is Mode.DARK)))
 
     by_name = {t.name: t.color for t in tokens}
     checks = []

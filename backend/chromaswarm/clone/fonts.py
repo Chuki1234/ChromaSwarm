@@ -12,6 +12,8 @@ Vietnamese text never shows broken diacritics.
 
 from __future__ import annotations
 
+import re
+
 import ssl
 import urllib.error
 import urllib.parse
@@ -24,7 +26,13 @@ from pydantic import BaseModel
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
       "Chrome/124.0 Safari/537.36")  # Google serves per-subset CSS (and its subset comments) only to modern browsers
 WEIGHTS_GOOGLE = "wght@400;500;600;700"
-SERIF_HINTS = ("serif", "playfair", "garamond", "times", "georgia", "lora", "fraunces", "cormorant", "merriweather")
+SERIF_HINTS = ("serif", "playfair", "garamond", "times", "georgia", "lora", "fraunces", "cormorant", "merriweather",
+               "domaine", "tiempos", "canela", "ogg", "sectra", "freight", "recoleta", "editorial", "caslon", "baskerville")
+# Licensed families no free host serves -> the closest free, Vietnamese-capable Google font of the same feel.
+SIMILAR = {"favorit": "Inter", "graphik": "Inter", "circular": "Inter", "gt america": "Inter", "sf pro": "Inter",
+           "helvetica": "Inter", "neue montreal": "Inter", "neue haas": "Inter", "söhne": "Inter", "sohne": "Inter",
+           "aeonik": "Inter", "satoshi": "Inter", "general sans": "Inter", "suisse": "Inter", "untitled sans": "Inter"}
+_SUFFIX = re.compile(r"\s+(website|web|variable|vf|var|text|pro web)$", re.IGNORECASE)
 FALLBACK_SERIF = "Playfair Display"
 FALLBACK_SANS = "Be Vietnam Pro"
 
@@ -35,6 +43,7 @@ class FontSource(BaseModel):
     css_url: str | None
     vietnamese: bool
     fallback: str  # Vietnamese-capable Google font of the same kind (serif / sans)
+    original: str | None = None  # the reference's own (licensed) family when `family` is a free stand-in for it
 
 
 Fetch = Callable[[str], tuple[int, str]]
@@ -66,8 +75,25 @@ def _fetch(url: str) -> tuple[int, str]:
 
 
 def resolve_font(family: str, fetch: Fetch = _fetch) -> FontSource:
-    """Where this family can be loaded from, and whether it draws Vietnamese."""
+    """Where this family can be loaded from, and whether it draws Vietnamese. A site-renamed copy of a free font
+    ("Inter Website") is found under its real name; a licensed one gets the closest free font of its kind."""
     family = family.strip().strip("'\"")
+    plain = _SUFFIX.sub("", family).strip()
+    if plain and plain.lower() != family.lower():
+        found = resolve_font(plain, fetch)
+        if found.provider:
+            return found
+    src = _resolve(family, fetch)
+    if src.provider:
+        return src
+    name = family.lower()
+    stand_in = next((free for key, free in SIMILAR.items() if key in name.replace("abc", "").strip() or key in name), None)
+    stand_in = stand_in or src.fallback  # unknown licensed font: the free font of its kind (serif / sans)
+    return FontSource(family=stand_in, provider="google", css_url=google_css_url([stand_in]), vietnamese=True,
+                      fallback=src.fallback, original=family)
+
+
+def _resolve(family: str, fetch: Fetch = _fetch) -> FontSource:
     fallback = fallback_for(family)
     try:
         status, css = fetch(google_css_url([family]))
@@ -90,6 +116,9 @@ def resolve_font_cached(family: str) -> FontSource:
 
 def font_note(src: FontSource) -> str | None:
     """What the user is told about this font (None when it is kept as is)."""
+    if src.original:
+        return (f"Font '{src.original}' là font riêng của trang mẫu (không có nguồn tải miễn phí); "
+                f"dùng {src.family}, font miễn phí gần giống nhất.")
     if src.provider is None:
         return (f"Font '{src.family}' là font riêng của trang mẫu (không có nguồn tải miễn phí); "
                 f"dùng font gần giống của preset.")

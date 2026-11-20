@@ -88,7 +88,9 @@ STEP_JS = r"""async (y) => {
     const cs = getComputedStyle(el), r = el.getBoundingClientRect(), p = el.parentElement;
     if (!ids.has(p)) ids.set(p, ids.size);
     const durs = (cs.transitionDuration + "," + cs.animationDuration).split(",").map(d => parseFloat(d) * (d.includes("ms") ? 1 : 1000)).filter(x => x > 0);
-    const ease = (cs.transitionDuration !== "0s" ? cs.transitionTimingFunction : cs.animationTimingFunction).split(",")[0].trim();
+    // The first timing function of the list (cubic-bezier(...) has commas of its own).
+    const firstFn = v => ((v || "").match(/^\s*([a-z-]+\([^)]*\)|[a-z-]+)/) || [, ""])[1];
+    const ease = firstFn(cs.transitionDuration !== "0s" ? cs.transitionTimingFunction : cs.animationTimingFunction);
     return { top: Math.round(r.top + scrollY), h: Math.round(r.height), parent: ids.get(p), fromOp: s.op, fromY: Math.round(ty(s.tf)),
              start: m.start, end: m.end, cssMs: durs.length ? Math.max(...durs) : 0, ease };
   });
@@ -193,11 +195,68 @@ SNAP_JS = r"""(i) => {
     return r.width > 80 && r.height > 60 && parseFloat(getComputedStyle(m).opacity) > 0.5 && m.checkVisibility({ opacityProperty: true });
   }).length;
   const dur = Math.max(...cs.transitionDuration.split(",").map(d => parseFloat(d) * (d.includes("ms") ? 1 : 1000)), 0);
-  const ease = cs.transitionTimingFunction.split(",")[0].trim();
+  const ease = ((cs.transitionTimingFunction || "").match(/^\s*([a-z-]+\([^)]*\)|[a-z-]+)/) || [, ""])[1];
   return { tf: cs.transform, shadow: cs.boxShadow, ease, bgSize: cs.backgroundSize, deco: cs.textDecorationLine,
            border: cs.borderBottomWidth + " " + cs.borderBottomStyle, imgTf: img ? getComputedStyle(img).transform : null,
            visibleImages, dur, top: el.getBoundingClientRect().top };
 }"""
+
+
+CONTROLS_JS = r"""(limit) => {
+  // Every visible button and link (in page order), tagged so each one can be hovered for real.
+  const out = [];
+  for (const el of document.querySelectorAll("a[href], button, [role=button]")) {
+    if (out.length >= limit) break;
+    const r = el.getBoundingClientRect();
+    if (r.width < 12 || r.height < 12 || !el.checkVisibility({ opacityProperty: true })) continue;
+    const cs = getComputedStyle(el), bg = cs.backgroundColor;
+    const filled = !/rgba\(0, 0, 0, 0\)|transparent/.test(bg);
+    el.setAttribute("data-cs-ctl", String(out.length));
+    out.push({ i: out.length, kind: el.tagName === "BUTTON" || filled || parseFloat(cs.borderTopWidth) > 0 ? "button" : "link",
+               top: Math.round(r.top + scrollY), h: Math.round(r.height), w: Math.round(r.width) });
+  }
+  return out;
+}"""
+
+CTL_SNAP_JS = r"""(i) => {
+  const el = document.querySelector(`[data-cs-ctl="${i}"]`);
+  if (!el) return null;
+  const cs = getComputedStyle(el);
+  const dur = Math.max(...cs.transitionDuration.split(",").map(d => parseFloat(d) * (d.includes("ms") ? 1 : 1000)), 0);
+  return { bg: cs.backgroundColor, color: cs.color, border: cs.borderTopColor, shadow: cs.boxShadow, tf: cs.transform,
+           opacity: cs.opacity, deco: cs.textDecorationLine, filter: cs.filter, dur, top: el.getBoundingClientRect().top };
+}"""
+
+HOVER_WORDS = {"bg": "đổi màu nền", "color": "đổi màu chữ", "border": "đổi màu viền", "shadow": "đổ bóng",
+               "opacity": "đổi độ mờ", "deco": "gạch chân", "filter": "sáng/tối hơn"}
+
+
+async def sweep_controls(page: Page, limit: int = 40, on_hover=None) -> list[dict]:
+    """Hover every button and link once and say what changes (nothing is clicked: links would leave the page)."""
+    out = []
+    for c in await page.evaluate(CONTROLS_JS, limit):
+        sel = f'[data-cs-ctl="{c["i"]}"]'
+        with contextlib.suppress(Exception):
+            await page.evaluate(f"document.querySelector('{sel}')?.scrollIntoView({{block: 'center', behavior: 'instant'}})")
+            await asyncio.sleep(0.08)
+            before = await page.evaluate(CTL_SNAP_JS, c["i"])
+            if not before:
+                continue
+            if on_hover:
+                await on_hover(sel, c["i"], limit, c["kind"])
+            await page.hover(sel, timeout=1500)
+            await asyncio.sleep(min(max(before["dur"], 150), 500) / 1000 + 0.05)
+            after = await page.evaluate(CTL_SNAP_JS, c["i"])
+            await page.mouse.move(2, 2)
+            changes = [w for k, w in HOVER_WORDS.items() if after and after[k] != before[k]]
+            s0, y0 = _scale_y(before["tf"])
+            s1, y1 = _scale_y(after["tf"]) if after else (s0, y0)
+            if after and (y1 - y0 <= -1 or after["top"] - before["top"] <= -1):
+                changes.append("nhích lên")
+            if after and s1 > s0 + 0.01:
+                changes.append("phóng to")
+            out.append({**c, "changes": changes, "duration_ms": round(before["dur"])})
+    return out
 
 
 def _scale_y(transform: str | None) -> tuple[float, float]:

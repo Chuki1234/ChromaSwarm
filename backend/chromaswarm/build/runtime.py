@@ -106,6 +106,7 @@ class _Session:
     ref_names: dict[str, str] = field(default_factory=dict)
     ref_page: str = ""
     match: dict[str, dict[str, dict[str, str]]] = field(default_factory=dict)
+    page_bg: str | None = None
 
 
 CREATE_ONLY = {"app/heal.css", "app/motion.css", "app/match.css"}  # accumulate across pages and heal loops
@@ -338,13 +339,18 @@ class LocalBuildRuntime:
         """What the factory tunes to: the reference's smallest pieces per section (read at B2)."""
         s = self._s(session)
         s.ref_components, s.ref_boxes, s.ref_names, s.ref_page = components or {}, boxes or {}, names or {}, page
+        page_bg = next((b.get("page") for b in (boxes or {}).values() if b.get("page")), None)
+        if page_bg and page_bg != s.page_bg:  # the reference's own page colour behind every section
+            s.page_bg = page_bg
+            self._write_match(s)
 
     def _write_match(self, s: _Session) -> None:
-        s.workspace.write(Step.B9_DEVELOP, match_file(cmp.render_rules(s.match)))
+        page = f"body {{ background: {s.page_bg}; }}\n" if s.page_bg else ""
+        s.workspace.write(Step.B9_DEVELOP, match_file(page + cmp.render_rules(s.match)))
 
     async def _built_components(self, s: _Session) -> tuple[dict[str, list[cmp.Comp]], dict[str, dict]]:
         assert s.page
-        raw = await s.page.evaluate(cmp.COMPONENTS_JS, {"boxes": [], "built": True, "limit": 60})
+        raw = await s.page.evaluate(cmp.COMPONENTS_JS, {"boxes": [], "built": True, "limit": 260})
         return {k: cmp.comps(v) for k, v in raw["comps"].items()}, raw["boxes"]
 
     async def _factory(self, s: _Session, section_id: str, index: int) -> SectionCheck | None:
@@ -514,7 +520,7 @@ class LocalBuildRuntime:
         await self._wait_for_heal_css(s)
         s.console_errors.clear()
         report = await run_master_qa(s.page, s.overlay, spec.typography, errors=s.console_errors,
-                                     instant=not self.headed)
+                                     instant=not self.headed, clone=bool(s.ref_components))
         return report
 
     async def critique(self, session: str, context: str = "") -> Critique | None:

@@ -20,6 +20,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright
+
+from chromaswarm.playwright_engine.style_dna_scraper import goto_ready
 from pydantic import BaseModel
 
 from chromaswarm.agents.planner import Interactive, Section
@@ -57,6 +59,7 @@ class CloneAnalysis(BaseModel):
     # computed style only) — what the factory cursors tune to and the 1:1 acceptance compares against.
     boxes: dict[str, dict] = {}
     components: dict[str, list[dict]] = {}
+    signals: str = ""  # what the page says it is for (classification only, never stored in the plan or rebuilt)
 
 
 # ------------------------------------------------------------------ classification
@@ -244,7 +247,7 @@ def sections_from_blocks(blocks: list[dict]) -> list[Section]:
 
 # ------------------------------------------------------------------ style -> pillars
 
-SERIF_HINTS = ("serif", "playfair", "garamond", "times", "georgia", "lora", "fraunces", "cormorant", "merriweather")
+from chromaswarm.clone.fonts import SERIF_HINTS  # noqa: E402  (one list: fonts.py also picks the stand-ins)
 
 
 def derive_pillars(dna: StyleDNA, sections: list[Section], heading_font: str | None) -> dict[str, str]:
@@ -306,13 +309,15 @@ async def analyse(url: str, owned: bool, width: int = 1440, height: int = 900) -
         browser = await pw.chromium.launch()
         try:
             page = await browser.new_page(viewport={"width": width, "height": height})
-            await page.goto(url, wait_until="load", timeout=45_000)
+            await goto_ready(page, url)
             with contextlib.suppress(Exception):
                 await page.wait_for_load_state("networkidle", timeout=8_000)
             # Motion is read by its own step afterwards (clone/motion_check.py), on a fresh page.
             with contextlib.suppress(Exception):
                 await page.evaluate(SETTLE_JS)
             raw = await page.evaluate(READER_JS, owned)
+            with contextlib.suppress(Exception):
+                raw["signals"] = (await page.evaluate(SIGNALS_JS))[:4000]
             dna = analyze(await collect(page, url))
             raw["components"] = {}
             with contextlib.suppress(Exception):
@@ -322,9 +327,10 @@ async def analyse(url: str, owned: bool, width: int = 1440, height: int = 900) -
                 raw["components"], raw["component_boxes"] = found["comps"], found["boxes"]
         finally:
             await browser.close()
-    families = {f for f in (raw.get("heading_font"), raw.get("body_font")) if f}
+    families = list(dict.fromkeys(f for f in (raw.get("heading_font"), raw.get("body_font")) if f))
     found = await asyncio.gather(*(asyncio.to_thread(resolve_font_cached, f) for f in families))
-    return build_analysis(raw, dna, owned, fonts={src.family: src for src in found})
+    # Keyed by the family the page asked for (a licensed one resolves to a free stand-in of another name).
+    return build_analysis(raw, dna, owned, fonts=dict(zip(families, found)))
 
 
 def prepare_blocks(raw: dict) -> tuple[list[dict], list[str]]:
@@ -352,8 +358,8 @@ def build_analysis(raw: dict, dna: StyleDNA, owned: bool, fonts: dict[str, FontS
             css_url=google_css_url([family]) if family in VIETNAMESE_FONTS else None,
             vietnamese=family in VIETNAMESE_FONTS, fallback=fallback_for(family))
         if src.provider:
-            kept[key] = family
-            if all(s["family"] != family for s in sources):
+            kept[key] = src.family  # the font itself, or the free stand-in for a licensed one
+            if all(s["family"] != src.family for s in sources):
                 sources.append(src.model_dump())
         if (note := font_note(src)) and note not in notes:
             notes.append(note)
@@ -377,7 +383,9 @@ def build_analysis(raw: dict, dna: StyleDNA, owned: bool, fonts: dict[str, FontS
         from chromaswarm.clone.layout import usable
         from chromaswarm.developer.measured import TEMPLATE_ONLY, measured_interactive
         for sec in sections:
-            if sec.id in pieces and sec.structure not in TEMPLATE_ONLY and usable(as_comps(pieces[sec.id])):
+            pictured = any(c.get("kind") == "image" for c in pieces.get(sec.id, []))
+            allowed = sec.structure not in TEMPLATE_ONLY or sec.structure == "accordion" or pictured
+            if sec.id in pieces and allowed and usable(as_comps(pieces[sec.id])):
                 sec.layout, sec.layout_box = pieces[sec.id], boxes[sec.id]
                 sec.content += " — dựng theo đúng bố cục component đo được"
                 sec.interactive = [Interactive(id=a, role=b, behavior=c) for a, b, c in measured_interactive(sec)]
@@ -385,7 +393,7 @@ def build_analysis(raw: dict, dna: StyleDNA, owned: bool, fonts: dict[str, FontS
                          content=page_content(raw, sections) if owned else None, notes=notes, dna=dna,
                          content_width=content_width, fonts=sources, lang=raw.get("lang"),
                          motion=raw.get("motion") or {}, media_share=float(raw.get("media_share") or 0),
-                         boxes=boxes, components=pieces, **kept)
+                         boxes=boxes, components=pieces, signals=raw.get("signals", ""), **kept)
 
 
 # ------------------------------------------------------------------ what the user is told
@@ -437,21 +445,39 @@ def clone_limits(a: CloneAnalysis) -> list[str]:
 
 
 _KIND_WORDS = [
-    (Domain.PORTFOLIO, r"portfolio|designer|developer|photograph|illustrat|freelanc|resume|\bcv\b|nhà thiết kế|nhiếp ảnh"),
-    (Domain.BOOKING, r"booking|book now|reserv|appointment|spa|salon|clinic|hotel|đặt lịch|đặt phòng|đặt bàn"),
+    (Domain.SAAS, r"\bapi\b|\bsdk\b|\bdocs\b|documentation|for developers|developer platform|pricing|sign up|get started|"
+                  r"start for free|free trial|dashboard|integrat|software|platform|\bapp\b|cloud|\bai\b|changelog|"
+                  r"enterprise|deploy|infrastructure|workflow|automat|phần mềm"),
+    (Domain.PORTFOLIO, r"portfolio|my work|selected work|about me|hire me|resume|\bcv\b|freelanc|photograph|illustrat|"
+                       r"i'm a|i am a|designer\b|nhà thiết kế|nhiếp ảnh"),
+    (Domain.BOOKING, r"booking|book now|reserv|appointment|spa\b|salon|clinic|hotel|đặt lịch|đặt phòng|đặt bàn"),
     (Domain.EDTECH, r"course|academy|learn|class|school|khóa học|học online|đào tạo"),
-    (Domain.ECOMMERCE, r"shop|store|cart|buy|theme|template|cửa hàng|mua"),
-    (Domain.SAAS, r"software|platform|app\b|api|cloud|ai\b|developer platform|sign up|dashboard|phần mềm"),
+    (Domain.ECOMMERCE, r"shop|store|cart|add to bag|checkout|free shipping|cửa hàng|giỏ hàng|mua ngay"),
 ]
+
+SIGNALS_JS = r"""() => {
+  // Words that say what the site is for — meta description, menu labels, the main headline, calls to action.
+  // Read only to classify the page; never stored or rebuilt.
+  const t = s => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const meta = t(document.querySelector('meta[name="description"], meta[property="og:description"]')?.content);
+  const nav = [...document.querySelectorAll("header a, nav a")].slice(0, 30).map(a => t(a.textContent)).join(" | ");
+  const h1 = t(document.querySelector("h1")?.textContent);
+  const ctas = [...document.querySelectorAll("a, button")].filter(e => e.getBoundingClientRect().top < innerHeight * 1.2)
+    .slice(0, 40).map(e => t(e.textContent)).join(" | ");
+  return [document.title, meta, nav, h1, ctas].map(t).join(" || ");
+}"""
 
 
 def guess_domain(a: CloneAnalysis) -> Domain:
-    """The kind of site, from the reference's layout (a priced product grid) and its page title.
+    """The kind of site, scored from what the page says it is for (title, meta description, menu, headline,
+    calls to action — `a.signals`) plus its layout. Each domain's keywords are counted; the title counts double.
     Used only to pick sample copy and suggested pages; the user can change everything at B7."""
-    if any(s.structure in ("grid-4", "sidebar-grid-4") for s in a.sections):
-        return Domain.ECOMMERCE
     title = (a.title or "").lower()
+    text = (a.signals or "").lower()
+    scores: dict[Domain, float] = {}
     for domain, words in _KIND_WORDS:
-        if re.search(words, title):
-            return domain
-    return Domain.OTHER
+        scores[domain] = 2 * len(re.findall(words, title)) + len(re.findall(words, text))
+    if any(s.structure in ("grid-4", "sidebar-grid-4") for s in a.sections):
+        scores[Domain.ECOMMERCE] = scores.get(Domain.ECOMMERCE, 0) + 1.5  # a priced grid, unless software says louder
+    best = max(scores, key=lambda d: scores[d])
+    return best if scores[best] > 0 else Domain.OTHER

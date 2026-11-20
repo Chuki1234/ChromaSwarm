@@ -52,6 +52,7 @@ from chromaswarm.developer.copywriter import copy_key
 from chromaswarm.clone.fidelity import render_markdown as render_fidelity
 from chromaswarm.clone.components import render_compare
 from chromaswarm.clone.motion_check import inspect_motion
+from chromaswarm.clone.analysis import build as top_down
 from chromaswarm.clone.motion_check import summary as motion_check_summary
 from chromaswarm.qa.critic import render_markdown
 from chromaswarm.qa.master import heal_css
@@ -282,6 +283,7 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             p.clone.motion_checked = False  # next pass: the effect check (b2_motion), then B3
         else:
             p.clone.motion_checked = True
+            analyse_top_down(p)
             p.advance()
         kind = "cấu trúc, chữ và ảnh (trang của bạn)" if p.clone.owned else "cấu trúc và phong cách (chữ, ảnh là của bạn)"
         names = ", ".join(sec.name for sec in a.sections)
@@ -324,8 +326,17 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         p.clone.sections = sections
         p.clone.motion_checked = True
         p.clone.motion_report = report.model_dump()
+        analyse_top_down(p)
         p.advance()
         return {"pipeline": p, "notice": motion_check_summary(report)}
+
+    def analyse_top_down(p: PipelineState) -> None:
+        """The preparation step's write-up: overview, then the page top-down (clone/analysis.py)."""
+        try:
+            p.clone.analysis = top_down(p.clone, p.domain.value if p.domain else "other", p.clone.sections)
+            write_artifact(p, "ANALYSIS.md", p.clone.analysis)
+        except Exception as e:  # a report never blocks the clone
+            log.warning("analysis failed: %s", e)
 
     def b2_creative(p: PipelineState) -> dict:
         if not p.brief_read and deps.brief_reader:
@@ -784,14 +795,21 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             return {"pipeline": p, "notice": notice}
         new_rules = [r for r in heal_css(report.failures) if r not in p.heal_rules]
         contrast = [f.reading.model_dump() for f in report.failures if f.reading]
+        clone_accept = p.mode == BuildMode.CLONE and p.clone and getattr(deps.build, "compare", None)
         if not new_rules and not contrast:
             p.escalate_qa(p.qa_failures)
+            if clone_accept:  # still compare with the reference, so the user sees how close it is
+                p.compare_rounds = 2
+                return await b11_accept(p, spec, sections)
             p.advance()
             return {"pipeline": p, "notice": f"B11 · Còn {len(report.failures)} lỗi hệ thống không tự sửa được, "
                                               "chuyển cho bạn xem xét ở bước bàn giao."}
         iteration = len(p.heal_history) + 1
         p.record_qa_failure(p.qa_failures)
         if p.escalated_to_user:  # MAX_HEAL_ITERATIONS reached
+            if clone_accept:
+                p.compare_rounds = 2
+                return await b11_accept(p, spec, sections)
             p.advance()
             return {"pipeline": p, "notice": f"B11 · Đã tự sửa {iteration} vòng, còn {len(report.failures)} lỗi. "
                                               "Chuyển cho bạn quyết định."}
