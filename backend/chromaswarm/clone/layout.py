@@ -68,7 +68,9 @@ def clean(comps: list[Comp], width: float) -> list[Comp]:
         if key in seen:
             continue
         seen.add(key)
-        if c.kind == "image" and any(o.kind == "image" and _inside(c, o) for o in out):
+        # A picture inside another picture of about its size is the same picture twice (nested media). Inside a
+        # much bigger one (a background filling the section) it is a picture *on* that background: kept.
+        if c.kind == "image" and any(o.kind == "image" and _inside(c, o) and o.w * o.h < 4 * c.w * c.h for o in out):
             continue
         out.append(c.model_copy(update={"x": max(0, c.x), "w": min(c.w, width - max(0, c.x))}))
     return out
@@ -155,14 +157,19 @@ def cut(nodes: list[Node], depth: int = 0) -> Node:
         if len(groups) > 1 and depth < 12:
             return Node(kind=axis, x0=x0, y0=y0, x1=x1, y1=y1, children=[cut(g, depth + 1) for g in groups])
     # Text laid over a picture: the pictures become a back layer at their measured place, the rest is cut
-    # again and flows on top.
-    back = [n for n in nodes if n.kind == "image" or (n.kind == "card" and not n.children)]
-    front = [n for n in nodes if n not in back]
+    # again and flows on top. A framed picture (a card holding only pictures) is a picture too.
+    pictures = [n for n in nodes if _picture(n)]
+    front = [n for n in nodes if not _picture(n)]
+    back = [_as_back(n) for n in pictures] if front else pictures
     if back and front:
         flow = cut(front, depth + 1)
-        for b in back:
-            b.kind = "back-" + b.kind
         return Node(kind="layer", x0=x0, y0=y0, x1=x1, y1=y1, children=[flow, *back])
+    # Pictures overlapping each other (a stack of offset mockups): the biggest keeps the room, the others sit
+    # at their measured place over it — never one under the other (that doubles the height).
+    if len(pictures) >= 2 and not front:
+        big = max(nodes, key=lambda n: n.w * n.h)
+        rest = [_as_back(n) for n in nodes if n is not big]
+        return Node(kind="layer", x0=x0, y0=y0, x1=x1, y1=y1, children=[cut([big], depth + 1), *rest])
     # Tiles that overlap a little (rotated / offset cards on a canvas): rows by centre line, then columns.
     grid = _grid(nodes)
     if grid:
@@ -173,6 +180,19 @@ def cut(nodes: list[Node], depth: int = 0) -> Node:
     # Anything else that overlaps: reading order, each keeps its own box.
     ordered = sorted(nodes, key=lambda n: (n.y0, n.x0))
     return Node(kind="rows", x0=x0, y0=y0, x1=x1, y1=y1, children=[cut([n], depth + 1) for n in ordered])
+
+
+def _picture(n: Node) -> bool:
+    return n.kind == "image" or (n.kind == "card" and all(c.kind == "image" for c in n.children))
+
+
+def _as_back(n: Node) -> Node:
+    """A picture as a back-layer node: a frame holding one picture is drawn as that picture (with its radius)."""
+    if n.kind == "card" and len(n.children) == 1 and n.children[0].kind == "image":
+        child = n.children[0]
+        return Node(kind="back-image", x0=n.x0, y0=n.y0, x1=n.x1, y1=n.y1, comp=child.comp, children=[])
+    n.kind = "back-" + n.kind
+    return n
 
 
 def build_tree(comps: list[Comp], width: float = 1440) -> Node | None:

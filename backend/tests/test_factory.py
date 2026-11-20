@@ -254,7 +254,7 @@ def test_measured_section_places_pieces_at_their_measured_spot_on_desktop_only()
     assert "m-rows" in code and "m-cols" in code and 'data-swarm-id="feature-showcase-btn-' in code
     assert "@media (min-width: 1200px)" in code and "font-size: 64px" in code and "letter-spacing: -2px" in code
     assert "padding-top: 96px" in code and "padding-bottom: 80px" in code  # the reference's own space
-    assert 'width={1200} height={520}' in code and "border-radius: 999px" in code  # exact-size skeleton, no photo
+    assert 'width={1200} height={360}' in code and "border-radius: 999px" in code  # skeleton: measured width, height capped (SKEL_MAX), no photo
     assert set(words["feature-showcase"]) >= {"heading", "text", "button"}  # words in content/, editable
     assert "<h2" in code  # only a hero gets the page's h1
 
@@ -464,7 +464,7 @@ def test_phone_tap_targets_win_over_the_desktop_minimum():
     assert code.index("min-height: 24px") < code.index("{ min-height: 48px; }")  # later rule wins on phones
 
 
-def test_canvas_and_logos_keep_exact_size_skeletons_and_clone_adds_no_stock_photos():
+def test_canvas_and_logos_keep_measured_skeletons_and_clone_adds_no_stock_photos():
     from chromaswarm.agents.planner import Section
     from chromaswarm.developer.content import build_copy
     from chromaswarm.developer.nextjs import render_section
@@ -479,7 +479,7 @@ def test_canvas_and_logos_keep_exact_size_skeletons_and_clone_adds_no_stock_phot
     copy = build_copy(p)
     assert copy.images == []  # no stand-in photos in a Clone
     code = render_section(sec, copy, "clone", content={}).content
-    assert 'width={560} height={520}' in code and "3D" in code  # the 3D scene's exact frame
+    assert 'width={560} height={360}' in code and "3D" in code  # the 3D scene's width, height capped (SKEL_MAX)
     assert 'width={96} height={28}' in code and "m-skel" in code  # the logo's exact frame
 
 
@@ -506,3 +506,66 @@ def test_top_down_analysis_covers_overview_then_each_section_in_order():
     assert "Nút: nền #ffffff, chữ #000000 14px" in md and "#ffffffb3".upper() not in md and "(70%)" in md
     assert "Canvas / 3D: 560×560px" in md and "tự chuyển động liên tục" in md
     assert "nút 100×36px → đổi màu nền (200ms)" in md
+
+
+def _measured_page(sections):
+    """Render measured sections in page order the way the build does (earlier words passed as `taken`)."""
+    from chromaswarm.build.runtime import _strings
+    from chromaswarm.developer.content import build_copy, copy_for
+    from chromaswarm.developer.nextjs import render_section
+    from chromaswarm.state_machine.pipeline_state import CloneSource, PipelineState
+    p = PipelineState(session_id="s", raw_prompt="Project management for software teams", selected_page="clone",
+                      clone=CloneSource(url="https://example.com"))
+    copy, words, codes = build_copy(p), {}, {}
+    for k, sec in enumerate(sections):
+        c = copy_for(sec.structure, [x.structure for x in sections[:k]], copy)
+        c = c.model_copy(update={"taken": [t for x in sections[:k] for t in _strings(words[x.id])]})
+        codes[sec.id] = render_section(sec, c, "clone", content=words).content
+    return copy, words, codes
+
+
+def test_measured_copy_follows_the_section_role_and_never_repeats_across_the_page():
+    from chromaswarm.agents.planner import Section
+    from chromaswarm.build.runtime import _strings
+
+    def showcase(sid):
+        return Section(id=sid, name="F", structure="feature-showcase", content="x",
+                       layout=[comp("heading", 100, 40, 600, 60, fs=48, chars=22).model_dump(),
+                               comp("text", 100, 140, 600, 60, fs=18, chars=120).model_dump()],
+                       layout_box={"top": 0, "left": 0, "width": 1440, "height": 300})
+    hero = Section(id="hero", name="Hero", structure="split-7-5", content="x",
+                   layout=[comp("heading", 100, 40, 700, 140, fs=64, chars=50).model_dump(),
+                           comp("text", 100, 220, 600, 60, fs=18, chars=90).model_dump()],
+                   layout_box={"top": 0, "left": 0, "width": 1440, "height": 400})
+    closing = Section(id="closing-cta", name="CTA", structure="closing-cta", content="x",
+                      layout=[comp("heading", 300, 40, 800, 80, fs=48, chars=40).model_dump()],
+                      layout_box={"top": 0, "left": 0, "width": 1440, "height": 200})
+    secs = [hero, showcase("feature-showcase"), showcase("feature-showcase-2"), showcase("feature-showcase-3"), closing]
+    copy, words, _ = _measured_page(secs)
+    assert words["hero"]["heading"] == copy.headline and words["hero"]["text"] == copy.subhead
+    assert words["closing-cta"]["heading"] == copy.closing
+    heads = [words[s.id]["heading"] for s in secs[1:4]]
+    assert len(set(heads)) == 3  # three showcases, three different titles
+    faqs = {q for q, _ in copy.faqs}
+    assert not set(heads) & (faqs | {copy.closing, copy.headline})  # no FAQ question / contact line as a feature title
+    every = [t for s in secs for t in _strings(words[s.id])]
+    assert len(every) == len(set(every))  # nothing shown twice on the page
+    fill_ins = [t for s in secs[1:4] for t in _strings(words[s.id]) if t.startswith("[")]
+    assert fill_ins == []  # "[…]" marks stay in their own place (hero), never as filler
+
+
+def test_labels_inside_a_missing_screenshot_go_with_it_and_its_skeleton_is_capped():
+    from chromaswarm.agents.planner import Section
+    layout = [comp("heading", 100, 40, 700, 80, fs=56, chars=30).model_dump(),
+              comp("image", 100, 200, 1240, 800, media="img", radius=12).model_dump(),
+              comp("text", 160, 260, 80, 16, fs=12, chars=8).model_dump(),   # the app screenshot's own labels
+              comp("text", 160, 300, 80, 16, fs=12, chars=8).model_dump(),
+              comp("link", 600, 500, 120, 16, fs=13, chars=10).model_dump(),
+              comp("card", 140, 240, 1160, 700, bg="#111111").model_dump(),     # the app window drawn in it
+              comp("heading", 180, 330, 300, 24, fs=18, chars=16).model_dump()]  # a panel title of the app
+    sec = Section(id="feature-showcase", name="F", structure="feature-showcase", content="x", layout=layout,
+                  layout_box={"top": 0, "left": 0, "width": 1440, "height": 1100})
+    _, words, codes = _measured_page([sec])
+    code = codes["feature-showcase"]
+    assert set(words["feature-showcase"]) == {"heading"}  # the floating labels are gone, the title stays
+    assert "height={360}" in code and "height={800}" not in code

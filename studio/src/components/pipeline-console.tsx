@@ -58,6 +58,10 @@ export type PipelineState = {
     url: string; owned: boolean; title: string | null; notes: string[];
     motion_report?: MotionReport | null;
     analysis?: string | null;
+    brief?: string | null;
+    spec?: CloneSpec | null;
+    sketch?: SketchResult | null;
+    sketch_built?: SketchResult | null;
   } | null;
   session_id: string;
   design_md: string | null;
@@ -87,6 +91,21 @@ export type PipelineState = {
   page_routes: Record<string, string>;
   motion_effects: string[];
   handover_closed: boolean;
+};
+
+/** clone/sketch.py: B2 reading coverage (reference | sketch) or B10 sketch match (reference sketch | rebuild sketch). */
+export type SketchResult = {
+  coverage?: number; coverage_before?: number; gaps?: number; remeasured?: number; score?: number;
+  sections?: Record<string, number>; pairs?: string[]; error?: string;
+  pixel_score?: number; shot_pairs?: string[];
+  described?: { x: number; y: number; w: number; h: number; added: number; seen: { kind: string; count: number; note: string } | null }[];
+};
+
+/** clone/spec.py: what the rebuild copies / replaces / skips, item by item; the user changes it at B7. */
+export type CloneSpec = {
+  items: { id: string; kind: string; section: string | null; action: string; why: string; replace_with: string; data: Record<string, unknown> }[];
+  goal: string | null;
+  overrides: Record<string, string>;
 };
 
 export type MotionReport = {
@@ -119,7 +138,9 @@ type Item =
   | { kind: "assistant"; text: string; tone?: "error"; step?: string; live?: boolean; at?: number }
   | { kind: "question"; sig: string; q: Question; note: string | null }
   | { kind: "motion"; report: MotionReport }
-  | { kind: "analysis"; text: string };
+  | { kind: "analysis"; text: string }
+  | { kind: "brief"; text: string }
+  | { kind: "sketch"; stage: "read" | "built"; result: SketchResult };
 
 function sessionId(): string {
   try {
@@ -188,6 +209,8 @@ export function PipelineConsole() {
   const motionShown = useRef(false); // the B2 effect-check report goes into the thread once
   const threadRestored = useRef(false); // Clone: the saved conversation is loaded once per page load
   const analysisShown = useRef(false); // and the top-down analysis
+  const briefShown = useRef(false); // and the build team's preparation sheet (CLONE_BRIEF.md)
+  const sketchShown = useRef({ read: false, built: false }); // and the sketches (B2 reading, B10 rebuild)
   const pendingPrompt = useRef<string | null>(null); // typed on the empty screen, sent once Chroma asks for it
   const pendingClone = useRef<Answer | null>(null); // Clone form filled on the empty screen, sent once Chroma asks for it
   const endRef = useRef<HTMLDivElement>(null);
@@ -218,6 +241,9 @@ export function PipelineConsole() {
               setItems((it) => [...local, ...it]);
               motionShown.current = local.some((x) => x.kind === "motion");
               analysisShown.current = local.some((x) => x.kind === "analysis");
+              briefShown.current = local.some((x) => x.kind === "brief");
+              sketchShown.current = { read: local.some((x) => x.kind === "sketch" && x.stage === "read"),
+                                      built: local.some((x) => x.kind === "sketch" && x.stage === "built") };
             } else {
               savedThread(sid).then((rows) => {
                 const restored: Item[] = rows.length
@@ -252,6 +278,20 @@ export function PipelineConsole() {
         if (an && !analysisShown.current) {
           analysisShown.current = true;
           setItems((it) => [...it, { kind: "analysis", text: an }]);
+        }
+        for (const stage of ["read", "built"] as const) {
+          const sk = stage === "read" ? s.state?.clone?.sketch : s.state?.clone?.sketch_built;
+          if (sk && !sk.error && !sketchShown.current[stage]) {
+            sketchShown.current[stage] = true;
+            setItems((it) => [...it, { kind: "sketch", stage, result: sk }]);
+          }
+        }
+        const br = s.state?.clone?.brief;
+        if (br && !briefShown.current) {
+          briefShown.current = true;
+          setItems((it) => [...it, { kind: "brief", text: br }]);
+        } else if (br) {  // the spec changed at B7: the sheet in the thread shows the new version
+          setItems((it) => it.map((x) => (x.kind === "brief" && x.text !== br ? { ...x, text: br } : x)));
         }
         if (pendingClone.current && s.question?.kind === "clone_source") {
           const a = pendingClone.current;
@@ -521,6 +561,21 @@ export function PipelineConsole() {
                         <pre className="mt-3 max-h-[480px] overflow-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-fg-2">{it.text}</pre>
                       </details>
                     </Assistant>
+                  ) : it.kind === "sketch" ? (
+                    <Assistant key={i}><SketchCard stage={it.stage} result={it.result} session={snap?.state.session_id ?? ""} /></Assistant>
+                  ) : it.kind === "brief" ? (
+                    <Assistant key={i}>
+                      <details className="rounded-xl border border-line p-4" data-swarm-section="clone-brief">
+                        <summary className="cursor-pointer text-sm font-medium" data-swarm-id="toggle-brief" data-swarm-role="button">
+                          Tài liệu chuẩn bị cho đội thi công: concept, section, khoảng cách, hình, nút, hiệu ứng, clone được gì
+                        </summary>
+                        <pre className="mt-3 max-h-[560px] overflow-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-fg-2">{it.text}</pre>
+                      </details>
+                      {question?.kind === "approval" && snap?.state.clone?.spec && (
+                        <SpecSections spec={snap.state.clone.spec} busy={busy || status !== "open"}
+                          onChange={(id, name, build) => answer({ label: `${build ? "Dựng" : "Không dựng"}: ${name}`, value: { spec: { [id]: build ? "copy" : "skip" } } })} />
+                      )}
+                    </Assistant>
                   ) : i === lastQuestionIdx && question && it.sig === sigOf(snap!) ? (
                     <Assistant key={i}>
                       {question.kind === "handover" && <BuildPanel state={snap!.state} notice={null} running={false} />}
@@ -632,6 +687,86 @@ function ActivityBlock({ title, stepNo, notes, active, until }: {
         )}
       </div>
     </li>
+  );
+}
+
+const BACKEND_HTTP = BACKEND_WS.replace(/^ws/, "http");
+
+/** Clone sketch step: screen by screen, the reference next to what Chroma read (B2), or the reference's sketch
+ * next to the rebuild's (B10). A red frame = a reading gap ("đọc thiếu" / "đã đo lại"). */
+function SketchCard({ stage, result, session }: { stage: "read" | "built"; result: SketchResult; session: string }) {
+  const shot = (name: string) => `${BACKEND_HTTP}/sessions/${encodeURIComponent(session)}/sketch/${name}`;
+  const pairs = [...(result.shot_pairs ?? []), ...(result.pairs ?? [])];
+  const named = (result.described ?? []).filter((d) => d.seen);
+  const low = Object.entries(result.sections ?? {}).sort((a, b) => a[1] - b[1]).slice(0, 3);
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border border-line p-4" data-swarm-section={`sketch-${stage}`}>
+      <div className="flex items-baseline justify-between gap-4">
+        <h3 className="text-sm font-medium">{stage === "read" ? "Sketch: trang mẫu vẽ lại từ những gì Chroma đọc được" : "Sketch bản dựng so với trang mẫu"}</h3>
+        <span className="font-mono text-xs text-accent">
+          {stage === "read" ? `đọc được ${result.coverage}%` : `sketch ${result.score}%` + (result.pixel_score != null ? ` · ảnh ${result.pixel_score}%` : "")}
+        </span>
+      </div>
+      <p className="text-sm text-fg-2">
+        {stage === "read"
+          ? (result.gaps ? `Lần đầu phủ ${result.coverage_before}% trang; ${result.gaps} chỗ đọc thiếu (khung đỏ) được đo lại khi dừng animation, thêm ${result.remeasured} phần.` : "Không thấy chỗ nào đọc thiếu.")
+          : `Wireframe của bản dựng trước khi tô màu: ảnh chụp so với ảnh chụp trang mẫu (khung đỏ = thiếu), rồi sketch so với sketch.${low.length ? " Thấp nhất: " + low.map(([k, v]) => `${k} ${v}%`).join(", ") + "." : ""}`}
+      </p>
+      {named.length > 0 && (
+        <ul className="flex flex-col gap-1 text-xs text-fg-2">
+          {named.map((d, k) => (
+            <li key={k}>Mô hình thị giác ở ({d.x}, {d.y}) {d.w}×{d.h}: {d.seen!.count} × {d.seen!.kind}{d.seen!.note ? ` — ${d.seen!.note}` : ""}</li>
+          ))}
+        </ul>
+      )}
+      <ul className="flex snap-x gap-3 overflow-x-auto pb-2" aria-label="Từng màn hình">
+        {pairs.map((name, k) => (
+          <li key={name} className="shrink-0 snap-start">
+            <a href={shot(name)} target="_blank" rel="noreferrer" className="block rounded-lg border border-line hover:border-line-strong">
+              {/* eslint-disable-next-line @next/next/no-img-element -- backend-served screenshots, not app assets */}
+              <img src={shot(name)} alt={`Màn hình ${k + 1}`} width={580} height={180} loading="lazy" className="h-[180px] w-auto rounded-lg" />
+            </a>
+            <span className="mt-1 block text-xs text-fg-3">Màn hình {k + 1}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** B7 (Clone): the CloneSpec's sections — untick one and it is not built (the plan and the brief follow). */
+function SpecSections({ spec, busy, onChange }: {
+  spec: CloneSpec; busy: boolean; onChange: (id: string, name: string, build: boolean) => void;
+}) {
+  const sections = spec.items.filter((i) => i.kind === "section");
+  const counts = spec.items.reduce<Record<string, number>>((n, i) => {
+    const a = spec.overrides[i.id] ?? i.action;
+    n[a] = (n[a] ?? 0) + 1;
+    return n;
+  }, {});
+  return (
+    <fieldset className="flex flex-col gap-3 rounded-xl border border-line p-4" data-swarm-section="clone-spec" disabled={busy}>
+      <legend className="px-1 text-sm font-medium">Dựng những phần nào?</legend>
+      <p className="text-xs text-fg-2">
+        {counts.copy ?? 0} mục dựng giống · {counts.replace ?? 0} thay bằng của bạn · {counts.skip ?? 0} không dựng · {counts.todo ?? 0} chưa tự động.
+        Bỏ chọn một phần để không dựng nó.
+      </p>
+      <ul className="grid gap-1 sm:grid-cols-2">
+        {sections.map((s) => {
+          const build = (spec.overrides[s.id] ?? s.action) !== "skip";
+          const name = String(s.data.name ?? s.section);
+          return (
+            <li key={s.id}>
+              <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded-lg px-2 text-sm hover:bg-surface">
+                <input type="checkbox" checked={build} onChange={(e) => onChange(s.id, name, e.target.checked)}
+                  className="size-4 accent-[var(--accent)]" data-swarm-id={`spec-${s.section}`} data-swarm-role="input" />
+                <span className={build ? "" : "text-fg-3 line-through"}>{name}</span>
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+    </fieldset>
   );
 }
 

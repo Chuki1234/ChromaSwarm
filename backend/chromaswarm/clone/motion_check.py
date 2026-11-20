@@ -11,7 +11,12 @@ CHROMASWARM_HEADED is not 0, with the Motion Inspector cursor) and operated like
 4. marquees (infinite sideways animations: cycle length), sticky / blurred header, smooth scroll,
    animation libraries, custom cursors and WebGL canvases;
 5. up to 16 cards, rows, links and buttons are hovered for real: lift (px), scale, image zoom,
-   preview images, underlines, with their transition duration and easing.
+   preview images, underlines, with their transition duration and easing;
+6. every control: where a link goes (same page / internal path and its role / external host / broken),
+   and what a button without a link does when clicked for real in a fresh tab (navigates, opens a tab,
+   a dialog, expands, changes content, scrolls). Nothing is typed, no form is submitted;
+7. what plays by itself right after load (intro animations, decorative loops), and marquees that run
+   up / down as well as sideways.
 
 Result: does the page move at all, what moves where (per section), how (a sentence per effect), and
 the measured parameters the Motion MCP server builds the CSS with.
@@ -35,7 +40,8 @@ from chromaswarm.playwright_engine.swarm import Agent, SwarmOverlay
 
 EFFECT_LABEL = {
     "scroll-reveal": "Hiện dần khi cuộn", "stagger-cards": "Hiện lần lượt từng thẻ", "parallax": "Parallax",
-    "marquee": "Dải chạy ngang", "hover-lift": "Nổi lên khi rê chuột", "hover-zoom": "Phóng ảnh khi rê chuột",
+    "marquee": "Dải chạy ngang", "marquee-vertical": "Cột chạy dọc", "load-in": "Hiệu ứng khi tải trang",
+    "loop": "Chuyển động lặp trang trí", "hover-lift": "Nổi lên khi rê chuột", "hover-zoom": "Phóng ảnh khi rê chuột",
     "hover-image": "Ảnh xem trước khi rê chuột", "underline-link": "Gạch chân link khi rê chuột",
     "sticky-blur": "Header dính, nền mờ", "smooth-scroll": "Cuộn mượt",
 }
@@ -77,6 +83,8 @@ class MotionReport(BaseModel):
     models: list[Model3D] = []  # canvases (3D / WebGL scenes) per section
     controls: list[dict] = []  # every button / link hovered: section, kind, size, what changes on hover
     params: dict[str, dict[str, dict]] = {}  # section id -> effect id -> measured parameters
+    intro: list[dict] = []  # animations played once right after load (box, keyframes from/to, duration, easing)
+    loops: list[dict] = []  # endless decorative animations that are not marquees (float, pulse, orbit…)
 
 
 def _med(values: list[float], default: float = 0) -> float:
@@ -101,7 +109,12 @@ def build_report(boxes: dict[str, dict], timed: list[dict], post: dict, parallax
     params: dict[str, dict[str, dict]] = defaultdict(dict)
     items: list[MotionItem] = []
 
-    def add(sid: str, effect: str, how: str, prm: dict) -> None:
+    def add(sid: str, effect: str, how: str, prm: dict, build: bool = True) -> None:
+        if not build:  # reported (effect card, CLONE_BRIEF.md), not sent to the Motion MCP: it cannot build it yet
+            if not any(i.effect == effect and i.section == sid for i in items):
+                items.append(MotionItem(effect=effect, section=sid, label=EFFECT_LABEL.get(effect, effect), how=how,
+                                        params={k: v for k, v in prm.items() if v not in (None, "", 0)}))
+            return
         if effect in per[sid]:
             return
         per[sid].append(effect)
@@ -136,10 +149,19 @@ def build_report(boxes: dict[str, dict], timed: list[dict], post: dict, parallax
             add(sid, "parallax", f"Ảnh trôi lệch nhịp cuộn khoảng {round(ratio * 100)}% (chậm/nhanh hơn trang)",
                 {"distance_px": round(min(80, max(12, ratio * 200)))})
         loops = [m for m in post.get("marquee", []) if _inside(m, box)]
-        if loops:
-            cycle = round(_med([m.get("cycle", 0) for m in loops], 30))
+        across = [m for m in loops if m.get("axis", "x") == "x"]
+        down = [m for m in loops if m.get("axis") == "y"]
+        if across:
+            cycle = round(_med([m.get("cycle", 0) for m in across], 30))
             add(sid, "marquee", f"Dải chạy ngang liên tục, một vòng khoảng {cycle}s, dừng khi rê chuột",
                 {"cycle_s": max(6, min(cycle, 120))})
+        if down:
+            cycle = round(_med([m.get("cycle", 0) for m in down], 30))
+            both = any(m.get("reverse") for m in down) and any(not m.get("reverse") for m in down)
+            how = (f"{len(down)} cột tự chạy dọc liên tục" + (", hai cột ngược chiều nhau" if both else "")
+                   + f", một vòng {cycle}s, đều (linear); nội dung cột được nhân đôi để vòng lặp liền mạch"
+                   + f" (mỗi cột ~{round(_med([m['w'] for m in down]))}×{round(_med([m['h'] for m in down]))}px)")
+            add(sid, "marquee-vertical", how, {"cycle_s": max(6, min(cycle, 180))}, build=False)
         hov = [h for h in post.get("hover", []) if _inside(h, box)]
         for effect in dict.fromkeys(e for h in hov for e in h.get("effects", [])):
             hp = [h["params"] for h in hov if effect in h.get("effects", []) and h.get("params")]
@@ -168,6 +190,44 @@ def build_report(boxes: dict[str, dict], timed: list[dict], post: dict, parallax
             add(header, "smooth-scroll", "Cuộn mượt" + (" (Lenis)" if "Lenis" in post.get("libs", []) else ""), {})
     return MotionReport(has_motion=bool(items), items=items, libs=post.get("libs", []), unsupported=post.get("unsupported", []),
                         steps=steps, hovered=len(post.get("hover", [])), per_section=dict(per), params=dict(params))
+
+
+def _section_of(boxes: dict[str, dict], item: dict) -> str:
+    return next((k for k, b in boxes.items() if _inside(item, b)), "page")
+
+
+def describe_frames(a: dict) -> str:
+    """'translateY(540px) · opacity 0 → translateY(0) · opacity 1' from keyframe summaries."""
+    def short(v: str) -> str:
+        return " · ".join(x.split(": ", 1)[1] if x.startswith(("transform", "opacity")) else x
+                          for x in v.split("; ") if x) or "—"
+    return f"{short(a.get('from', ''))} → {short(a.get('to', ''))}"
+
+
+def add_intro(report: MotionReport, boxes: dict[str, dict], loaded: dict) -> None:
+    """Report-only items (not built by the Motion MCP): what plays once on load, and decorative loops."""
+    intro, loops = loaded.get("intro") or [], loaded.get("loops") or []
+    report.intro, report.loops = intro, loops
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for a in intro:
+        groups[_section_of(boxes, a)].append(a)
+    for sid, items in groups.items():
+        names = list(dict.fromkeys(a["name"] for a in items if a["name"]))
+        dur = round(_med([a["dur"] for a in items], 600))
+        first = items[0]
+        how = (f"{len(items)} phần tử tự chạy một lần khi trang vừa tải" + (f" ({', '.join(names[:4])})" if names else "")
+               + f": {describe_frames(first)}, {dur}ms" + (f", trễ {first['delay']}ms" if first["delay"] else "")
+               + f", {first['easing']}; phần tử đầu ~{first['w']}×{first['h']}px ở y={first['top']}")
+        report.items.append(MotionItem(effect="load-in", section=sid, label=EFFECT_LABEL["load-in"], how=how,
+                                       params={"duration_ms": dur, "count": len(items)}))
+    for sid in dict.fromkeys(_section_of(boxes, a) for a in loops):
+        here = [a for a in loops if _section_of(boxes, a) == sid]
+        names = list(dict.fromkeys(a["name"] for a in here if a["name"]))
+        how = (f"{len(here)} chuyển động lặp mãi" + (f" ({', '.join(names[:4])})" if names else "")
+               + f": {describe_frames(here[0])}, một vòng {round(here[0]['dur'] / 1000, 1)}s")
+        report.items.append(MotionItem(effect="loop", section=sid, label=EFFECT_LABEL["loop"], how=how,
+                                       params={"cycle_s": round(here[0]["dur"] / 1000, 1), "count": len(here)}))
+    report.has_motion = report.has_motion or bool(intro or loops)
 
 
 CANVAS_JS = r"""() => [...document.querySelectorAll("canvas")].map(c => {
@@ -250,6 +310,9 @@ async def inspect_motion(url: str, boxes: dict[str, dict], headed: bool | None =
         try:
             page = await browser.new_page(viewport={"width": width, "height": height})
             await goto_ready(page, url)
+            loaded: dict = {}
+            with contextlib.suppress(Exception):  # right away: an intro plays in the first second
+                loaded = await page.evaluate(motion.LOAD_JS)
             with contextlib.suppress(Exception):
                 await page.wait_for_load_state("networkidle", timeout=8_000)
             overlay = None
@@ -297,12 +360,16 @@ async def inspect_motion(url: str, boxes: dict[str, dict], headed: bool | None =
             controls: list[dict] = []
             with contextlib.suppress(Exception):
                 controls = await motion.sweep_controls(page, on_hover=on_hover if overlay else None)
+            with contextlib.suppress(Exception):
+                await say("Bấm thử từng nút: nút dẫn tới đâu, mở gì")
+                controls = await motion.click_controls(browser, url, controls, width=width, height=height)
             if overlay:
                 with contextlib.suppress(Exception):
                     await overlay.hud(None)
         finally:
             await browser.close()
     report = build_report(boxes, timed, post, parallax, steps)
+    add_intro(report, boxes, loaded)
     for m in models:
         report.items.append(MotionItem(effect="canvas-3d", section=m.section, label="Mô hình 3D / canvas", how=m.how,
                                        params={"w": m.w, "h": m.h}))

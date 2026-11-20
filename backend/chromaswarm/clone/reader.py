@@ -60,6 +60,10 @@ class CloneAnalysis(BaseModel):
     boxes: dict[str, dict] = {}
     components: dict[str, list[dict]] = {}
     signals: str = ""  # what the page says it is for (classification only, never stored in the plan or rebuilt)
+    # CLONE_BRIEF.md inputs (measurements only, no URLs or words): painted backgrounds (gradients, blur,
+    # glows) and every picture / icon with its shown and file size.
+    backgrounds: list[dict] = []
+    media: list[dict] = []
 
 
 # ------------------------------------------------------------------ classification
@@ -220,6 +224,10 @@ def sections_from_blocks(blocks: list[dict]) -> list[Section]:
         i, block = idx[0], blocks[idx[0]]
         structure = forced or classify(block, i, len(blocks))
         sid = SECTION_IDS.get(structure) or ("hero" if structure in HERO_STRUCTURES else structure)
+        # Rows that open and close are an FAQ only when they ask questions; otherwise a list of features.
+        feature_rows = structure == "accordion" and block["features"].get("questions", 3) < 2
+        if feature_rows:
+            sid = "feature-accordion"
         if sid in used:
             n = 2
             while f"{sid}-{n}" in used:
@@ -231,7 +239,7 @@ def sections_from_blocks(blocks: list[dict]) -> list[Section]:
             images = max(images, block["features"].get("logos", 0))
         where = (f"section #{i + 1}" if len(idx) == 1 else f"section #{i + 1}–#{idx[-1] + 1} (gộp {len(idx)} khối ảnh liên tiếp)")
         sections.append(Section(
-            id=sid, name=NAMES[structure], structure=structure, count=images, sources=idx,
+            id=sid, name="Tính năng mở/đóng" if feature_rows else NAMES[structure], structure=structure, count=images, sources=idx,
             motion=list(dict.fromkeys(m for j in idx for m in blocks[j]["features"].get("motion", []))),
             content=(f"Dựng lại từ {where} của trang mẫu ({sum(blocks[j]['features']['height'] for j in idx)}px cao)"
                      + (" — chưa có mẫu đúng kiểu, dựng bằng khối nội dung gần nhất (§2.5 quy tắc 4)"
@@ -318,6 +326,10 @@ async def analyse(url: str, owned: bool, width: int = 1440, height: int = 900) -
             raw = await page.evaluate(READER_JS, owned)
             with contextlib.suppress(Exception):
                 raw["signals"] = (await page.evaluate(SIGNALS_JS))[:4000]
+            with contextlib.suppress(Exception):
+                raw["backgrounds"] = await page.evaluate(BACKGROUNDS_JS)
+            with contextlib.suppress(Exception):
+                raw["media"] = await page.evaluate(MEDIA_JS)
             dna = analyze(await collect(page, url))
             raw["components"] = {}
             with contextlib.suppress(Exception):
@@ -377,6 +389,15 @@ def build_analysis(raw: dict, dna: StyleDNA, owned: bool, fonts: dict[str, FontS
             if box:
                 boxes[sec.id] = box
                 pieces[sec.id] = found
+    # A header that floats over the section below it (fixed / absolute, the hero starting under it): the rebuild
+    # keeps it floating, or everything in that section moves down by the header's height.
+    header = next((s for s in sections if s.structure == "sticky-bar" and s.id in boxes), None)
+    if header:
+        hb = boxes[header.id]
+        below = [b for k, b in boxes.items() if k != header.id and b.get("top", 0) < hb.get("top", 0) + hb.get("height", 0)
+                 and b.get("top", 0) + b.get("height", 0) > hb.get("top", 0) + hb.get("height", 0)]
+        if below:
+            hb["overlay"] = True
     if not owned:  # structure clones are rebuilt from the reference's own layout (owned ones map their copy by kind)
         from chromaswarm.agents.planner import Interactive
         from chromaswarm.clone.components import comps as as_comps
@@ -393,7 +414,8 @@ def build_analysis(raw: dict, dna: StyleDNA, owned: bool, fonts: dict[str, FontS
                          content=page_content(raw, sections) if owned else None, notes=notes, dna=dna,
                          content_width=content_width, fonts=sources, lang=raw.get("lang"),
                          motion=raw.get("motion") or {}, media_share=float(raw.get("media_share") or 0),
-                         boxes=boxes, components=pieces, signals=raw.get("signals", ""), **kept)
+                         boxes=boxes, components=pieces, signals=raw.get("signals", ""),
+                         backgrounds=raw.get("backgrounds") or [], media=raw.get("media") or [], **kept)
 
 
 # ------------------------------------------------------------------ what the user is told
@@ -454,6 +476,54 @@ _KIND_WORDS = [
     (Domain.EDTECH, r"course|academy|learn|class|school|khóa học|học online|đào tạo"),
     (Domain.ECOMMERCE, r"shop|store|cart|add to bag|checkout|free shipping|cửa hàng|giỏ hàng|mua ngay"),
 ]
+
+BACKGROUNDS_JS = r"""() => {
+  // Backgrounds the page paints itself (no picture file): gradients, glows, blurred glass, giant faint type.
+  const out = [], seen = new Set();
+  for (const el of document.querySelectorAll("body *")) {
+    if (out.length >= 40) break;
+    const r = el.getBoundingClientRect();
+    if (r.width < 12 || r.height < 12) continue;
+    const cs = getComputedStyle(el);
+    const grad = /gradient\(/.test(cs.backgroundImage) ? cs.backgroundImage : "";
+    const glass = cs.backdropFilter && cs.backdropFilter !== "none" ? cs.backdropFilter : "";
+    const blur = /blur\(/.test(cs.filter) ? cs.filter : "";
+    const faint = parseFloat(cs.fontSize) >= 120 && (el.innerText || "").trim() && /rgba\([^)]*,\s*0?\.0\d\)/.test(cs.color);
+    if (!grad && !glass && !(blur && grad) && !faint) continue;
+    const kind = faint ? "faint-type" : glass && !grad ? "glass" : /radial-gradient/.test(grad) ? "glow" : "gradient";
+    const key = kind + (grad || glass).replace(/[\d.]+px/g, "") + Math.round(r.width / 50);
+    if (seen.has(key) && kind !== "faint-type") continue;
+    seen.add(key);
+    out.push({ kind, top: Math.round(r.top + scrollY), left: Math.round(r.left), w: Math.round(r.width), h: Math.round(r.height),
+               css: (grad || "").slice(0, 220), glass: glass.slice(0, 60), blur: blur.slice(0, 40),
+               skew: /matrix\(1, 0, -?0\.\d+/.test(cs.transform), tf: cs.transform === "none" ? "" : cs.transform.slice(0, 120),
+               opacity: +cs.opacity,
+               font_px: faint ? Math.round(parseFloat(cs.fontSize)) : 0 });
+  }
+  return out;
+}"""
+
+MEDIA_JS = r"""() => {
+  // Every picture and icon: kind, shown box, file size, and which file it repeats (an index, never the URL).
+  const files = new Map(), out = [];
+  for (const m of document.querySelectorAll("img, svg, video, canvas, picture > source + img, [style*='background-image']")) {
+    if (out.length >= 160) break;
+    if (m.tagName !== "svg" && m.closest("svg")) continue;
+    if (m.tagName === "svg" && m.parentElement && m.parentElement.closest("svg")) continue;
+    const r = m.getBoundingClientRect();
+    if (r.width < 8 || r.height < 8 || !m.checkVisibility({ opacityProperty: true })) continue;
+    const src = m.currentSrc || m.src || (m.tagName === "DIV" ? getComputedStyle(m).backgroundImage : "") || "";
+    let file = null;
+    if (src) { if (!files.has(src)) files.set(src, files.size); file = files.get(src); }
+    const kind = m.tagName === "IMG" ? "img" : m.tagName === "svg" ? "svg" : m.tagName === "VIDEO" ? "video"
+      : m.tagName === "CANVAS" ? "canvas" : "background";
+    out.push({ kind, top: Math.round(r.top + scrollY), left: Math.round(r.left), w: Math.round(r.width), h: Math.round(r.height),
+               nw: m.naturalWidth || null, nh: m.naturalHeight || null, file,
+               icon: r.width <= 48 && r.height <= 48, logo: !!m.closest("header, nav, footer, a[href='/']") && r.width <= 200 && r.height <= 80,
+               decorative: m.getAttribute("aria-hidden") === "true" || m.getAttribute("alt") === "" });
+  }
+  return out;
+}"""
 
 SIGNALS_JS = r"""() => {
   // Words that say what the site is for — meta description, menu labels, the main headline, calls to action.

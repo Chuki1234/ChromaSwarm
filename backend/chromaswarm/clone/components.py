@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 import statistics
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from pydantic import BaseModel
 
@@ -498,10 +498,10 @@ def section_score(sid: str, ref: list[Comp], built: list[Comp], ref_box: dict, b
             out[c.kind] += 1
         return dict(out)
 
-    diffs = []
-    for p in pairs:
-        if p.diffs:
-            diffs.append(f"{KIND_LABEL[p.ref.kind]}{' h' + str(p.ref.level) if p.ref.level else ''}: " + ", ".join(p.diffs))
+    # The same difference on several pieces reads once, with how many (and stays a unique line).
+    same = Counter(f"{KIND_LABEL[p.ref.kind]}{' h' + str(p.ref.level) if p.ref.level else ''}: " + ", ".join(p.diffs)
+                   for p in pairs if p.diffs)
+    diffs = [line + (f" (×{n})" if n > 1 else "") for line, n in same.items()]
     for kind, n in count(missing).items():
         diffs.append(f"thiếu {n} {KIND_LABEL[kind].lower()} so với trang mẫu")
     for kind, n in count(extra).items():

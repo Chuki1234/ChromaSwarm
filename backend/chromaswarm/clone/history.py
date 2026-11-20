@@ -45,6 +45,8 @@ def answer_text(value: Any) -> str:
     if isinstance(value, dict):
         if value.get("url"):
             return str(value["url"])
+        if isinstance(value.get("spec"), dict) and not value.get("approve"):
+            return "Đổi kế hoạch Clone: " + ", ".join(f"{k.split(':', 1)[-1]} → {v}" for k, v in list(value["spec"].items())[:6])
         if value.get("approve"):
             return "Duyệt kế hoạch"
         if value.get("feedback"):

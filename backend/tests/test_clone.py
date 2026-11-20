@@ -455,3 +455,16 @@ def test_skipping_the_content_step_keeps_the_template_samples(tmp_path):
     p = asyncio.run(runner.answer("pc2", {"images": [], "texts": {}}))["pipeline"]
     assert p.step.value == "B7" and p.clone.content_asked and not p.clone.user_images
     assert build_copy(p).brand.startswith("[")
+
+
+def test_clone_spec_is_built_at_b2_and_a_section_skipped_at_b7_leaves_the_plan(tmp_path):
+    runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=fake_reader()))
+    snap = asyncio.run(drive(runner, "cs1", ["clone", {"url": "gom-moc.vn", "prompt": PROMPT, "owned": False}]))
+    p = snap["pipeline"]
+    assert p.clone.spec and any(i["id"] == "section:grid-4" for i in p.clone.spec["items"])
+    assert "CloneSpec" in p.clone.brief and (tmp_path / "cs1" / "artifacts" / "CLONE_BRIEF.md").exists()
+    snap = asyncio.run(runner.answer("cs1", {"spec": {"section:grid-4": "skip"}}))
+    p = snap["pipeline"]
+    assert p.step is Step.B7_APPROVAL and "Lưới sản phẩm: không dựng" in snap["notice"]
+    assert [s.id for s in page_sections(p)] == ["site-header", "hero", "site-footer"]
+    assert "grid-4" not in p.plan_md and "⛔" in p.clone.brief

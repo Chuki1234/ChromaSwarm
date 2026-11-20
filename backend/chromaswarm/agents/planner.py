@@ -42,6 +42,10 @@ class Section(BaseModel):
     # is rendered from this measured layout (developer/measured.py) instead of its structure's template.
     layout: list[dict] = []
     layout_box: dict = {}
+    # Clone mode, from the CloneSpec (clone/spec.py): where each control leads in the rebuild (section-relative
+    # box + href) and the backgrounds the reference paints itself, redrawn as decorative layers.
+    links: list[dict] = []
+    paint: list[dict] = []
 
 
 def _i(id_: str, role: str, behavior: str) -> Interactive:
@@ -145,7 +149,10 @@ def page_sections(state: PipelineState) -> list[Section]:
     """Sections of the page being built: read from the reference in Clone mode, from the user's brief
     when it listed the sections of this page, blueprints otherwise."""
     if state.selected_page == CLONE_PAGE and state.clone and state.clone.sections:
-        return [Section.model_validate(s) for s in state.clone.sections]
+        # Sections the CloneSpec marks `skip` (the user's choice at B7) are not built (clone/spec.py).
+        skipped = {k.split(":", 1)[1] for k, v in ((state.clone.spec or {}).get("overrides") or {}).items()
+                   if k.startswith("section:") and v == "skip"}
+        return [Section.model_validate(s) for s in state.clone.sections if s["id"] not in skipped]
     theme = Theme(state.pillars.theme) if state.pillars.theme else None
     surface = Surface(state.pillars.surface) if state.pillars.surface in {x.value for x in Surface} else None
     brief = state.brief or {}

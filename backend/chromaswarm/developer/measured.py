@@ -15,6 +15,7 @@ Controls are real: links and buttons with hover / focus styles, inputs with a vi
 from __future__ import annotations
 
 import html
+import re
 import itertools
 import urllib.parse
 
@@ -28,6 +29,48 @@ from chromaswarm.engines.color import OKLCH, apca_lc, oklch_to_srgb, parse_css_c
 TEMPLATE_ONLY = {"accordion", "horizontal-scroller", "list-rows", "logo-strip",
                  "picker-recommend", "announcement-bar", "inline-controls"}
 DESKTOP = "@media (min-width: 1200px)"
+# A picture the rebuild does not have (a product screenshot, a 3D scene) keeps its place and width as a skeleton,
+# but no taller than this: a 600-800px grey slab reads as an empty page, not as "a picture goes here".
+SKEL_MAX = 360
+# Labels this small inside such a picture are part of it (an app screenshot's own UI), not the page's copy.
+MOCKUP_LABEL_FS = 20
+
+
+def _inside(c: Comp, box: Comp) -> bool:
+    cx, cy = c.x + c.w / 2, c.y + c.h / 2
+    return box.x <= cx <= box.x + box.w and box.y <= cy <= box.y + box.h
+
+
+def _alpha(color: str | None) -> float:
+    parsed = parse_css_color(color or "")
+    return parsed[1] if parsed else 1.0
+
+
+def drop_faint_type(pieces: list[Comp]) -> list[Comp]:
+    """Giant, almost transparent type (a brand name at 4% behind a footer): decoration, not copy. The CloneSpec
+    marks it `skip` — rebuilt, the contrast guard would turn it into a huge solid "[Your name]"."""
+    return [c for c in pieces if not (c.kind in ("heading", "text") and c.fs >= 120 and _alpha(c.color) <= 0.15)]
+
+
+def drop_picture_labels(pieces: list[Comp], width: float, height: float, has_photos: bool) -> list[Comp]:
+    """Small text sitting on a big picture that becomes a skeleton: the picture's own UI labels (Linear's app
+    screenshot: "Planning", "Roadmaps", "99.9%"…), and the window / panel frames (cards) drawn inside it.
+    Without the picture they would float on an empty grey box (a 700px empty card), so they go with it.
+    Display type (a headline over the picture) stays; a picture covering the whole section (a background)
+    keeps everything over it."""
+    if has_photos:
+        return pieces
+    big = [c for c in pieces if c.kind == "image" and c.w >= 400 and c.h >= 250
+           and not (c.w >= 0.9 * width and height and c.h >= 0.8 * height)]
+    if not big:
+        return pieces
+    def part_of_picture(c: Comp) -> bool:
+        if c.kind in ("text", "link", "heading", "button"):
+            return c.fs <= MOCKUP_LABEL_FS and any(_inside(c, b) for b in big)
+        if c.kind == "card":
+            return any(_inside(c, b) and c.w * c.h <= 1.1 * b.w * b.h for b in big)
+        return False
+    return [c for c in pieces if not part_of_picture(c)]
 
 
 def measurable(section: Section) -> bool:
@@ -37,45 +80,108 @@ def measurable(section: Section) -> bool:
     return section.structure == "accordion" or section.structure not in TEMPLATE_ONLY
 
 
-class _Words:
-    """Sample copy of a given length, never repeating a sentence until the pool is used up."""
+def _key(text: str) -> str:
+    """A line by how it starts (a cut copy of a sentence is the same sentence)."""
+    return " ".join(text.lower().split())[:28]
 
-    def __init__(self, c: PageCopy):
-        heads = [c.headline, *[t for t, _ in c.story], c.closing, *[i.name for i in c.cards], *[i.name for i in c.items],
-                 *[q for q, _ in c.faqs]]
-        body = [c.subhead, *[t for _, t in c.story], c.footer_line, *[a for _, a in c.faqs], *[t for _, t in c.tabs],
-                *[i.note for i in c.cards if i.note]]
+
+def _fill_in(text: str) -> bool:
+    """A fill-in mark of the template ("[Your name]", "[Headline: …]"): shown once, where it belongs."""
+    return text.lstrip().startswith("[")
+
+
+class _Words:
+    """Sample copy for one measured section, chosen by role and length, page-wide without repeats.
+
+    * by role: the hero's first heading is the page headline and its first paragraph the subhead; a closing
+      section's first heading is the closing line; an accordion asks the FAQ questions. Everywhere else
+      headings come from the feature / story titles, never an FAQ question or a call to contact;
+    * page-wide: lines earlier sections already show (`PageCopy.taken`) are skipped until a pool runs out;
+    * fill-in marks ("[…]") appear only in their own role, never as filler elsewhere.
+    """
+
+    def __init__(self, c: PageCopy, structure: str = "", sid: str = ""):
+        self.c = c
+        features = [*[t for t, _ in c.story], *[i.name for i in c.cards], *[i.name for i in c.items]]
+        faqs = [q for q, _ in c.faqs]
+        if structure.startswith(("split-7-5", "hero", "full-bleed-image")) or sid == "hero":
+            self.role = "hero"
+        elif structure in ("closing-cta", "full-bleed-band") or sid.startswith("closing"):
+            self.role = "closing"
+        elif structure == "accordion":
+            self.role = "faq"
+        else:
+            self.role = ""
+        heads = faqs + features if self.role == "faq" else features
+        # (tab panels' sample text only in tabs: it is generic product-page copy elsewhere)
+        body = [*[t for _, t in c.story], *[i.note for i in c.cards if i.note],
+                *([t for _, t in c.tabs] if structure == "tabs" else []), c.footer_line,
+                *([a for _, a in c.faqs] if self.role == "faq" else []), *[i.note for i in c.items if i.note]]
+        # Labels: the site's short words, repeated when the page has more labels than words. Feature titles are
+        # the headings' and are never spent on labels (a page has ~10 headings but ~80 small labels).
         short = [c.cta_secondary, *c.nav, *c.categories, *[t for t, _ in c.facts]]
-        self.lists = {k: list(dict.fromkeys(x for x in v if x)) or ["—"] for k, v in
-                      (("head", heads), ("body", body), ("short", short + heads))}
-        self.used: dict[str, set[str]] = {k: set() for k in self.lists}
-        self.pools = {k: itertools.cycle(v) for k, v in self.lists.items()}
+
+        def clean(v: list[str], *fallback: str) -> list[str]:
+            out = list(dict.fromkeys(x for x in v if x and not _fill_in(x)))
+            return out or list(dict.fromkeys(x for x in fallback if x)) or ["—"]
+
+        self.lists = {"head": clean(heads, c.closing, c.headline), "body": clean(body, c.subhead),
+                      "short": clean(short, c.cta_secondary)}
+        # One set for all kinds (a heading never comes back as a label), keyed by how a line starts: a sentence
+        # cut to the reference's length on an earlier section still counts as shown.
+        self.used: set[str] = {_key(t) for t in c.taken}
+        self.firsts: set[str] = set()
         self.cta = itertools.cycle([c.cta, c.cta_secondary])
+
+    def _free(self, kind: str) -> list[str]:
+        free = [x for x in self.lists[kind] if _key(x) not in self.used]
+        if not free:  # the pool ran out: start it again (a repeat beats an empty block)
+            self.used -= {_key(x) for x in self.lists[kind]}
+            free = list(self.lists[kind])
+        return free
+
+    def _use(self, line: str) -> None:
+        self.used.add(_key(line))
+
+    def _role_line(self, kind: str) -> str | None:
+        """The section's own line for its first heading / paragraph (hero, closing)."""
+        if kind in self.firsts:
+            return None
+        self.firsts.add(kind)
+        line = {("hero", "head"): self.c.headline, ("hero", "body"): self.c.subhead,
+                ("closing", "head"): self.c.closing}.get((self.role, kind))
+        if line and _key(line) not in self.used:
+            self._use(line)
+            return line
+        return None
 
     def _closest(self, kind: str, chars: int) -> str:
         """The unused line whose length is closest to the reference's (headings and labels are one line,
         never several glued together)."""
-        free = [x for x in self.lists[kind] if x not in self.used[kind]] or self.lists[kind]
-        if len(free) == len(self.lists[kind]):
-            self.used[kind].clear()
-        best = min(free, key=lambda x: abs(len(x) - chars))
-        self.used[kind].add(best)
-        if len(best) > chars * 1.6 and chars >= 6:
-            cut = best[: int(chars * 1.2)].rsplit(" ", 1)[0].rstrip(",;:—-[")
-            best = cut + ("]" if best.startswith("[") and not cut.endswith("]") else "") if len(cut) >= 3 else best
+        best = min(self._free(kind), key=lambda x: abs(len(x) - chars))
+        self._use(best)
+        if len(best) > chars * 1.6 and chars >= 6 and not _fill_in(best):
+            cut = best[: int(chars * 1.2)].rsplit(" ", 1)[0].rstrip(",;:—-")
+            best = cut if len(cut) >= 3 else best
         return best
 
     def take(self, kind: str, chars: int) -> str:
         if kind == "cta":
             return next(self.cta)
+        if kind in ("head", "body") and (line := self._role_line(kind)):
+            return line
         if kind in ("head", "short"):
             return self._closest(kind, chars)
-        pool = self.pools[kind]
-        text = next(pool)
-        guard = 0
-        while len(text) < chars * 0.8 and guard < 6:
-            text += (" " if kind != "body" or text.endswith((".", "!", "?")) else ". ") + next(pool)
-            guard += 1
+        # Body: whole unused sentences, joined until the reference's length is reached.
+        parts: list[str] = []
+        while sum(len(p) + 1 for p in parts) < chars * 0.8 and len(parts) < 6:
+            free = self._free("body")
+            nxt = next((x for x in free if x not in parts), None)
+            if nxt is None:
+                break
+            parts.append(nxt)
+            self._use(nxt)
+        text = " ".join(p if p.endswith((".", "!", "?")) else p + "." for p in parts[:-1]) + (" " if len(parts) > 1 else "") + parts[-1]
         if len(text) > chars * 1.25 and chars >= 8:
             cut = text[: int(chars * 1.1)].rsplit(" ", 1)[0].rstrip(",;:—-")
             text = cut if len(cut) >= 4 else text
@@ -116,7 +222,7 @@ def _type_class(c: Comp) -> str:
 class _Render:
     def __init__(self, section: Section, copy: PageCopy, js):
         self.s, self.js = section, js
-        self.words = _Words(copy)
+        self.words = _Words(copy, section.structure, section.id)
         self.n = 0
         self.css: list[str] = []
         self.sel = f'[data-swarm-section="{section.id}"]'
@@ -125,6 +231,7 @@ class _Render:
         box = section.layout_box or {}
         self.bgs: list[str | None] = [box.get("bg") or box.get("page")]  # what is painted beneath, innermost last
         self.nav = list(copy.nav_links) if section.structure == "sticky-bar" else []
+        self.links = [dict(x) for x in section.links]  # CloneSpec: where each reference control leads
         self.brand = copy.brand or ""
         self.has_photos = bool(copy.images)  # the user's own (B4 uploads / owned site): otherwise skeletons
         self.buttons = 0
@@ -216,7 +323,11 @@ class _Render:
             parts = [self.node(flow, node, None, "rows")]
             for b in back:
                 parts.append(self.back(b, node))
-            desk.update({"position": "relative", "min-height": f"{round(node.h)}px"})
+            # Pictures behind become skeletons no taller than SKEL_MAX: the layer only needs to reach their end.
+            reach = [round(b.y1 - node.y0) if b.comp is None or self.covers(b.comp) or b.kind == "back-card"
+                     or self.picture_label(b.comp) is None
+                     else round(b.y0 - node.y0) + min(SKEL_MAX, round(b.comp.h)) for b in back]
+            desk.update({"position": "relative", "min-height": f"{min(round(node.h), max(reach, default=round(node.h)))}px"})
             self.rule(i, desk)
             body = "\n".join(parts)
             return f'<div className="n{i} m-layer" data-n="{i}">\n{body}\n</div>'
@@ -266,13 +377,33 @@ class _Render:
     def skeleton_img(self, c: Comp, label: str = "") -> str:
         """An exact-size placeholder for a picture the rebuild does not have (translucent grey: reads on any
         background, never a stand-in photo)."""
-        w, h = max(1, round(c.w)), max(1, round(c.h))
+        w, h = max(1, round(c.w)), min(SKEL_MAX, max(1, round(c.h)))
         text = (f'<text x="{w / 2:.0f}" y="{h / 2 + 6:.0f}" font-family="sans-serif" font-size="16" fill="#808080" '
                 f'text-anchor="middle">{label}</text>') if label else ""
         svg = ("data:image/svg+xml;utf8," + urllib.parse.quote(
             f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">'
             f'<rect width="{w}" height="{h}" rx="{c.radius}" fill="#808080" fill-opacity="0.16"/>{text}</svg>'))
         return f'<img alt="" src="{svg}" width={{{w}}} height={{{h}}} style={{{{ width: "100%", height: "auto" }}}} />'
+
+    def href(self, c: Comp) -> str:
+        """Where this control leads, as the CloneSpec decided (Section.links): the matching control of the
+        reference — same place (centres within 32px) and about the same size. '#' when none matches."""
+        cx, cy = c.x + c.w / 2, c.y + c.h / 2
+        best, dist = None, 1e9
+        for link in self.links:
+            lx, ly = link.get("x", 0) + link.get("w", 0) / 2, link.get("y", 0) + link.get("h", 0) / 2
+            d = abs(lx - cx) + abs(ly - cy)
+            if d <= 32 and d < dist and abs(link.get("w", 0) - c.w) <= max(40, c.w * 0.6):
+                best, dist = link, d
+        if best is not None:
+            self.links.remove(best)  # one reference control per rendered one
+        href = (best or {}).get("href") or "#"
+        return '"#"' if href == "#" else "{" + self.js(href, "href") + "}"
+
+    def covers(self, c: Comp) -> bool:
+        """The picture covers the whole section on the reference (a background texture / photo)."""
+        box = self.s.layout_box or {}
+        return c.w >= 0.9 * float(box.get("width") or 1440) and c.h >= 0.8 * float(box.get("height") or 1)
 
     def picture_label(self, c: Comp) -> str | None:
         """None: use the user's photo (Art). Otherwise the skeleton's label ("" = none)."""
@@ -288,8 +419,7 @@ class _Render:
         self.n += 1
         c = node.comp
         assert c is not None
-        box = self.s.layout_box or {}
-        if c.w >= 0.9 * float(box.get("width") or 1440) and c.h >= 0.8 * float(box.get("height") or 1):
+        if self.covers(c):
             # Covering the whole section on the reference (a background texture / photo): a faint frame only,
             # the section's own measured colour shows through instead of a stand-in picture.
             self.rule(i, {"position": "absolute", "z-index": "0", "margin": "0", "inset": "0", "width": "100%", "height": "100%"})
@@ -349,13 +479,13 @@ class _Render:
                         f'data-swarm-id="{sid}-link-{i}" data-swarm-role="link">{{{self.js(label, "link")}}}</a>')
             text = self.words.take("short", _chars(c))
             plain = " m-link-plain" if c.fs >= 28 else ""  # display-size link (an email, a CTA line): no underline
-            return (f'<a href="#" className="n{i} m-link{plain}" data-n="{i}" data-swarm-id="{sid}-link-{i}" data-swarm-role="link">'
+            return (f'<a href={self.href(c)} className="n{i} m-link{plain}" data-n="{i}" data-swarm-id="{sid}-link-{i}" data-swarm-role="link">'
                     f'{{{self.js(text, "link")}}}</a>')
         if c.kind == "button" and c.bg is None and c.border == 0:
             # Drawn as plain (often large) text on the reference: a link, not a filled bar.
             self.rule(i, desk)
             text = self.words.take("short", _chars(c))
-            return (f'<a href="#" className="n{i} m-link m-link-plain" data-n="{i}" data-swarm-id="{sid}-btn-{i}" data-swarm-role="link">'
+            return (f'<a href={self.href(c)} className="n{i} m-link m-link-plain" data-n="{i}" data-swarm-id="{sid}-btn-{i}" data-swarm-role="link">'
                     f'{{{self.js(text, "link")}}}</a>')
         if c.kind == "button":
             # Desktop: the reference's own size (tap targets are checked on phones, where .btn keeps 48px).
@@ -368,7 +498,7 @@ class _Render:
                                "border-color": f"color-mix(in oklch, {c.color} 35%, transparent)" if c.border and not c.bg else ""})
             self.buttons += 1  # the page's two actions first, then short labels: never the same label twice
             text = self.words.take("cta" if self.buttons <= 2 else "short", _chars(c))
-            return (f'<a href="#" className="n{i} btn {cls}" data-n="{i}" data-swarm-id="{sid}-btn-{i}" data-swarm-role="button">'
+            return (f'<a href={self.href(c)} className="n{i} btn {cls}" data-n="{i}" data-swarm-id="{sid}-btn-{i}" data-swarm-role="button">'
                     f'{{{self.js(text, "button")}}}</a>')
         if c.kind == "input":
             desk["border-radius"] = f"{c.radius}px"
@@ -432,7 +562,8 @@ def render_measured(section: Section, copy: PageCopy, js) -> tuple[str, str] | N
     box = section.layout_box or {}
     width = float(box.get("width") or 1440)
     height = float(box.get("height") or 0)
-    tree = build_tree(comps(section.layout), width)
+    pieces = drop_faint_type(drop_picture_labels(comps(section.layout), width, height, bool(copy.images)))
+    tree = build_tree(pieces, width)
     if tree is None:
         return None
     if tree.kind not in ("rows", "cols"):
@@ -440,6 +571,8 @@ def render_measured(section: Section, copy: PageCopy, js) -> tuple[str, str] | N
     r = _Render(section, copy, js)
     jsx = r.node(tree)
     sel = r.sel
+    paint_jsx, paint_css = paint_layers(section, sel)
+    jsx = paint_jsx + jsx
     left = tree.x0 / 1440 * 100
     right = max(0.0, (width - tree.x1)) / 1440 * 100
     top, bottom = round(tree.y0), round(max(0.0, height - tree.y1)) if height else 64
@@ -452,6 +585,10 @@ def render_measured(section: Section, copy: PageCopy, js) -> tuple[str, str] | N
 {sel}.s-band .input {{ background: transparent; color: inherit; border-color: currentColor; }}
 """ if box.get("band") else "")
     section_bg = f"{sel}.s {{ background: {box['bg']}; }}\n" if box.get("bg") else ""
+    if box.get("overlay"):
+        # Floats over the section below, as on the reference: it takes no room, the next section starts under it.
+        section_bg += (f"{sel}.s {{ position: fixed !important; top: {round(box.get('top', 0))}px; left: 0; right: 0; "
+                       f"z-index: 40; }}\n")
     base = f"""{sel} {{ overflow-x: clip; }}
 {sel} .m-rows {{ display: flex; flex-direction: column; align-items: flex-start; gap: 16px; }}
 {sel} .m-cols {{ display: flex; flex-wrap: wrap; align-items: flex-start; gap: 24px; }}
@@ -483,7 +620,7 @@ def render_measured(section: Section, copy: PageCopy, js) -> tuple[str, str] | N
 {sel} .m-layer > :first-child {{ position: relative; z-index: 1; }}
 {sel} .m-panel {{ min-height: 120px; border-radius: var(--radius-md); background: var(--bg-surface); }}
 {sel} .m-bgframe {{ background: color-mix(in oklch, currentColor 4%, transparent); pointer-events: none; }}
-{band_css}{section_bg}{chr(10).join(r.paints)}
+{band_css}{section_bg}{paint_css}{chr(10).join(r.paints)}
 {DESKTOP} {{
   {sel}.s {{ padding-top: {top}px; padding-bottom: {bottom}px; }}
   {sel} > .container {{ max-width: none; padding-left: {left:.3f}vw; padding-right: {right:.3f}vw; }}
@@ -496,9 +633,53 @@ def render_measured(section: Section, copy: PageCopy, js) -> tuple[str, str] | N
     return jsx, base
 
 
-def measured_interactive(section: Section) -> list[tuple[str, str, str]]:
+def _frame(text: str) -> str:
+    """'transform: translateY(540px); opacity: 0' (a keyframe summary of the reference) -> CSS declarations."""
+    keep = []
+    for part in (text or "").split("; "):
+        prop, _, value = part.partition(": ")
+        if prop in ("transform", "opacity", "filter") and value and all(ch not in value for ch in "{};<>"):
+            keep.append(f"{prop}: {value}")
+    return "; ".join(keep)
+
+
+def paint_layers(section: Section, sel: str) -> tuple[str, str]:
+    """Backgrounds the reference paints itself (CloneSpec `background` items: gradients, glows), redrawn as
+    decorative layers behind the section's content at their measured place, with their own intro animation
+    (e.g. light beams that slide in on load). Decorative only: aria-hidden, no pointer events, reduced-motion safe."""
+    if not section.paint:
+        return "", ""
+    jsx, css = [], [f"{sel}.s {{ position: relative; isolation: isolate; }}",
+                    f"{sel} .m-paint {{ position: absolute; z-index: -1; pointer-events: none; }}"]
+    for k, layer in enumerate(section.paint[:8]):
+        bg = layer.get("css", "")
+        if not bg or any(ch in bg for ch in "{};<>") or "url(" in bg:
+            continue  # gradients only: never a picture file
+        decl = [f"left: {layer['x'] / 1440 * 100:.2f}%", f"top: {round(layer['y'])}px", f"width: {layer['w'] / 1440 * 100:.2f}%",
+                f"height: {round(layer['h'])}px", f"background: {bg}"]
+        for prop, key in (("filter", "blur"), ("transform", "tf")):
+            v = layer.get(key) or ""
+            if v and all(ch not in v for ch in "{};<>"):
+                decl.append(f"{prop}: {v}")
+        if (op := layer.get("opacity")) is not None and op < 1:
+            decl.append(f"opacity: {op:g}")
+        intro = layer.get("intro")
+        if intro and (a := _frame(intro.get("from", ""))) and (b := _frame(intro.get("to", ""))):
+            name = f"cs-paint-{section.id}-{k}"
+            easing = intro.get("easing") if re.match(r"^(linear|ease(-in|-out|-in-out)?|cubic-bezier\([\d.,\s-]+\))$", intro.get("easing") or "") else "ease-out"
+            css.append(f"@keyframes {name} {{ from {{ {a}; }} to {{ {b}; }} }}")
+            decl.append(f"animation: {name} {int(intro.get('dur') or 800)}ms {easing} {int(intro.get('delay') or 0)}ms both")
+        css.append(f"{sel} .m-paint-{k} {{ {'; '.join(decl)}; }}")
+        jsx.append(f'<div className="m-paint m-paint-{k}" aria-hidden="true" />')
+    css.append(f"@media (prefers-reduced-motion: reduce) {{ {sel} .m-paint {{ animation: none !important; }} }}")
+    return ("\n".join(jsx) + "\n") if jsx else "", "\n".join(css) + "\n"
+
+
+def measured_interactive(section: Section, has_photos: bool = False) -> list[tuple[str, str, str]]:
     """The controls a measured section will have (for PLAN.md): (id, role, behaviour)."""
-    tree = build_tree(comps(section.layout), float((section.layout_box or {}).get("width") or 1440))
+    box = section.layout_box or {}
+    width, height = float(box.get("width") or 1440), float(box.get("height") or 0)
+    tree = build_tree(drop_faint_type(drop_picture_labels(comps(section.layout), width, height, has_photos)), width)
     if tree is None:
         return []
     out, n = [], 0

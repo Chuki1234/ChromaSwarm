@@ -235,8 +235,8 @@ function CompareRow({ s, open, onToggle, refSrc, builtSrc }: {
           </p>
           {(s.diffs.length > 0 || s.effects_missing.length > 0) && (
             <ul className="flex flex-col gap-1 text-xs text-fg-2">
-              {s.diffs.map((d) => <li key={d}>— {d}</li>)}
-              {s.effects_missing.map((e) => <li key={e}>— thiếu hiệu ứng {e}</li>)}
+              {s.diffs.map((d, k) => <li key={`d${k}-${d}`}>— {d}</li>)}
+              {s.effects_missing.map((e, k) => <li key={`e${k}-${e}`}>— thiếu hiệu ứng {e}</li>)}
             </ul>
           )}
         </div>

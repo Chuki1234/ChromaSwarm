@@ -151,6 +151,19 @@ class CloneSource(BaseModel):
     motion_checked: bool = False
     motion_report: dict | None = None
     analysis: str | None = None  # B2 top-down analysis (clone/analysis.py, ANALYSIS.md): measurements only
+    # CLONE_BRIEF.md (clone/brief_doc.py): the build team's preparation sheet — concept, sections and why,
+    # spacing, type / colour / backgrounds, pictures, every control (hover, click, destination), effects, and
+    # what may and may not be cloned. Inputs are measurements only.
+    style: dict | None = None  # StyleDNA dump (colours, fonts, spacing scale, radii, separation)
+    backgrounds: list[dict] = Field(default_factory=list)
+    media: list[dict] = Field(default_factory=list)
+    brief: str | None = None
+    # Sketch step (clone/sketch.py): the page drawn from what was read, checked against a screenshot; gaps
+    # measured again. False = the B2 sketch pass is pending (old sessions default to done).
+    sketched: bool = True
+    sketch: dict | None = None  # coverage (before / after re-measuring), gaps, screen pairs (artifacts/sketch/)
+    sketch_built: dict | None = None  # B10: the rebuild's wireframe sketch vs the reference's, per section
+    spec: dict | None = None  # CloneSpec dump (clone/spec.py): copy / replace / skip / todo per item, used by the build
 
 
 class Asset(BaseModel):

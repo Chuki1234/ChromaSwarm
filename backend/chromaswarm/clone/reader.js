@@ -13,15 +13,28 @@
   const text = el => (el?.innerText || "").replace(/\s+/g, " ").trim();
   const ownText = el => [...el.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join(" ").trim();
 
-  // Descend through single full-width wrappers (#__next, main, div.page...) to the section list.
+  // A header whose own box is empty (0px: its bar is position: fixed / sticky inside it) counts as that bar.
+  const pinnedIn = c => {
+    if (c.getBoundingClientRect().height >= 16 || !(c.tagName === "HEADER" || c.querySelector("nav"))) return null;
+    // The bar that holds the navigation (a promo strip above it is a separate fixed box): the tallest such one.
+    const bars = [...c.querySelectorAll("nav, header, div")].filter(d => {
+      const pos = getComputedStyle(d).position, r = d.getBoundingClientRect();
+      return (pos === "fixed" || pos === "sticky") && r.width >= vw * 0.9 && r.height >= 32 && r.height < 240 && visible(d);
+    });
+    const withNav = bars.filter(d => d.tagName === "NAV" || d.querySelector("nav") || d.querySelectorAll("a, button").length >= 2);
+    const pool = withNav.length ? withNav : bars;
+    return pool.sort((a, b) => b.getBoundingClientRect().height - a.getBoundingClientRect().height)[0] || null;
+  };
+  // Descend through single full-width wrappers (#__next, main, div.page...) to the section list
+  // (a 0px header holding a fixed bar counts as a child: the descent must not walk past it).
   let root = document.body;
   for (let i = 0; i < 8; i++) {
-    const kids = [...root.children].filter(visible).filter(k => !/^(SCRIPT|STYLE|NOSCRIPT)$/.test(k.tagName));
+    const kids = [...root.children].map(c => pinnedIn(c) || c).filter(visible).filter(k => !/^(SCRIPT|STYLE|NOSCRIPT)$/.test(k.tagName));
     if (kids.length === 1 && kids[0].getBoundingClientRect().width >= vw * 0.9) root = kids[0];
     else break;
   }
   // 16px keeps one-line headings / paragraphs; the grouping below attaches them to the next block.
-  const kidsOf = el => [...el.children].filter(visible).filter(c => c.getBoundingClientRect().height >= 16
+  const kidsOf = el => [...el.children].map(c => pinnedIn(c) || c).filter(visible).filter(c => c.getBoundingClientRect().height >= 16
     && !/^(SCRIPT|STYLE|NOSCRIPT|BR|HR)$/.test(c.tagName));
   // Fixed-position boxes narrower than half the page (promo widgets, chat bubbles) float over the page:
   // they are not sections. A fixed full-width header stays.
@@ -77,6 +90,12 @@
   });
   if (pending.length) grouped.splice(grouped.length - 1, 0, { el: null, lead: pending });  // before the footer
   const leadText = lead => lead.map(text).join(" ").trim();
+
+  // Clickable rows whose first line is a question (only counted: no text leaves the page).
+  const questionRows = el => [...el.querySelectorAll("summary, button, [role=button], [aria-expanded]")].filter(b => {
+    const first = (b.innerText || "").split("\n").map(t => t.trim()).find(Boolean) || "";
+    return first.length >= 8 && /[?？]$/.test(first);
+  }).length;
 
   const priceRe = /(\d[\d.,]*\s?(₫|đ|vnd|vnđ|\$|€|usd))|((\$|€)\s?\d)/i;
 
@@ -179,7 +198,8 @@
     const listEls = listRows(el);
     const features = {
       tag: blockEl ? el.tagName.toLowerCase() : "text", role: el.getAttribute("role"), index, height: Math.round(r.height),
-      top: Math.round(r.top + scrollY), left: Math.round(r.left), width: Math.round(r.width),
+      // A fixed bar sits at its window place whatever the scroll: its page top is that place.
+      top: Math.round(r.top + (blockEl && getComputedStyle(blockEl).position === "fixed" ? 0 : scrollY)), left: Math.round(r.left), width: Math.round(r.width),
       h1: !!el.querySelector("h1") || lead.some(l => l.tagName === "H1" || l.querySelector("h1")),
       headings: (blockEl ? el.querySelectorAll("h1,h2,h3,h4").length : 0) + lead.filter(l => /^H[1-4]$/.test(l.tagName) || l.querySelector("h1,h2,h3,h4")).length,
       lead_text: leadText(lead).length,
@@ -187,7 +207,9 @@
       buttons: el.querySelectorAll("button, a[class*=btn], a[class*=button], [role=button]").length,
       inputs: el.querySelectorAll("input:not([type=hidden]), textarea, select").length,
       password: !!el.querySelector("input[type=password]"),
-      accordion: el.querySelectorAll("details, [aria-expanded]").length,
+      accordion: Math.max(el.querySelectorAll("details, [aria-expanded]").length, questionRows(el)),
+      // Rows that ask something (their label ends with "?"): an FAQ, not a list of features that open.
+      questions: questionRows(el),
       tablist: !!el.querySelector("[role=tablist]"), images: media.length, big_image: bigImg,
       bg_differs: cs.backgroundColor !== "rgba(0, 0, 0, 0)" && cs.backgroundColor !== pageBg,
       bg_image: cs.backgroundImage !== "none" || (media[0] && media[0].getBoundingClientRect().width >= vw * 0.9),

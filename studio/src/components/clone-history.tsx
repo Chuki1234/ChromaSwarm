@@ -64,7 +64,8 @@ export function saveDraft(url: string, owned: boolean) {
   } catch {}
 }
 
-type Kept = { kind: "user" | "assistant"; text: string; tone?: "error" } | { kind: "motion"; report: unknown } | { kind: "analysis"; text: string };
+type Kept = { kind: "user" | "assistant"; text: string; tone?: "error" } | { kind: "motion"; report: unknown }
+  | { kind: "analysis" | "brief"; text: string } | { kind: "sketch"; stage: string; result: unknown };
 
 /** A Clone session's conversation as shown (answers, notices, effect card, analysis) — not the live question. */
 export function loadThread(id: string): Kept[] {
@@ -78,7 +79,7 @@ export function loadThread(id: string): Kept[] {
 
 export function saveThread(id: string, items: { kind: string }[]) {
   try {
-    const kept = items.filter((it) => ["user", "assistant", "motion", "analysis"].includes(it.kind)).slice(-200);
+    const kept = items.filter((it) => ["user", "assistant", "motion", "analysis", "brief", "sketch"].includes(it.kind)).slice(-200);
     localStorage.setItem(THREAD_KEY(id), JSON.stringify(kept));
   } catch {}
 }

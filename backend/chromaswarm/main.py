@@ -159,6 +159,21 @@ def compare_shot(session_id: str, name: str) -> Response:
     return Response(path.read_bytes(), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
+_SAFE_SKETCH = re.compile(r"^(ref|built|shot)-\d{2}\.jpg$")
+
+
+@app.get("/sessions/{session_id}/sketch/{name}")
+def sketch_shot(session_id: str, name: str) -> Response:
+    """Clone sketch step: reference screenshot | sketch of what was read (B2), or reference sketch | rebuild
+    sketch (B10), one screen per image."""
+    if not _SAFE_SESSION.match(session_id) or not _SAFE_SKETCH.match(name):
+        raise HTTPException(status_code=404, detail="Không có ảnh này.")
+    path = WORKSPACES / session_id / "artifacts" / "sketch" / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Không có ảnh này.")
+    return Response(path.read_bytes(), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
 @app.get("/health")
 def health() -> dict:
     return {"ok": True, "consultant": getattr(consultant, "name", "rule-based"),

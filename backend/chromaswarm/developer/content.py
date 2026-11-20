@@ -51,6 +51,7 @@ class PageCopy(BaseModel):
     cards: list[Item] = []  # bento cards: products for shops / projects for portfolios, features otherwise
     rows: list[tuple[str, str]] = []  # list rows: (entry, meta) — posts with dates, work history with periods
     lang: str = "vi"  # page language (developer/i18n.py): a Clone keeps the reference's language
+    taken: list[str] = []  # Clone measured sections: lines earlier sections of the page already show
 
 
 DEFAULTS: dict[Domain, dict] = {
