@@ -2,6 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { BuildPanel } from "@/components/build-panel";
+import { CloneHistory, savedThread } from "@/components/clone-history";
 import { CloneSource, QuestionCard, type Answer, type Question } from "@/components/question-card";
 
 const BACKEND_WS = process.env.NEXT_PUBLIC_BACKEND_WS ?? "ws://localhost:8100";
@@ -172,6 +173,7 @@ export function PipelineConsole() {
   const lastSig = useRef("");
   const lastNote = useRef<string | null>(null);
   const motionShown = useRef(false); // the B2 effect-check report goes into the thread once
+  const threadRestored = useRef(false); // Clone: the saved conversation is loaded once per page load
   const analysisShown = useRef(false); // and the top-down analysis
   const pendingPrompt = useRef<string | null>(null); // typed on the empty screen, sent once Chroma asks for it
   const pendingClone = useRef<Answer | null>(null); // Clone form filled on the empty screen, sent once Chroma asks for it
@@ -192,6 +194,15 @@ export function PipelineConsole() {
       if (msg.type === "state") {
         const s = msg as Snapshot;
         setSnap(s);
+        if (!threadRestored.current) {
+          // First state after (re)connecting: a Clone session opened again gets its saved conversation back.
+          threadRestored.current = true;
+          if (s.state?.mode === "clone" && s.state.step !== "B1") {
+            savedThread(s.state.session_id).then((rows) => {
+              if (rows.length) setItems((it) => [...rows.map((r) => ({ kind: r.role, text: r.text }) as Item), ...it]);
+            });
+          }
+        }
         setBusy(false);
         const sig = sigOf(s);
         // The prompt / Clone form filled on the empty screen answers this question: don't show it again.
@@ -314,6 +325,14 @@ export function PipelineConsole() {
     restart();
   };
 
+  // Clone history (Supabase): open a saved session in place of the current one.
+  const openSession = (id: string) => {
+    try {
+      localStorage.setItem("chromaswarm-session", id);
+    } catch {}
+    location.reload();
+  };
+
   const restart = () => {
     try {
       localStorage.removeItem("chromaswarm-session");
@@ -379,6 +398,7 @@ export function PipelineConsole() {
                 <fieldset disabled={mode !== "clone"} className="contents">
                   <CloneSource busy={busy || status !== "open"} onAnswer={submitClone} />
                 </fieldset>
+                {mode === "clone" && <div className="mt-6"><CloneHistory onOpen={openSession} /></div>}
               </div>
             </div>
           </EmptyState>

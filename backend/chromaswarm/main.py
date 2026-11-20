@@ -21,6 +21,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from chromaswarm.clone.history import CloneHistory, resumable
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -170,15 +171,55 @@ async def broadcast(session_id: str, message: dict) -> None:
 
 
 async def resume(session_id: str, value) -> dict:
-    """Resume the pipeline with an answer and stream build progress to every tab of the session."""
+    """Resume the pipeline with an answer and stream build progress to every tab of the session.
+    Clone sessions are written to Supabase as they go (clone/history.py; no-op without its settings)."""
     async def progress(snap: dict) -> None:
+        await history.record_snapshot(snap)  # every step's notice, also the passes that do not stream
         if snap["pipeline"].step in BUILD_STEPS:  # only long-running build work streams
             await broadcast(session_id, to_message(snap))
 
     async with LOCKS[session_id]:
+        await history.record_answer((await runner.snapshot(session_id))["pipeline"], value)
         snap = await runner.answer(session_id, value, on_progress=progress)
+    await history.record_snapshot(snap)
     await broadcast(session_id, to_message(snap))
     return snap
+
+
+history = CloneHistory()
+
+
+async def restore_clone(session_id: str) -> None:
+    """After a backend restart, a Clone session saved in Supabase continues where it was (a build that was
+    running goes back to the plan approval: its dev server and browser are gone)."""
+    if not history.enabled or not _SAFE_SESSION.match(session_id):
+        return
+    if (await runner.snapshot(session_id))["pipeline"] is not None:
+        return  # still in memory
+    saved = await history.state(session_id)
+    if not saved:
+        return
+    try:
+        p = resumable(saved)
+        async with LOCKS[session_id]:
+            await runner.graph.ainvoke({"pipeline": p}, runner._config(session_id))
+        await history.add_event(session_id, "restored", p.step.value, {"step": p.step.value})
+    except Exception as e:  # noqa: BLE001 — a bad saved state must not lock the user out: start fresh
+        log.warning("could not restore clone session %s: %s", session_id, e)
+
+
+@app.get("/clone/sessions")
+async def clone_sessions() -> dict:
+    """Saved Clone sessions (newest first) for the Studio's history list."""
+    return {"enabled": history.enabled, "sessions": await history.sessions()}
+
+
+@app.get("/clone/sessions/{session_id}/messages")
+async def clone_messages(session_id: str) -> dict:
+    """The saved conversation of one Clone session (to redraw the Studio thread after a reload)."""
+    if not _SAFE_SESSION.match(session_id):
+        raise HTTPException(status_code=404, detail="Không có phiên này.")
+    return {"messages": await history.messages(session_id)}
 
 
 CHATS: dict[str, list[dict]] = defaultdict(list)  # Creative-mode transcript per session (memory only)
@@ -239,6 +280,7 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
     await ws.accept()
     CLIENTS[session_id].add(ws)
     try:
+        await restore_clone(session_id)
         await ws.send_json(to_message(await runner.start(session_id)))  # inside: the tab may close at once
         while True:
             msg = await ws.receive_json()
