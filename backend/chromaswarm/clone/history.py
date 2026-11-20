@@ -19,6 +19,7 @@ import httpx
 from chromaswarm.state_machine.pipeline_state import BuildMode, PipelineState, Step
 
 log = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)  # one line per request would drown the build log
 
 BUILD_STEPS = {Step.B8_DESIGN, Step.B9_DEVELOP, Step.B10_INTEGRATE, Step.B11_MASTER_QA}
 

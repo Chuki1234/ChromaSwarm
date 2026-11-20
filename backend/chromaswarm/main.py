@@ -21,6 +21,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from chromaswarm.clone.checkpoints import SupabaseCloneSaver
 from chromaswarm.clone.history import CloneHistory, resumable
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
@@ -36,7 +37,7 @@ from chromaswarm.developer.copywriter import build_copywriter
 from chromaswarm.developer.template import app_dir_for, template_zip
 from chromaswarm.clone.preview import page_preview
 from chromaswarm.playwright_engine.style_dna_scraper import scrape_url
-from chromaswarm.state_machine.graph import Deps, PipelineRunner
+from chromaswarm.state_machine.graph import SERDE, Deps, PipelineRunner, build_graph
 from chromaswarm.state_machine.pipeline_state import BuildMode, GateError, Step, tools_for
 
 BUILD_STEPS = {Step.B8_DESIGN, Step.B9_DEVELOP, Step.B10_INTEGRATE, Step.B11_MASTER_QA}
@@ -94,8 +95,14 @@ def build_chat(env: dict[str, str] | None = None):
 consultant = build_consultant()
 chat_agent = build_chat()
 log.warning("ChromaSwarm consultant: %s", getattr(consultant, "name", "rule-based"))
-runner = PipelineRunner(Deps(consultant=consultant, scrape=scrape_url, build=build, copywriter=build_copywriter(),
-                              brief_reader=build_brief_reader()))
+DEPS = Deps(consultant=consultant, scrape=scrape_url, build=build, copywriter=build_copywriter(),
+            brief_reader=build_brief_reader())
+runner = PipelineRunner(DEPS)
+# Clone threads' graph state lives in Supabase too (clone/checkpoints.py): a restart picks a session up exactly
+# where it stopped. Creative threads stay in memory. Without Supabase settings this is the in-memory saver.
+history = CloneHistory()
+checkpoints = SupabaseCloneSaver(serde=SERDE, store=history)
+runner.graph = build_graph(DEPS, checkpointer=checkpoints)
 
 
 def to_message(snap: dict) -> dict:
@@ -161,6 +168,7 @@ def health() -> dict:
 # Every open Studio tab of a session, and one lock per session so an answer from the Studio
 # and a B12 choice clicked in the browser window can never resume the graph at the same time.
 CLIENTS: dict[str, set[WebSocket]] = defaultdict(set)
+RUNNING: set[str] = set()  # sessions whose graph is running in this process right now
 LOCKS: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
@@ -180,13 +188,15 @@ async def resume(session_id: str, value) -> dict:
 
     async with LOCKS[session_id]:
         await history.record_answer((await runner.snapshot(session_id))["pipeline"], value)
-        snap = await runner.answer(session_id, value, on_progress=progress)
+        RUNNING.add(session_id)
+        try:
+            snap = await runner.answer(session_id, value, on_progress=progress)
+        finally:
+            RUNNING.discard(session_id)
     await history.record_snapshot(snap)
     await broadcast(session_id, to_message(snap))
     return snap
 
-
-history = CloneHistory()
 
 
 async def restore_clone(session_id: str) -> None:
@@ -194,13 +204,16 @@ async def restore_clone(session_id: str) -> None:
     running goes back to the plan approval: its dev server and browser are gone)."""
     if not history.enabled or not _SAFE_SESSION.match(session_id):
         return
-    if (await runner.snapshot(session_id))["pipeline"] is not None:
-        return  # still in memory
-    saved = await history.state(session_id)
+    snap = await runner.snapshot(session_id)  # loads the thread's graph state from Supabase when memory lacks it
+    p_now = snap["pipeline"]
+    if p_now is not None and not (p_now.step in BUILD_STEPS and snap["question"] is None and snap["finished"] is False
+                                  and session_id not in RUNNING):
+        return  # resumed exactly where it was (a question waits), or still running in this process
+    saved = p_now.model_dump(mode="json") if p_now is not None else await history.state(session_id)
     if not saved:
         return
     try:
-        p = resumable(saved)
+        p = resumable(saved)  # a build cut off by the restart goes back to the plan approval
         async with LOCKS[session_id]:
             await runner.graph.ainvoke({"pipeline": p}, runner._config(session_id))
         await history.add_event(session_id, "restored", p.step.value, {"step": p.step.value})
