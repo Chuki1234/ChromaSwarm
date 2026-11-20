@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { BuildPanel } from "@/components/build-panel";
-import { CloneHistory, loadThread, savedThread, saveThread } from "@/components/clone-history";
+import { loadThread, savedThread, saveThread, STATUS, useCloneSessions, type Saved } from "@/components/clone-history";
 import { CloneSource, QuestionCard, type Answer, type Question } from "@/components/question-card";
 
 const BACKEND_WS = process.env.NEXT_PUBLIC_BACKEND_WS ?? "ws://localhost:8100";
@@ -115,7 +115,8 @@ type Status = "connecting" | "open" | "closed";
 /** The conversation as the user reads it, oldest first. Questions stay in place once answered. */
 type Item =
   | { kind: "user"; text: string }
-  | { kind: "assistant"; text: string; tone?: "error" }
+  // live = a progress notice while Chroma works (no question waiting): shown inside that step's activity block.
+  | { kind: "assistant"; text: string; tone?: "error"; step?: string; live?: boolean; at?: number }
   | { kind: "question"; sig: string; q: Question; note: string | null }
   | { kind: "motion"; report: MotionReport }
   | { kind: "analysis"; text: string };
@@ -148,6 +149,16 @@ const CLONE_NEEDS: Record<string, string> = {
 const needLabel = (k: string, clone = false) =>
   (clone ? CLONE_NEEDS[k] : undefined) ?? NEEDS[k] ?? (k.startsWith("write:") ? `Dựng phần “${k.slice(6)}”` : k.startsWith("check:") ? `Kiểm tra phần “${k.slice(6)}”` : k);
 
+const PROGRESS_KEY = "chromaswarm-progress"; // the steps panel stays as the user left it (wide screens)
+const wide = () => typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches;
+function savedProgress(): boolean {
+  try {
+    return wide() && localStorage.getItem(PROGRESS_KEY) !== "closed";
+  } catch {
+    return wide();
+  }
+}
+
 const MODE_KEY = "chromaswarm-mode"; // the mode to open with after "Đổi chế độ" starts a new session
 
 function savedMode(): "creative" | "clone" {
@@ -168,7 +179,9 @@ export function PipelineConsole() {
   const [draft, setDraft] = useState("");
   // Local until something is sent: the user can switch Creative <-> Clone freely on the empty screen.
   const [mode, setMode] = useState<"creative" | "clone">("creative");
-  const [panelOpen, setPanelOpen] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(false); // history drawer (phones)
+  const [progressOpen, setProgressOpen] = useState(false); // steps panel: beside the thread on wide screens, a drawer below
+  const sessions = useCloneSessions();
   const wsRef = useRef<WebSocket | null>(null);
   const lastSig = useRef("");
   const lastNote = useRef<string | null>(null);
@@ -187,6 +200,7 @@ export function PipelineConsole() {
     ws.onopen = () => {
       setStatus("open");
       setMode(savedMode()); // after "Đổi chế độ": open the new session in the chosen mode
+      setProgressOpen(savedProgress());
     };
     ws.onclose = () => setStatus("closed");
     ws.onmessage = (ev) => {
@@ -206,7 +220,8 @@ export function PipelineConsole() {
               analysisShown.current = local.some((x) => x.kind === "analysis");
             } else {
               savedThread(sid).then((rows) => {
-                const restored: Item[] = rows.length ? rows.map((r) => ({ kind: r.role, text: r.text }) as Item)
+                const restored: Item[] = rows.length
+                  ? rows.map((r) => (r.role === "user" ? { kind: "user", text: r.text } : { kind: "assistant", text: r.text, step: r.step ?? undefined, live: true }))
                   : s.state.clone?.url ? [{ kind: "user", text: s.state.clone.url }] : [];  // at least the link sent
                 if (restored.length) setItems((it) => [...restored, ...it]);
               });
@@ -225,7 +240,8 @@ export function PipelineConsole() {
           if (s.question!.kind !== "mode") setItems((it) => [...it, { kind: "question", sig, q: s.question!, note: s.notice }]);
         } else if (s.notice && s.notice !== lastNote.current) {
           lastNote.current = s.notice; // same question, new remark ("chưa hiểu rõ…", "đã ghi lại…")
-          setItems((it) => [...it, { kind: "assistant", text: s.notice! }]);
+          const live = s.running || !s.question;
+          setItems((it) => [...it, { kind: "assistant", text: s.notice!, step: s.state.step, live, at: Date.now() }]);
         }
         const mr = s.state?.clone?.motion_report;
         if (mr && !motionShown.current) {
@@ -267,11 +283,25 @@ export function PipelineConsole() {
   }, [items, busy, snap?.state.sections_checked?.length, snap?.state.qa_summary]);
 
   useEffect(() => {
-    if (!panelOpen) return;
-    const close = (e: KeyboardEvent) => e.key === "Escape" && setPanelOpen(false);
+    if (!panelOpen && !progressOpen) return;
+    const close = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setPanelOpen(false);
+      if (!wide()) setProgressOpen(false); // on a wide screen the panel is part of the layout, not an overlay
+    };
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
-  }, [panelOpen]);
+  }, [panelOpen, progressOpen]);
+
+  const toggleProgress = () => {
+    const next = !progressOpen;
+    setProgressOpen(next);
+    if (wide()) {
+      try {
+        localStorage.setItem(PROGRESS_KEY, next ? "open" : "closed");
+      } catch {}
+    }
+  };
 
   // Keep a Clone session's conversation in this browser, so a refresh shows it again (clone-history.tsx).
   useEffect(() => {
@@ -361,14 +391,41 @@ export function PipelineConsole() {
   const building = !!snap && !question && (snap.running || snap.finished) && stepIdx >= steps.findIndex((s) => s.id === "B8");
   const lastQuestionIdx = items.map((i) => i.kind).lastIndexOf("question");
 
+  // Chroma's progress notices, grouped per step into activity blocks (like a chatbot's "thinking" trace).
+  type Block = { kind: "item"; it: Item; i: number } | { kind: "activity"; step: string; notes: { text: string; at?: number }[]; i: number };
+  const blocks: Block[] = [];
+  items.forEach((it, i) => {
+    if (it.kind === "assistant" && it.live && !it.tone) {
+      const last = blocks[blocks.length - 1];
+      const note = { text: it.text, at: it.at };
+      if (last?.kind === "activity" && last.step === (it.step ?? "")) last.notes.push(note);
+      else blocks.push({ kind: "activity", step: it.step ?? "", notes: [note], i });
+    } else blocks.push({ kind: "item", it, i });
+  });
+  const working = !!snap?.running && !question;
+  const lastBlock = blocks[blocks.length - 1];
+  const activeActivity = working && lastBlock?.kind === "activity" ? lastBlock.i : -1;
+  const stepLabel = (id: string) => {
+    const k = steps.findIndex((s) => s.id === id);
+    return k < 0 ? null : { n: k + 1, label: steps[k].label };
+  };
+
+  const clone = snap?.state.clone;
+  const firstUser = items.find((it) => it.kind === "user") as { text: string } | undefined;
+  const current = {
+    id: snap?.state.session_id ?? "",
+    title: clone?.title || hostOf(clone?.url) || firstUser?.text || "Cuộc trò chuyện mới",
+    sub: empty ? "Chưa bắt đầu" : `${cloneMode ? "Clone" : "Creative"} · Bước ${stepIdx + 1}/${steps.length}`,
+  };
+
   return (
     <div className="flex h-dvh w-full overflow-hidden">
-      <SidePanel open={panelOpen} onClose={() => setPanelOpen(false)} snap={snap} status={status} stepIdx={stepIdx} onRestart={restart}
-        steps={steps} clone={cloneView} />
+      <HistorySidebar open={panelOpen} onClose={() => setPanelOpen(false)} status={status} onRestart={restart} onOpen={openSession}
+        current={current} sessions={sessions} />
 
       <main className="flex min-w-0 flex-1 flex-col">
-        <header className={`flex h-14 shrink-0 items-center gap-3 border-b border-line px-4 ${empty ? "md:hidden" : ""}`}>
-          <button type="button" onClick={() => setPanelOpen(true)} aria-label="Mở bảng tiến độ" data-swarm-id="open-panel"
+        <header className={`flex h-14 shrink-0 items-center gap-2 border-b border-line px-2 sm:gap-3 sm:px-4 ${empty ? "md:hidden" : ""}`}>
+          <button type="button" onClick={() => setPanelOpen(true)} aria-label="Mở lịch sử phiên" data-swarm-id="open-panel"
             data-swarm-role="button" className="grid size-10 place-items-center rounded-lg hover:bg-surface md:hidden">
             <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden><path d="M3 6h14M3 10h14M3 14h14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
           </button>
@@ -376,17 +433,27 @@ export function PipelineConsole() {
             <span className="font-semibold">ChromaSwarm</span>
           ) : (
             <button type="button" onClick={changeMode} data-swarm-id="change-mode" data-swarm-role="button"
-              className="flex h-10 items-center gap-2 rounded-lg px-2 text-sm text-fg-2 transition-colors duration-200 hover:bg-surface hover:text-fg">
+              className="flex h-10 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg px-2 text-sm text-fg-2 transition-colors duration-200 hover:bg-surface hover:text-fg">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden><path d="M10 3.5 5.5 8l4.5 4.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
               Đổi sang {cloneMode ? "Creative" : "Clone"}
             </button>
           )}
           {!empty && (
-            <span className="rounded-full border border-line px-3 py-1 text-xs text-fg-2">
+            <span className="hidden whitespace-nowrap rounded-full border border-line px-3 py-1 text-xs text-fg-2 sm:inline">
               {cloneMode ? "Clone · từ trang có sẵn" : "Creative · từ ý tưởng"}
             </span>
           )}
-          <span className="ml-auto truncate text-xs text-fg-2">Bước {stepIdx + 1} · {steps[stepIdx]?.label}</span>
+          {!empty && (
+            <button type="button" onClick={toggleProgress} aria-pressed={progressOpen} aria-controls="progress-panel"
+              data-swarm-id="toggle-progress" data-swarm-role="button"
+              className={`ml-auto flex h-10 min-w-0 items-center gap-2 rounded-lg border px-3 text-sm transition-colors duration-200 ${progressOpen ? "border-line-strong bg-surface text-fg" : "border-line text-fg-2 hover:bg-surface hover:text-fg"}`}>
+              {working ? <span className="dot-live size-2 shrink-0 rounded-full bg-accent" aria-hidden />
+                : <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden className="shrink-0"><path d="M3 4h10M3 8h7M3 12h4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>}
+              <span className="hidden truncate sm:inline">{steps[stepIdx]?.label}</span>
+              <span className="font-mono text-xs tabular-nums text-fg-2">{stepIdx + 1}/{steps.length}</span>
+              <span className="sr-only">Tiến trình</span>
+            </button>
+          )}
         </header>
 
         {empty ? (
@@ -416,7 +483,6 @@ export function PipelineConsole() {
                 <fieldset disabled={mode !== "clone"} className="contents">
                   <CloneSource busy={busy || status !== "open"} onAnswer={submitClone} />
                 </fieldset>
-                {mode === "clone" && <div className="mt-6"><CloneHistory onOpen={openSession} /></div>}
               </div>
             </div>
           </EmptyState>
@@ -424,8 +490,18 @@ export function PipelineConsole() {
           <>
             <div className="flex-1 overflow-y-auto" data-swarm-section="conversation">
               <ol className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-8" aria-label="Hội thoại với Chroma">
-                {items.map((it, i) =>
-                  it.kind === "user" ? (
+                {blocks.map((b) => {
+                  if (b.kind === "activity") {
+                    const sl = stepLabel(b.step);
+                    // A step lasts until the next step's first update (a one-update step still gets its time).
+                    const next = blocks.find((x) => x.kind === "activity" && x.i > b.i) as { notes: { at?: number }[] } | undefined;
+                    return (
+                      <ActivityBlock key={`a${b.i}`} active={b.i === activeActivity} notes={b.notes} until={next?.notes[0]?.at}
+                        title={sl ? sl.label : "Hoạt động của Chroma"} stepNo={sl?.n ?? null} />
+                    );
+                  }
+                  const { it, i } = b;
+                  return it.kind === "user" ? (
                     <li key={i} className="msg-in max-w-[85%] self-end whitespace-pre-wrap rounded-3xl bg-surface px-5 py-3 leading-relaxed">
                       {it.text}
                     </li>
@@ -456,17 +532,16 @@ export function PipelineConsole() {
                       {it.note && <p className="mb-2 text-sm text-fg-2">{it.note}</p>}
                       <p className="whitespace-pre-line leading-relaxed text-fg-2">{it.q.text}</p>
                     </Assistant>
-                  ),
-                )}
+                  );
+                })}
                 {building && (
                   <Assistant>
                     <BuildPanel state={snap!.state} notice={snap!.notice} running={snap!.running} />
                   </Assistant>
                 )}
-                {busy && (
-                  <Assistant>
-                    <span className="typing" aria-label="Chroma đang trả lời"><i /><i /><i /></span>
-                  </Assistant>
+                {(busy || (working && !building)) && activeActivity < 0 && (
+                  // Waiting for Chroma: a live line naming what it is on (a chatbot's "thinking…"), not bare dots.
+                  <ActivityBlock key={`wait-${step}`} active notes={[]} title={steps[stepIdx]?.label ?? "Suy nghĩ"} stepNo={null} />
                 )}
                 {status === "closed" && (
                   <Assistant>
@@ -487,7 +562,76 @@ export function PipelineConsole() {
           </>
         )}
       </main>
+
+      {progressOpen && !empty && (
+        <ProgressPanel onClose={() => setProgressOpen(false)} snap={snap} stepIdx={stepIdx} steps={steps} clone={cloneView} working={working} />
+      )}
     </div>
+  );
+}
+
+const hostOf = (url?: string | null) => {
+  if (!url) return null;
+  try {
+    return new URL(url).host.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+};
+
+const fmtDur = (ms: number) => {
+  const sec = Math.max(1, Math.round(ms / 1000));
+  return sec < 60 ? `${sec} giây` : `${Math.floor(sec / 60)} phút${sec % 60 ? ` ${sec % 60} giây` : ""}`;
+};
+
+/** One step of Chroma's work, as a chatbot shows its reasoning: open with a live label while the step runs,
+ * folded to one line ("Bước 2 · … · 4 cập nhật · 38 giây") once it is done; the user can open or fold it. */
+function ActivityBlock({ title, stepNo, notes, active, until }: {
+  title: string; stepNo: number | null; notes: { text: string; at?: number }[]; active: boolean; until?: number;
+}) {
+  const [manual, setManual] = useState<boolean | null>(null); // null = follow the step (open while it runs)
+  const open = manual ?? active;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, [active]);
+  const first = notes[0]?.at;
+  const last = notes[notes.length - 1]?.at;
+  const span = first ? (active ? now : until ?? last ?? first) - first : 0;
+  const meta = notes.length ? [`${notes.length} cập nhật`, span >= 1000 ? fmtDur(span) : null].filter(Boolean).join(" · ") : "";
+  const lower = title.charAt(0).toLowerCase() + title.slice(1);
+  return (
+    <li className="msg-in flex gap-3" data-swarm-section="activity">
+      <span className="mt-1.5 grid size-8 shrink-0 place-items-center text-fg-3" aria-hidden>
+        {active ? (
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="spin text-accent"><circle cx="8" cy="8" r="6" stroke="currentColor" strokeOpacity="0.25" strokeWidth="1.8" /><path d="M14 8a6 6 0 0 0-6-6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
+        ) : (
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="text-accent"><path d="m3.5 8.5 3 3 6-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        )}
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <button type="button" aria-expanded={notes.length ? open : undefined} disabled={!notes.length} onClick={() => setManual(!open)}
+          data-swarm-role="button" aria-live={active ? "polite" : undefined}
+          className="-mx-2 flex min-h-11 items-center gap-2 rounded-lg px-2 text-left text-sm transition-colors duration-200 enabled:hover:bg-surface disabled:cursor-default">
+          <span className={`min-w-0 truncate ${active ? "shimmer font-medium" : "text-fg-2"}`}>
+            {active ? `Đang ${lower}…` : stepNo ? `Bước ${stepNo} · ${title}` : title}
+          </span>
+          <span className="shrink-0 font-mono text-xs tabular-nums text-fg-3">{meta}</span>
+          {notes.length > 0 && <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden className="chev ml-auto shrink-0 text-fg-3"><path d="m6 4 4 4-4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+        </button>
+        {open && notes.length > 0 && (
+          <ol className="ml-1 mt-1 flex flex-col gap-2 border-l border-line pb-1 pl-4" aria-label={`Chi tiết: ${title}`}>
+            {notes.map((n, k) => (
+              <li key={k} className={`whitespace-pre-wrap text-sm leading-relaxed ${active && k === notes.length - 1 ? "text-fg" : "text-fg-2"}`}>
+                {n.text}
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </li>
   );
 }
 
@@ -648,31 +792,96 @@ function ModeSwitch({ mode, setMode }: { mode: "creative" | "clone"; setMode: (m
   );
 }
 
-function SidePanel({ open, onClose, snap, status, stepIdx, onRestart, steps, clone }: {
-  open: boolean; onClose: () => void; snap: Snapshot | null; status: Status; stepIdx: number; onRestart: () => void;
-  steps: Step[]; clone: boolean;
+type Current = { id: string; title: string; sub: string };
+
+/** Left column, as in a chatbot: new session, then the conversations — this one first, then saved Clone sessions. */
+function HistorySidebar({ open, onClose, status, onRestart, onOpen, current, sessions }: {
+  open: boolean; onClose: () => void; status: Status; onRestart: () => void; onOpen: (id: string) => void;
+  current: Current; sessions: Saved[] | null;
 }) {
-  const STEPS = steps;
-  const phases = [...new Set(STEPS.map((s) => s.phase))];
   const statusLabel = { open: "Đã kết nối", connecting: "Đang kết nối", closed: "Mất kết nối" }[status];
+  const others = (sessions ?? []).filter((s) => s.id !== current.id).slice(0, 30);
   return (
     <>
       {open && <div className="fixed inset-0 z-30 bg-fg/30 md:hidden" onClick={onClose} aria-hidden />}
-      <aside className={`fixed inset-y-0 left-0 z-40 flex w-72 flex-col gap-6 overflow-y-auto border-r border-line bg-bg p-4 transition-transform duration-300 md:static md:translate-x-0 md:bg-surface/60 ${open ? "translate-x-0" : "-translate-x-full"}`}
-        aria-label="Tiến độ" data-swarm-section="step-tracker">
-        <div className="flex items-center justify-between gap-2">
+      <aside className={`fixed inset-y-0 left-0 z-40 flex w-72 flex-col gap-4 border-r border-line bg-bg p-3 transition-transform duration-300 md:static md:w-64 md:translate-x-0 md:bg-surface/60 ${open ? "translate-x-0" : "-translate-x-full"}`}
+        aria-label="Lịch sử phiên" data-swarm-section="history">
+        <div className="flex h-10 items-center justify-between gap-2 px-2">
           <span className="flex items-center gap-2 font-semibold text-accent"><Logo size={20} /><span className="text-fg">ChromaSwarm</span></span>
-          <button type="button" onClick={onClose} aria-label="Đóng bảng tiến độ" className="grid size-9 place-items-center rounded-lg hover:bg-surface md:hidden">
+          <button type="button" onClick={onClose} aria-label="Đóng lịch sử phiên" className="grid size-10 place-items-center rounded-lg hover:bg-surface md:hidden">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden><path d="m4 4 8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
           </button>
         </div>
         <button type="button" onClick={onRestart} data-swarm-id="restart-session" data-swarm-role="button"
-          className="flex h-11 items-center gap-2 rounded-xl border border-line px-3 text-sm transition-colors duration-200 hover:bg-surface">
+          className="flex h-11 items-center gap-2 rounded-xl border border-line bg-elevated px-3 text-sm shadow-card transition-colors duration-200 hover:border-line-strong">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden><path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
           Phiên mới
         </button>
+        <nav aria-label="Các phiên" className="-mx-1 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1">
+          <p className="px-2 pb-1 pt-2 text-xs font-medium text-fg-3">Đang mở</p>
+          <div aria-current="page" className="flex flex-col gap-0.5 rounded-lg bg-surface px-3 py-2">
+            <span className="truncate text-sm font-medium">{current.title}</span>
+            <span className="truncate text-xs text-fg-2">{current.sub}</span>
+          </div>
+          <p className="px-2 pb-1 pt-4 text-xs font-medium text-fg-3">Phiên Clone đã lưu</p>
+          {sessions === null ? (
+            <p className="px-3 py-2 text-xs text-fg-3">Đang tải…</p>
+          ) : others.length === 0 ? (
+            <p className="px-3 py-2 text-xs leading-relaxed text-fg-3">Các phiên Clone được lưu tự động và hiện ở đây để mở lại.</p>
+          ) : (
+            <ul className="flex flex-col gap-0.5">
+              {others.map((s) => (
+                <li key={s.id}>
+                  <button type="button" onClick={() => onOpen(s.id)} data-swarm-id={`open-session-${s.id}`} data-swarm-role="button"
+                    title={s.url ?? undefined}
+                    className="flex w-full flex-col gap-0.5 rounded-lg px-3 py-2 text-left transition-colors duration-200 hover:bg-surface">
+                    <span className="truncate text-sm">{s.title || hostOf(s.url) || s.id}</span>
+                    <span className="truncate text-xs text-fg-3">
+                      {STATUS[s.status] ?? s.status}{s.fidelity != null && ` · giống ${Math.round(s.fidelity)}%`} · {ago(s.updated_at)}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </nav>
+        <p className="flex items-center gap-2 px-2 text-xs text-fg-2" role="status">
+          <span className={`size-2 rounded-full ${status === "open" ? "dot-live bg-accent" : status === "closed" ? "bg-danger" : "bg-fg-3"}`} />
+          {statusLabel}
+        </p>
+      </aside>
+    </>
+  );
+}
+
+const ago = (iso: string) => {
+  const min = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (min < 1) return "vừa xong";
+  if (min < 60) return `${min} phút trước`;
+  if (min < 60 * 24) return `${Math.round(min / 60)} giờ trước`;
+  return new Date(iso).toLocaleDateString("vi-VN");
+};
+
+/** Right column: where the session is in the 12 steps (toggled from the header; a drawer on narrow screens). */
+function ProgressPanel({ onClose, snap, stepIdx, steps, clone, working }: {
+  onClose: () => void; snap: Snapshot | null; stepIdx: number; steps: Step[]; clone: boolean; working: boolean;
+}) {
+  const STEPS = steps;
+  const phases = [...new Set(STEPS.map((s) => s.phase))];
+  return (
+    <>
+      <div className="fixed inset-0 z-30 bg-fg/30 lg:hidden" onClick={onClose} aria-hidden />
+      <aside id="progress-panel" className="fixed inset-y-0 right-0 z-40 flex w-80 max-w-[88vw] flex-col gap-6 overflow-y-auto border-l border-line bg-bg p-4 lg:static lg:z-auto lg:max-w-none lg:bg-surface/40"
+        aria-label="Tiến trình" data-swarm-section="step-tracker">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-sm font-medium">Tiến trình</h2>
+          <button type="button" onClick={onClose} aria-label="Đóng tiến trình" data-swarm-id="close-progress" data-swarm-role="button"
+            className="grid size-10 place-items-center rounded-lg hover:bg-surface">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden><path d="m4 4 8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
+          </button>
+        </div>
         <div className="flex flex-col gap-2">
-          <div className="flex justify-between text-xs text-fg-2"><span>Tiến độ dự án</span><span className="font-mono">{stepIdx + 1}/{STEPS.length}</span></div>
+          <div className="flex justify-between text-xs text-fg-2"><span>{working ? "Chroma đang làm việc" : "Tiến độ dự án"}</span><span className="font-mono">{stepIdx + 1}/{STEPS.length}</span></div>
           <div className="h-1.5 overflow-hidden rounded-full bg-surface" role="progressbar" aria-label="Tiến độ 12 bước"
             aria-valuemin={1} aria-valuemax={STEPS.length} aria-valuenow={stepIdx + 1}>
             <div className="h-full rounded-full bg-accent transition-[width] duration-700 ease-out" style={{ width: `${((stepIdx + 1) / STEPS.length) * 100}%` }} />
@@ -697,7 +906,7 @@ function SidePanel({ open, onClose, snap, status, stepIdx, onRestart, steps, clo
                       <span className="w-5 text-right font-mono text-[11px] tabular-nums">{i + 1}</span>
                       <span className="flex min-w-0 flex-col">
                         <span className="truncate">{s.label}</span>
-                        {s.subs && state !== "todo" && (
+                        {s.subs && state === "current" && (
                           <span className="flex flex-col gap-0.5 pt-1">
                             {s.subs.map((sub) => (
                               <span key={sub} className="text-xs font-normal leading-snug text-fg-2">· {sub}</span>
@@ -723,10 +932,6 @@ function SidePanel({ open, onClose, snap, status, stepIdx, onRestart, steps, clo
             <p className="text-xs text-fg-3">Đã rõ {Math.round(snap.clarity_score * 100)}% yêu cầu thiết kế</p>
           </div>
         )}
-        <p className="mt-auto flex items-center gap-2 text-xs text-fg-2" role="status">
-          <span className={`size-2 rounded-full ${status === "open" ? "dot-live bg-accent" : status === "closed" ? "bg-danger" : "bg-fg-3"}`} />
-          {statusLabel}
-        </p>
       </aside>
     </>
   );
