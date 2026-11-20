@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { BuildPanel } from "@/components/build-panel";
-import { CloneHistory, savedThread } from "@/components/clone-history";
+import { CloneHistory, loadThread, savedThread, saveThread } from "@/components/clone-history";
 import { CloneSource, QuestionCard, type Answer, type Question } from "@/components/question-card";
 
 const BACKEND_WS = process.env.NEXT_PUBLIC_BACKEND_WS ?? "ws://localhost:8100";
@@ -198,9 +198,19 @@ export function PipelineConsole() {
           // First state after (re)connecting: a Clone session opened again gets its saved conversation back.
           threadRestored.current = true;
           if (s.state?.mode === "clone" && s.state.step !== "B1") {
-            savedThread(s.state.session_id).then((rows) => {
-              if (rows.length) setItems((it) => [...rows.map((r) => ({ kind: r.role, text: r.text }) as Item), ...it]);
-            });
+            const sid = s.state.session_id;
+            const local = loadThread(sid) as Item[];  // this browser's copy first: instant, works without Supabase
+            if (local.length) {
+              setItems((it) => [...local, ...it]);
+              motionShown.current = local.some((x) => x.kind === "motion");
+              analysisShown.current = local.some((x) => x.kind === "analysis");
+            } else {
+              savedThread(sid).then((rows) => {
+                const restored: Item[] = rows.length ? rows.map((r) => ({ kind: r.role, text: r.text }) as Item)
+                  : s.state.clone?.url ? [{ kind: "user", text: s.state.clone.url }] : [];  // at least the link sent
+                if (restored.length) setItems((it) => [...restored, ...it]);
+              });
+            }
           }
         }
         setBusy(false);
@@ -263,9 +273,17 @@ export function PipelineConsole() {
     return () => window.removeEventListener("keydown", close);
   }, [panelOpen]);
 
+  // Keep a Clone session's conversation in this browser, so a refresh shows it again (clone-history.tsx).
+  useEffect(() => {
+    if (snap?.state.mode === "clone" && items.length) saveThread(snap.state.session_id, items);
+  }, [items, snap?.state.mode, snap?.state.session_id]);
+
   const question = snap?.question ?? null;
   const step = snap?.state.step ?? "B1";
-  const empty = items.length === 0 && (!question || question.kind === "mode");
+  // A Clone session past B1 (its link sent, Chroma reading or building) is never the empty screen, even before
+  // its conversation is back after a refresh.
+  const clonePastLink = snap?.state.mode === "clone" && snap.state.step !== "B1";
+  const empty = items.length === 0 && (!question || question.kind === "mode") && !clonePastLink;
   const cloneMode = snap?.state.mode === "clone";
   const cloneView = cloneMode || (empty && mode === "clone");  // the tracker follows the switch on the empty screen
   const steps = cloneView ? CLONE_STEPS : STEPS;

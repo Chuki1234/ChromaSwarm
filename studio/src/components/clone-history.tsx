@@ -62,3 +62,48 @@ export async function savedThread(id: string): Promise<{ role: "user" | "assista
     return [];
   }
 }
+
+// ---------------------------------------------------------------- local persistence (this browser)
+// localStorage can be unavailable (private window, blocked storage): every access is guarded and the Studio
+// works without it — Supabase (via the backend) stays the source the conversation can be rebuilt from.
+
+const DRAFT_KEY = "chromaswarm-clone-draft";
+const THREAD_KEY = (id: string) => `chromaswarm-clone-thread:${id}`;
+
+/** The link typed in the Clone form but not sent yet. */
+export function loadDraft(): { url: string; owned: boolean } {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY);
+    if (raw) {
+      const d = JSON.parse(raw);
+      return { url: String(d.url ?? ""), owned: !!d.owned };
+    }
+  } catch {}
+  return { url: "", owned: false };
+}
+
+export function saveDraft(url: string, owned: boolean) {
+  try {
+    if (url) localStorage.setItem(DRAFT_KEY, JSON.stringify({ url, owned }));
+    else localStorage.removeItem(DRAFT_KEY);
+  } catch {}
+}
+
+type Kept = { kind: "user" | "assistant"; text: string; tone?: "error" } | { kind: "motion"; report: unknown } | { kind: "analysis"; text: string };
+
+/** A Clone session's conversation as shown (answers, notices, effect card, analysis) — not the live question. */
+export function loadThread(id: string): Kept[] {
+  try {
+    const raw = localStorage.getItem(THREAD_KEY(id));
+    return raw ? (JSON.parse(raw) as Kept[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveThread(id: string, items: { kind: string }[]) {
+  try {
+    const kept = items.filter((it) => ["user", "assistant", "motion", "analysis"].includes(it.kind)).slice(-200);
+    localStorage.setItem(THREAD_KEY(id), JSON.stringify(kept));
+  } catch {}
+}

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { PipelineState } from "@/components/pipeline-console";
+import { loadDraft, saveDraft } from "@/components/clone-history";
 
 export type Option = { value: string; label: string; hint: string };
 export type Question = {
@@ -462,12 +463,20 @@ export function CloneSource({ busy, onAnswer }: { busy: boolean; onAnswer: Props
   const [url, setUrl] = useState("");
   const [owned, setOwned] = useState(false);
   const [showOwned, setShowOwned] = useState(false);
+  // The link survives a refresh until it is sent (read after mount: localStorage does not exist on the server).
+  useEffect(() => {
+    const d = loadDraft();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- browser storage exists only after mount (SSR-safe)
+    if (d.url) { setUrl(d.url); setOwned(d.owned); setShowOwned(d.owned); }
+  }, []);
+  useEffect(() => { saveDraft(url, owned); }, [url, owned]);
   return (
     <form
       className="flex flex-col gap-4"
       onSubmit={(e) => {
         e.preventDefault();
         onAnswer({ value: { url: url.trim(), owned }, label: `${url.trim()}${owned ? " (trang của tôi)" : ""}` });
+        saveDraft("", false);
       }}
     >
       <label className="flex flex-col gap-2 text-sm">
