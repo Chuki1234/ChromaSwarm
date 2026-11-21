@@ -59,6 +59,8 @@ export function BuildPanel({ state, notice, running }: Props) {
         </div>
       )}
 
+      {Object.keys(state.section_reviews ?? {}).length > 0 && <Reviews state={state} />}
+
       {state.preview_url && (
         <div className="flex flex-col gap-3">
           <div className="flex items-baseline justify-between text-sm">
@@ -111,6 +113,7 @@ export function BuildPanel({ state, notice, running }: Props) {
           </a>
         </div>
       )}
+      {(state.qa_passed || state.escalated_to_user) && <Publish sessionId={state.session_id} />}
 
       {Object.keys(state.page_routes ?? {}).length > 1 && (
         <List title="Các trang đã dựng" items={Object.entries(state.page_routes).map(([slug, route]) => `${route}  ·  ${slug}`)} />
@@ -254,6 +257,96 @@ function List({ title, items }: { title: string; items: string[] }) {
           <li key={i}>— {t}</li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+type PublishResult = { target: string; url: string; state: string; detail: string };
+const TARGETS = [
+  { id: "vercel", label: "Đưa lên Vercel", hint: "Có link chạy thật ngay, cần VERCEL_TOKEN trong backend/.env" },
+  { id: "github", label: "Đẩy code lên GitHub", hint: "Repository riêng tư, cần GITHUB_TOKEN trong backend/.env" },
+] as const;
+
+/** After handover: a live link (Vercel) or the code in a private repository (GitHub), with the user's own token. */
+function Publish({ sessionId }: { sessionId: string }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [results, setResults] = useState<Record<string, PublishResult>>({});
+  const [error, setError] = useState("");
+  const go = async (target: string) => {
+    setBusy(target);
+    setError("");
+    try {
+      const r = await fetch(`${BACKEND_HTTP}/sessions/${encodeURIComponent(sessionId)}/publish/${target}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+      });
+      const data = await r.json();
+      if (!r.ok) setError(data.detail ?? "Xuất bản không thành công.");
+      else setResults((prev) => ({ ...prev, [target]: data }));
+    } catch {
+      setError("Không kết nối được tới backend.");
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border border-line p-4" data-swarm-section="publish">
+      <h3 className="text-sm font-medium">Xuất bản</h3>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {TARGETS.map((t) => (
+          <div key={t.id} className="flex flex-col gap-2">
+            <button type="button" disabled={busy !== null} onClick={() => go(t.id)} data-swarm-id={`publish-${t.id}`} data-swarm-role="button"
+              className="h-11 rounded-lg border border-line-strong px-4 text-sm font-medium transition-colors duration-200 hover:border-fg-3 active:scale-[0.98] disabled:opacity-50">
+              {busy === t.id ? "Đang xuất bản…" : t.label}
+            </button>
+            <span className="text-xs text-fg-3">{t.hint}</span>
+            {results[t.id] && (
+              <p className="text-sm" role="status">
+                <a href={results[t.id].url} target="_blank" rel="noreferrer" className="break-all text-accent underline underline-offset-2">{results[t.id].url}</a>
+                {results[t.id].detail && <span className="block text-fg-2">{results[t.id].detail}</span>}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+      <p className="text-sm text-danger" role="alert">{error}</p>
+    </div>
+  );
+}
+
+/** B9 eyes: each section as it was seen right after it was built (desktop + phone), with the verdict. */
+function Reviews({ state }: { state: PipelineState }) {
+  const reviews = state.sections_planned.filter((id) => state.section_reviews?.[id]).map((id) => [id, state.section_reviews![id]] as const);
+  const shot = (file: string) => `${BACKEND_HTTP}/sessions/${encodeURIComponent(state.session_id)}/shots/${file}`;
+  return (
+    <div className="flex flex-col gap-3" data-swarm-section="section-reviews">
+      <div className="flex items-baseline justify-between text-sm">
+        <span className="font-medium">Mắt kiểm tra từng phần</span>
+        <span className="font-mono text-xs text-fg-3">{reviews.filter(([, r]) => r.ok).length}/{reviews.length} đạt</span>
+      </div>
+      <ol className="flex flex-col gap-3">
+        {reviews.map(([id, r]) => (
+          <li key={id} className="flex flex-col gap-3 rounded-xl border border-line p-3">
+            <div className="flex items-baseline justify-between gap-4 text-sm">
+              <span className="font-medium">{r.name}</span>
+              <span className={`font-mono text-xs ${r.ok ? "text-accent" : "text-fg-2"}`}>
+                {r.ok ? "Đạt" : "Còn góp ý"} · {r.score.toFixed(0)}/10
+                {r.tries > 0 && ` · từ ${r.first_score.toFixed(0)}, sửa ${r.fixed}/${r.tries}`}
+              </span>
+            </div>
+            <div className="grid grid-cols-[1fr_96px] items-start gap-3">
+              {/* eslint-disable-next-line @next/next/no-img-element -- screenshot served by the backend */}
+              <img src={shot(r.files[0])} alt={`${r.name} trên máy tính`} className="w-full rounded-md border border-line" loading="lazy" />
+              {/* eslint-disable-next-line @next/next/no-img-element -- screenshot served by the backend */}
+              <img src={shot(r.files[1])} alt={`${r.name} trên điện thoại`} className="w-full rounded-md border border-line" loading="lazy" />
+            </div>
+            {r.issues.length > 0 && (
+              <ul className="flex flex-col gap-1 text-xs leading-relaxed text-fg-2">
+                {r.issues.map((i) => <li key={i}>{i}</li>)}
+              </ul>
+            )}
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }

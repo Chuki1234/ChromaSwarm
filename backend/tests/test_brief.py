@@ -85,7 +85,7 @@ def test_brief_menu_and_categories_reach_the_page_copy():
                        brief=Brief(brand="LUMIÈRE BOTANIQUE", nav=["Sản phẩm", "Dưỡng da", "Kiểm tra da"],
                                    categories=["Tất cả", "Serum", "Kem dưỡng"], usp=["100% Thuần chay"]).model_dump())
     c = build_copy(st)
-    assert c.brand == "LUMIÈRE BOTANIQUE" and [label for label, _ in c.nav_links] == ["Sản phẩm", "Dưỡng da", "Kiểm tra da"]
+    assert c.brand == "LUMIÈRE BOTANIQUE" and [label for label, _ in c.nav_links] == ["Sản phẩm", "Dưỡng da"]  # no quiz on this page: "Kiểm tra da" would lead nowhere
     assert c.categories == ["Serum", "Kem dưỡng"] and {i.category for i in c.items} == {"Serum", "Kem dưỡng"}
     assert c.usp == ["100% Thuần chay"] and c.cta == "Mua ngay"
 

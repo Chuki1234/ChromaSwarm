@@ -331,6 +331,47 @@
       };
     },
 
+    /** Rules from the user's frontend-ui skill (anti-slop + self-check), Creative pages only. */
+    skill() {
+      const measure = [], radii = new Map(), sizes = new Map(), mixed = [], clickDivs = [], unnamed = [], noAlt = [];
+      const colorRe = /(?:rgba?|hsla?|oklch|oklab|lab|lch|color)\([^()]*\)|#[0-9a-f]{3,8}\b/gi;
+      for (const el of textBlocks()) {
+        const cs = getComputedStyle(el), fs = px(cs.fontSize);
+        sizes.set(Math.round(fs), (sizes.get(Math.round(fs)) || 0) + 1);
+        // Reading text: ~70 characters per line at most (one Latin char ≈ 0.5em on average)
+        if (/^(P|LI|DD|BLOCKQUOTE)$/.test(el.tagName) && cs.textAlign !== "center" && !inFloating(el)
+            && el.innerText.trim().length >= 160) {
+          const perLine = el.getBoundingClientRect().width / (fs * 0.5);
+          if (perLine > 85) measure.push({ selector: cssPath(el), chars: Math.round(perLine) });
+        }
+      }
+      for (const el of document.body.querySelectorAll("*")) {
+        if (/^(SCRIPT|STYLE|CHROMASWARM-OVERLAY|svg|path|IMG)$/i.test(el.tagName) || !visible(el)) continue;
+        const cs = getComputedStyle(el), r = el.getBoundingClientRect();
+        const rad = px(cs.borderTopLeftRadius);
+        const boxed = rgba(cs.backgroundColor)[3] > 0.05 || px(cs.borderTopWidth) > 0;
+        // pills/circles (radius ≥ half the height) are their own scale step, not "random"
+        if (boxed && rad > 0 && rad < Math.min(r.width, r.height) / 2 - 0.5 && !cs.borderTopLeftRadius.includes("%"))
+          (radii.get(Math.round(rad)) ?? radii.set(Math.round(rad), []).get(Math.round(rad))).push(cssPath(el));
+        const shadow = cs.boxShadow !== "none" && (cs.boxShadow.replace(colorRe, "").match(/-?\d+(\.\d+)?px/g) || [])
+          .some((v, i) => i % 4 === 2 && px(v) >= 4);
+        const border = px(cs.borderTopWidth) > 0 && rgba(cs.borderTopColor)[3] > 0.1;
+        if (shadow && border && cs.backgroundImage.includes("gradient") && !inFloating(el))
+          mixed.push({ selector: cssPath(el) });
+        const tag = el.tagName;
+        if (cs.cursor === "pointer" && !/^(A|BUTTON|INPUT|SELECT|TEXTAREA|LABEL|SUMMARY|OPTION)$/.test(tag)
+            && !el.getAttribute("role") && !el.closest("a, button, label, summary") && !el.querySelector("a, button, input"))
+          clickDivs.push({ selector: cssPath(el), tag: tag.toLowerCase() });
+        if (/^(A|BUTTON)$/.test(tag) && !(el.innerText || "").trim() && !el.getAttribute("aria-label")
+            && !el.getAttribute("aria-labelledby") && !el.getAttribute("title") && !el.querySelector("img[alt]:not([alt=''])"))
+          unnamed.push({ selector: cssPath(el) });
+      }
+      for (const img of document.images) if (visible(img) && !img.hasAttribute("alt")) noAlt.push({ selector: cssPath(img) });
+      return { measure, mixed, click_divs: clickDivs.slice(0, 10), unnamed, no_alt: noAlt,
+               radii: Object.fromEntries([...radii].map(([k, v]) => [k, v.slice(0, 3)])),
+               sizes: Object.fromEntries(sizes) };
+    },
+
     slop() {
       const all = [...document.body.querySelectorAll("*")].filter(visible);
       const colorRe = /(?:rgba?|hsla?|oklch|oklab|lab|lch|color)\([^()]*\)|#[0-9a-f]{3,8}\b/gi;

@@ -99,13 +99,13 @@ VIETNAMESE_FONTS = frozenset({
 THEMES: dict[Theme, ThemePreset] = {
     Theme.EDITORIAL_LUXURY: ThemePreset(
         theme=Theme.EDITORIAL_LUXURY, label_vi="Sang trọng & tĩnh lặng",
-        heading_font="Playfair Display", body_font="Inter", mono_font=None,
+        heading_font="Playfair Display", body_font="Geist", mono_font=None,
         radius_sm=0, radius_md=2, radius_lg=4, button_radius="2px", border="1px solid var(--border-subtle)",
         elevation="none — separate surfaces with 1px hairlines and whitespace",
         motion_duration_ms=600, motion_easing="cubic-bezier(0.16, 1, 0.3, 1)", landing_ratio=Ratio.PERFECT_FOURTH),
     Theme.PRECISION_TECH: ThemePreset(
         theme=Theme.PRECISION_TECH, label_vi="Hiện đại & chuẩn xác",
-        heading_font="Geist", body_font="Inter", mono_font="Geist Mono",
+        heading_font="Geist", body_font="Geist", mono_font="Geist Mono",
         radius_sm=4, radius_md=8, radius_lg=12, button_radius="8px",
         border="1px solid color-mix(in srgb, var(--text-primary) 10%, transparent)",
         elevation="layered low-opacity shadows (0.03-0.06) only on floating UI",
@@ -118,7 +118,7 @@ THEMES: dict[Theme, ThemePreset] = {
         motion_duration_ms=300, motion_easing="cubic-bezier(0.22, 1, 0.36, 1)", landing_ratio=Ratio.MAJOR_THIRD),
     Theme.NEO_BRUTALIST: ThemePreset(
         theme=Theme.NEO_BRUTALIST, label_vi="Cá tính & táo bạo",
-        heading_font="Space Grotesk", body_font="Inter", mono_font="JetBrains Mono",
+        heading_font="Space Grotesk", body_font="Manrope", mono_font="JetBrains Mono",
         radius_sm=0, radius_md=0, radius_lg=0, button_radius="0px", border="2px solid var(--text-primary)",
         elevation="hard offset shadow 4px 4px 0 var(--text-primary)",
         motion_duration_ms=150, motion_easing="cubic-bezier(0.2, 0, 0, 1)", landing_ratio=Ratio.PERFECT_FOURTH),

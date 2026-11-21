@@ -20,6 +20,7 @@ from chromaswarm.state_machine.pipeline_state import GateError, Step, tools_for
 
 log = logging.getLogger(__name__)
 TOKENS_PATH = "app/tokens.css"
+STYLE_PATH = "app/style.css"  # art director layer (developer/stylist.py)
 FIRST_PORT = 3001
 
 
@@ -32,7 +33,7 @@ class Workspace:
             raise GateError(f"{tool} is not granted at {step}")
 
     def write(self, step: Step, f: WorkspaceFile) -> Path:
-        tool = "write_tokens" if f.path == TOKENS_PATH else "write_workspace_file"
+        tool = {TOKENS_PATH: "write_tokens", STYLE_PATH: "write_style_layer"}.get(f.path, "write_workspace_file")
         self._check(step, tool)
         target = (self.root / f.path).resolve()
         if self.root.resolve() not in target.parents:
@@ -54,13 +55,17 @@ class Workspace:
             target.write_bytes(data)
         return target
 
+    def missing_packages(self) -> list[str]:
+        """Dependencies in package.json not installed yet (an app made before GSAP / Three.js were added)."""
+        return [d for d in _deps(self.root) if not (self.root / "node_modules" / d / "package.json").exists()]
+
     def read(self, path: str) -> str:
         return (self.root / path).read_text(encoding="utf-8")
 
     async def install(self, step: Step) -> None:
         """npm install, preferring the local cache (a few seconds when Next is already cached)."""
         self._check(step, "run_dev_server")
-        if (self.root / "node_modules" / "next").exists():
+        if not self.missing_packages():
             return
         proc = await asyncio.create_subprocess_exec(
             "npm", "install", "--prefer-offline", "--no-audit", "--no-fund", cwd=self.root,
@@ -68,6 +73,15 @@ class Workspace:
         out, _ = await proc.communicate()
         if proc.returncode:
             raise RuntimeError(f"npm install failed:\n{out.decode(errors='replace')[-2000:]}")
+
+
+def _deps(root: Path) -> list[str]:
+    import json
+    try:
+        pkg = json.loads((root / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [*pkg.get("dependencies", {}), *pkg.get("devDependencies", {})]
 
 
 def free_port(start: int = FIRST_PORT, limit: int = 100) -> int:
@@ -90,11 +104,13 @@ class DevServer:
     def url(self) -> str:
         return f"http://localhost:{self.port}"
 
-    async def start(self, step: Step, timeout: float = 90) -> str:
+    async def start(self, step: Step, timeout: float = 90, port: int | None = None) -> str:
+        """`port`: the port this app had before a backend restart, kept when it is still free so the
+        preview link the user has stays valid."""
         self.workspace._check(step, "run_dev_server")
         if self.proc and self.proc.returncode is None:
             return self.url
-        self.port = free_port()
+        self.port = port if port and free_port(port, 1) == port else free_port()
         self.proc = await asyncio.create_subprocess_exec(
             "npx", "next", "dev", "-p", str(self.port), cwd=self.workspace.root,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,

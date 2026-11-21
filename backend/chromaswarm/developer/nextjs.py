@@ -21,10 +21,14 @@ from pydantic import BaseModel
 from chromaswarm.agents.planner import Section
 from chromaswarm.clone.fonts import google_css_url
 from chromaswarm.developer.i18n import localize_code, localize_value
-from chromaswarm.developer.content import PageCopy
+from chromaswarm.developer.content import PageCopy, guess_category
 from chromaswarm.developer.surfaces import surface_css
 from chromaswarm.developer.measured import measurable, render_measured
 from chromaswarm.engines.design_spec import DesignSpec
+
+from chromaswarm.developer.cart import CART_CSS, CART_TSX
+from chromaswarm.developer.order import GUIDE as ORDER_GUIDE, ORDER_CSS, ORDER_DIALOG_TSX, ORDER_ROUTE_TS, OrderSpec, order_file
+from chromaswarm.developer.motion_js import GSAP_VERSION, MOTION_TSX, SCENE_CSS, SCENE_TSX, THREE_VERSION, motion_config
 
 NEXT_VERSION = "16.4.5"
 REACT_VERSION = "19.3.0"
@@ -111,9 +115,10 @@ def scaffold(project: str, spec: DesignSpec, photos: list[str] | None = None) ->
         WorkspaceFile(path="package.json", content=json.dumps({
             "name": "chromaswarm-workspace", "private": True,
             "scripts": {"dev": "next dev", "build": "next build", "start": "next start"},
-            "dependencies": {"next": NEXT_VERSION, "react": REACT_VERSION, "react-dom": REACT_VERSION},
+            "dependencies": {"next": NEXT_VERSION, "react": REACT_VERSION, "react-dom": REACT_VERSION,
+                             "gsap": GSAP_VERSION, "three": THREE_VERSION},
             "devDependencies": {"typescript": "^5", "@types/react": "^19", "@types/react-dom": "^19",
-                                "@types/node": "^20"},
+                                "@types/node": "^20", "@types/three": THREE_VERSION},
         }, indent=2) + "\n"),
         WorkspaceFile(path="tsconfig.json", content=json.dumps({
             "compilerOptions": {
@@ -136,8 +141,12 @@ import "./base.css";
 import "./surface.css";
 import "./motion.css";
 import "./match.css";
+import "./style.css";
 import "./heal.css";
 import "./wireframe.css";
+
+import {{ Motion }} from "@/components/Motion";
+import {{ OrderDialog }} from "@/components/OrderDialog";
 
 export const metadata: Metadata = {{ title: {_js(project)} }};
 
@@ -148,7 +157,7 @@ export default function RootLayout({{ children }}: {{ children: React.ReactNode 
         <link rel="preconnect" href="https://fonts.googleapis.com" />
 {links}
       </head>
-      <body>{{children}}</body>
+      <body>{{children}}<OrderDialog /><Motion /></body>
     </html>
   );
 }}
@@ -158,11 +167,31 @@ export default function RootLayout({{ children }}: {{ children: React.ReactNode 
         heal_file([]),
         motion_file([]),
         match_file(""),
+        style_file({}),
         wireframe_file(None),
         WorkspaceFile(path="components/Art.tsx", content=art_component(spec, photos or [])),
+        WorkspaceFile(path="components/ProductPreview.tsx", content=PRODUCT_PREVIEW_TSX),
+        WorkspaceFile(path="components/Motion.tsx", content=MOTION_TSX),
+        WorkspaceFile(path="components/OrderDialog.tsx", content=ORDER_DIALOG_TSX),
+        WorkspaceFile(path="components/Cart.tsx", content=CART_TSX),
+        routes_file({}),
+        WorkspaceFile(path="app/api/orders/route.ts", content=ORDER_ROUTE_TS),
+        order_file(OrderSpec(kind="lead", brand=project, title="Liên hệ", item_label="", item_required=False)),
+        WorkspaceFile(path="components/Scene3D.tsx", content=SCENE_TSX),
+        WorkspaceFile(path="content/motion.ts", content=motion_config({})),
         images_file(photos or []),
         WorkspaceFile(path="HUONG_DAN.md", content=guide(project)),
     ]
+
+
+def routes_file(routes: dict[str, str]) -> WorkspaceFile:
+    """The site's built pages (sitemap slug -> route), rewritten on every page build: links read it at run time,
+    so a page built earlier starts linking to a page built later (product cards -> product page)."""
+    return WorkspaceFile(path="content/routes.ts", content=(
+        "// Các trang đã dựng (tên trang -> đường dẫn). ChromaSwarm ghi lại file này mỗi lần dựng thêm trang.\n"
+        f"export const ROUTES: Record<string, string> = {json.dumps(routes, ensure_ascii=False)};\n\n"
+        "/** Link to the product page for one item, or nothing when the site has no product page. */\n"
+        "export const detail = (name: string) => (ROUTES.pdp ? `${ROUTES.pdp}?sp=${encodeURIComponent(name)}` : undefined);\n"))
 
 
 def images_file(photos: list[str]) -> WorkspaceFile:
@@ -203,8 +232,8 @@ npm run dev
 ```
 
 Mở http://localhost:3000. Sửa file nào, trang tự cập nhật.
-
-## 4. Đưa lên mạng
+{ORDER_GUIDE}
+## 5. Đưa lên mạng
 
 Cách nhanh nhất: đẩy thư mục này lên GitHub rồi nhập vào https://vercel.com (miễn phí), hoặc chạy `npx vercel`.
 
@@ -280,6 +309,28 @@ def heal_file(rules: list[str]) -> WorkspaceFile:
     return WorkspaceFile(path="app/heal.css", content=head + "\n".join(rules) + ("\n" if rules else ""))
 
 
+STYLE_HEAD = ("/* Art director layer (developer/stylist.py): composition per page and fixes from the design critic.\n"
+              "   Tokens only; every rule is scoped to one page and one section. Loaded before heal.css. */\n")
+
+
+def style_file(pages: dict[str, str]) -> WorkspaceFile:
+    """app/style.css: one block per page, each selector prefixed with that page's <main>."""
+    blocks = []
+    for page, css in pages.items():
+        if css.strip():
+            scoped = css.replace('[data-swarm-section="', f'main[data-swarm-page="{page}"] [data-swarm-section="')
+            blocks.append(f"/* page: {page} */\n{scoped}\n/* end: {page} */")
+    return WorkspaceFile(path="app/style.css", content=STYLE_HEAD + "\n".join(blocks) + ("\n" if blocks else ""))
+
+
+def style_pages(content: str) -> dict[str, str]:
+    """The per-page blocks of an existing app/style.css, unscoped again."""
+    out = {}
+    for m in re.finditer(r"/\* page: ([\w-]+) \*/\n(.*?)\n/\* end: \1 \*/", content, re.S):
+        out[m.group(1)] = m.group(2).replace(f'main[data-swarm-page="{m.group(1)}"] [data-swarm-section="', '[data-swarm-section="')
+    return out
+
+
 def motion_file(blocks: list[str]) -> WorkspaceFile:
     """B8.1 motion CSS returned by the Motion MCP server, one block per section effect."""
     head = "/* B8.1 motion effects (Motion & 2D/3D MCP Specialist). Respects prefers-reduced-motion. */\n"
@@ -330,12 +381,12 @@ const ART = {_js(variants)};
 import {{ PHOTOS }} from "@/content/images";
 const WIDTHS = [480, 800, 1200, 1800];
 
-type Props = {{ label: string; ratio?: string; tone?: number; sizes?: string }};
+type Props = {{ label: string; ratio?: string; tone?: number; sizes?: string; src?: string }};
 
-/** Photos when available, tonal placeholders otherwise or when a photo fails to load. */
-export function Art({{ label, ratio = "4 / 5", tone = 0, sizes = "(min-width: 1024px) 50vw, 100vw" }}: Props) {{
+/** The item's own photo (src), else the shared photos, else tonal placeholders (also when a photo fails to load). */
+export function Art({{ label, ratio = "4 / 5", tone = 0, sizes = "(min-width: 1024px) 50vw, 100vw", src }}: Props) {{
   const fallback = ART[tone % ART.length];
-  const photo = PHOTOS.length ? PHOTOS[tone % PHOTOS.length] : null;
+  const photo = src || (PHOTOS.length ? PHOTOS[tone % PHOTOS.length] : null);
   // Unsplash serves any width on request: let the browser pick one for the slot.
   const sized = photo && photo.startsWith("https://images.unsplash.com/");
   return (
@@ -355,7 +406,7 @@ def _root(section: Section, cls: str, inner: str, tag: str = "section") -> str:
     mcp = ' data-swarm-mcp="2d-css"' if section.effect or section.motion else ""  # B8.1 target (FRONTEND_STANDARDS §4.4)
     if section.surface == "alt":
         cls += " s-alt"  # tinted band: plain / tinted alternation gives the page rhythm
-    return (f'<{tag} data-swarm-section="{section.id}"{mcp} className="s {cls}">\n'
+    return (f'<{tag} id="{section.id}" data-swarm-section="{section.id}"{mcp} className="s {cls}">\n'
             f'      <div className="container">\n{inner}\n      </div>\n    </{tag}>')
 
 
@@ -364,6 +415,23 @@ def _component(section: Section, jsx: str, *, client: bool = False, prelude: str
     imports = 'import { useState } from "react";\n' if client else ""
     if "<Art" in jsx:
         imports += 'import { Art } from "@/components/Art";\n'
+    # The site's forms send through the order API and its fallback channels (developer/order.py)
+    used = [name for name, mark in (("openOrder", "openOrder("), ("sendOrder", "sendOrder("), ("Undelivered", "<Undelivered"))
+            if mark in jsx or mark in body]
+    if used:
+        imports += f'import {{ {", ".join(used)} }} from "@/components/OrderDialog";\n'
+    cart = [name for name in ("useCart", "useHydrated", "addToCart", "setCartQty", "clearCart", "cartCount", "cartTotal", "money")
+            if re.search(rf"\b{name}\b", jsx + body) and f"const {name} " not in prelude]
+    if cart:  # the shop's cart store, kept across pages (developer/cart.py)
+        imports += f'import {{ {", ".join(cart)} }} from "@/components/Cart";\n'
+    if re.search(r"\bROUTES\.|\bdetail\(", jsx + body):  # built pages, rewritten on every page build
+        imports += 'import { ROUTES, detail } from "@/content/routes";\n'
+    if "useEffect(" in body and "useEffect" not in prelude:
+        imports = imports.replace('import { useState } from "react";', 'import { useEffect, useState } from "react";')
+    if re.search(r"\bORDER\.", jsx + body) and "@/content/order" not in prelude:
+        imports += 'import { ORDER } from "@/content/order";\n'
+    if "<ProductPreview" in jsx:
+        imports += 'import { ProductPreview } from "@/components/ProductPreview";\n'
     if (col := _COLLECT.get()) is not None:
         jsx = _lift_fixed_text(jsx, col)
     if col is not None and col.entries:
@@ -384,7 +452,7 @@ def _nav(s: Section, c: PageCopy) -> str:
       <div className="container nav-row">
         <a href="/" className="nav-logo" data-swarm-id="nav-logo" data-swarm-role="link">{{BRAND}}</a>
         <nav className={{open ? "nav-links is-open" : "nav-links"}} aria-label="Điều hướng chính">
-          {{LINKS.map(([label, href]) => <a key={{label}} href={{href}} className="nav-link">{{label}}</a>)}}
+          {{LINKS.map(([label, href]) => <a key={{label}} href={{href}} className="nav-link" onClick={{() => setOpen(false)}}>{{label}}</a>)}}
         </nav>
 {{actions}}
         <button type="button" className="icon-btn nav-toggle" data-swarm-id="nav-menu-toggle" data-swarm-role="button"
@@ -399,22 +467,22 @@ def _nav(s: Section, c: PageCopy) -> str:
     if c.shop:
         body += SHOP_STATE
     jsx = jsx.replace("{actions}", SHOP_ACTIONS if c.shop else "")
+    if c.logo:  # the user's uploaded logo replaces the brand name; the name stays as its text alternative
+        jsx = jsx.replace('data-swarm-role="link">{BRAND}</a>',
+                          'data-swarm-role="link"><img src={LOGO} alt={BRAND} className="nav-logo-img" /></a>', 1)
     if c.shop:
         jsx = jsx.replace('className="s-nav"', 'className="s-nav s-nav-shop"', 1)
-    head = 'import { useEffect } from "react";\n' if c.shop else ""
-    return _component(s, jsx, client=True, prelude=f"{head}\nconst BRAND = {_js(c.brand)};\nconst LINKS = {_js(c.nav_links)};\n",
+    return _component(s, jsx, client=True, prelude=f"\nconst BRAND = {_js(c.brand)};\nconst LINKS = {_js(c.nav_links)};\n"
+                      + (f"const LOGO = {json.dumps(c.logo)};\n" if c.logo else ""),
                       body=body)
 
 
-# Store header: search field, account, cart with a live count (grid "Thêm vào giỏ" dispatches cart:add).
+# Store header: search field, account, and the cart (developer/cart.py) once the site has a cart page:
+# its live count, its lines and a link to check out.
 SHOP_STATE = """  const [search, setSearch] = useState(false);
   const [cartOpen, setCartOpen] = useState(false);
-  const [count, setCount] = useState(0);
-  useEffect(() => {
-    const add = () => setCount((n) => n + 1);
-    window.addEventListener("cart:add", add);
-    return () => window.removeEventListener("cart:add", add);
-  }, []);
+  const cart = useCart();
+  const count = cartCount(cart);
 """
 SHOP_ACTIONS = """        <div className="nav-actions">
           {search && <input className="input nav-search" type="search" aria-label="Tìm sản phẩm" autoFocus
@@ -423,10 +491,10 @@ SHOP_ACTIONS = """        <div className="nav-actions">
             data-swarm-id="nav-search" data-swarm-role="button" onClick={() => setSearch(!search)}>
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
           </button>
-          <a href="#" className="icon-btn" aria-label="Tài khoản" data-swarm-id="nav-account" data-swarm-role="link">
+          {(ROUTES.account || ROUTES.login) && <a href={ROUTES.account || ROUTES.login} className="icon-btn" aria-label="Tài khoản" data-swarm-id="nav-account" data-swarm-role="link">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden><circle cx="12" cy="8.5" r="3.5" /><path d="M5 20c1.2-3.5 4-5 7-5s5.8 1.5 7 5" /></svg>
-          </a>
-          <div className="cart-wrap">
+          </a>}
+          {ORDER.cart && <div className="cart-wrap">
             <button type="button" className="icon-btn" aria-label={`Giỏ hàng, ${count} sản phẩm`} aria-expanded={cartOpen}
               data-swarm-id="nav-cart" data-swarm-role="button" onClick={() => setCartOpen(!cartOpen)}>
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden><path d="M6 8h12l-1 12H7L6 8Z" /><path d="M9 8a3 3 0 0 1 6 0" /></svg>
@@ -434,11 +502,28 @@ SHOP_ACTIONS = """        <div className="nav-actions">
             </button>
             {cartOpen && (
               <div className="cart-pop" role="status">
-                <p className="t-body">{count ? `Giỏ hàng có ${count} sản phẩm.` : "Giỏ hàng đang trống."}</p>
+                {count ? (
+                  <>
+                    <ul className="cart-pop-lines">
+                      {cart.map((l) => (
+                        <li key={l.name} className="t-body"><span>{l.name} × {l.qty}</span><span className="t-num">{money(l.price * l.qty)}</span></li>
+                      ))}
+                    </ul>
+                    <p className="t-body cart-pop-total"><span>Tạm tính</span><strong className="t-num">{money(cartTotal(cart))}</strong></p>
+                    <a href={ORDER.cart} className="btn btn-primary" data-swarm-id="nav-cart-view" data-swarm-role="link">Xem giỏ hàng</a>
+                  </>
+                ) : <p className="t-body">Giỏ hàng đang trống.</p>}
               </div>
             )}
-          </div>
+          </div>}
         </div>"""
+
+
+def _hero_visual(c: PageCopy, art_props: str) -> str:
+    """The hero's visual: the product's own interface for software without a real screenshot, else a photo."""
+    if c.product_ui:
+        return f"<ProductPreview {{...{_js(preview_props(c), 'preview')}}} />"
+    return f"<Art label={{{_js(c.brand, 'image_alt')}}} {art_props} />".replace("  />", " />")
 
 
 def _hero_split(s: Section, c: PageCopy) -> str:
@@ -448,13 +533,13 @@ def _hero_split(s: Section, c: PageCopy) -> str:
             <p className="t-lead">{{{_js(c.subhead)}}}</p>
             <div className="row">
               <button type="button" className="btn btn-primary" data-swarm-id="cta-primary" data-swarm-role="button"
-                onClick={{() => setSent(true)}}>{{sent ? "Đã ghi nhận, chúng tôi sẽ liên hệ" : {_js(c.cta)}}}</button>
-              <a href="#details" className="link-arrow" data-swarm-id="cta-secondary" data-swarm-role="link">{c.cta_secondary} <span aria-hidden>→</span></a>
+                onClick={{() => openOrder()}}>{{{_js(c.cta)}}}</button>
+              <a href="{c.more_href}" className="link-arrow" data-swarm-id="cta-secondary" data-swarm-role="link">{c.cta_secondary} <span aria-hidden>→</span></a>
             </div>
           </div>
-          <Art label={{{_js(c.brand, "image_alt")}}} />
+          {_hero_visual(c, "")}
         </div>'''
-    return _component(s, _root(s, "s-hero", inner), client=True, body="  const [sent, setSent] = useState(false);\n")
+    return _component(s, _root(s, "s-hero", inner), client=True)
 
 
 def _hero_text(s: Section, c: PageCopy) -> str:
@@ -476,9 +561,9 @@ def _hero_text(s: Section, c: PageCopy) -> str:
     else:
         action = f'''            <div className="row">
               <button type="button" className="btn btn-primary" data-swarm-id="cta-primary" data-swarm-role="button"
-                onClick={{() => setSent(true)}}>{{sent ? "Đã ghi nhận, chúng tôi sẽ liên hệ" : {_js(c.cta)}}}</button>
+                onClick={{() => openOrder()}}>{{{_js(c.cta)}}}</button>
             </div>'''
-        body = "  const [sent, setSent] = useState(false);\n"
+        body = ""
     inner = f'''        <div className="stack hero-text">
             <h1 className="t-h1">{{{_js(c.headline)}}}</h1>
             <p className="t-lead">{{{_js(c.subhead)}}}</p>
@@ -506,19 +591,25 @@ def _z_rows(s: Section, c: PageCopy) -> str:
             </div>
           ))}
         </div>'''
-    return _component(s, _root(s, "s-z", inner), prelude=f"\nconst ROWS = {_js(c.story[:3])};\n")
+    prelude = f"\nconst ROWS = {_js(c.story[:3])};\n"
+    if c.product_ui:  # software: each feature row shows the product, titled by the feature, not a stock photo
+        inner = inner.replace('<Art label={title} ratio={i % 2 ? "4 / 5" : "3 / 2"} tone={i + 1} sizes="(min-width: 1024px) 58vw, 100vw" />',
+                              "<ProductPreview {...PREVIEW} title={title} />")
+        prelude += f"const PREVIEW = {_js(preview_props(c), 'preview')};\n"
+    return _component(s, _root(s, "s-z", inner), prelude=prelude)
 
 
 def _bento(s: Section, c: PageCopy) -> str:
-    items = [i.model_dump() for i in (c.cards or c.items)[:4]]
+    items = [i.model_dump() | {"amount": _amount(i.price) if c.shop else None} for i in (c.cards or c.items)[:4]]
     inner = '''        <div className="section-head"><p className="eyebrow">Bộ sưu tập</p><h2 className="t-h2">Những mẫu được chọn nhiều nhất</h2></div>
+        <p className="t-body muted added-note" aria-live="polite">{added ? `Đã thêm ${added} vào giỏ` : ""}</p>
         <div className="bento">
           {ITEMS.map((it, i) => (
             <article key={it.name} className={i === 0 || i === 3 ? "product bento-wide" : "product"} data-swarm-id={`collection-card-${i + 1}`} data-swarm-role="card">
               {/* one image height per row, whatever the column span: cards in a row never go ragged */}
-              <Art label={it.name} ratio="auto" tone={i + 4} sizes={i === 0 || i === 3 ? "(min-width: 768px) 66vw, 100vw" : "(min-width: 768px) 33vw, 100vw"} />
+              <Art label={it.name} src={it.image} ratio="auto" tone={i + 4} sizes={i === 0 || i === 3 ? "(min-width: 768px) 66vw, 100vw" : "(min-width: 768px) 33vw, 100vw"} />
               <div className="product-meta">
-                <div><h3 className="t-h4">{it.name}</h3><p className="t-body muted">{it.note}</p></div>
+                <div><h3 className="t-h4">{ROUTES.pdp ? <a href={detail(it.name)} className="product-link">{it.name}</a> : it.name}</h3><p className="t-body muted">{it.note}</p></div>
                 {it.price && <span className="t-body price">{it.price}</span>}
               </div>
               <button type="button" className="btn-link" data-swarm-id={`quick-view-trigger-${i + 1}`} data-swarm-role="modal-trigger"
@@ -530,14 +621,26 @@ def _bento(s: Section, c: PageCopy) -> str:
           <div className="modal-scrim" role="presentation" onClick={() => setActive(null)}>
             <div className="modal" role="dialog" aria-modal="true" aria-label={ITEMS[active].name} onClick={(e) => e.stopPropagation()}>
               <h3 className="t-h3">{ITEMS[active].name}</h3>
+              {ITEMS[active].price && <p className="t-h4">{ITEMS[active].price}</p>}
               <p className="t-body">{ITEMS[active].note}</p>
-              <button type="button" className="btn btn-primary" data-swarm-id="quick-view-close" data-swarm-role="button"
-                onClick={() => setActive(null)}>Đóng</button>
+              <div className="row">
+                <button type="button" className="btn btn-primary" data-swarm-id="quick-view-order" data-swarm-role="button"
+                  onClick={() => {
+                    const it = ITEMS[active], name = it.name;
+                    setActive(null);
+                    if (it.amount && ORDER.cart) { addToCart({ name, price: it.amount, image: it.image, note: it.note }); setAdded(name); }
+                    else openOrder(name);
+                  }}>{ITEMS[active].amount && ORDER.cart ? "Thêm vào giỏ" : CTA_LABEL}</button>
+                {ROUTES.pdp && <a href={detail(ITEMS[active].name)} className="btn-link" data-swarm-id="quick-view-detail" data-swarm-role="link">Xem chi tiết</a>}
+                <button type="button" className="btn btn-ghost" data-swarm-id="quick-view-close" data-swarm-role="button"
+                  onClick={() => setActive(null)}>Đóng</button>
+              </div>
             </div>
           </div>
         )}'''
+    inner = inner.replace("CTA_LABEL", _js(c.cta))  # quick view → this very item into the cart, or its order form
     return _component(s, _root(s, "s-bento", inner), client=True, prelude=f"\nconst ITEMS = {_js(items)};\n",
-                      body="  const [active, setActive] = useState<number | null>(null);\n")
+                      body="  const [active, setActive] = useState<number | null>(null);\n  const [added, setAdded] = useState(\"\");\n")
 
 
 def _accordion(s: Section, c: PageCopy) -> str:
@@ -560,24 +663,31 @@ def _accordion(s: Section, c: PageCopy) -> str:
 
 
 def _band(s: Section, c: PageCopy) -> str:
+    # A closing band that fills the width (user: "one line and a button floating on the left looks bare"):
+    # the ask on the left, a line of the page's own facts under it, both actions on the right on desktop.
+    note = " · ".join(f"{v} {k}" for v, k in c.facts[:3])
+    note_jsx = f'\n            <p className="t-body band-note">{{{_js(note)}}}</p>' if note else ""
     inner = f'''        <div className="band">
-          <h2 className="t-h2">{{{_js(c.closing)}}}</h2>
-          <button type="button" className="btn btn-inverse" data-swarm-id="cta-closing" data-swarm-role="button"
-            onClick={{() => setSent(true)}}>{{sent ? "Đã ghi nhận" : {_js(c.cta)}}}</button>
+          <div className="band-copy">
+            <h2 className="t-h2">{{{_js(c.closing)}}}</h2>{note_jsx}
+          </div>
+          <div className="band-actions">
+            <button type="button" className="btn btn-inverse" data-swarm-id="cta-closing" data-swarm-role="button"
+              onClick={{() => openOrder()}}>{{{_js(c.cta)}}}</button>
+            <a href="{c.more_href}" className="link-arrow" data-swarm-id="cta-closing-secondary" data-swarm-role="link">{{{_js(c.cta_secondary)}}} <span aria-hidden>→</span></a>
+          </div>
         </div>'''
-    return _component(s, _root(s, "s-band", inner), client=True, body="  const [sent, setSent] = useState(false);\n")
+    return _component(s, _root(s, "s-band", inner), client=True)
 
 
 def _footer(s: Section, c: PageCopy) -> str:
     cols = ""
-    if c.shop:
-        cols = '''
+    if c.shop and c.footer_links:  # only links that lead somewhere (content.footer_links)
+        cols = f'''
           <nav className="footer-col" aria-label="Hỗ trợ"><p className="t-body">Hỗ trợ</p>
-            {["Vận chuyển", "Đổi trả", "Câu hỏi thường gặp"].map((l) => <a key={l} href="#" className="footer-link">{l}</a>)}</nav>
-          <nav className="footer-col" aria-label="Chính sách"><p className="t-body">Chính sách</p>
-            {["Bảo mật", "Điều khoản", "Liên hệ"].map((l) => <a key={l} href="#" className="footer-link">{l}</a>)}</nav>'''
+            {{{_js(c.footer_links)}.map(([l, href]) => <a key={{l}} href={{href}} className="footer-link">{{l}}</a>)}}</nav>'''
     inner = f'''        <div className={{{json.dumps("footer-grid footer-shop" if c.shop else "footer-grid")}}}>
-          <div className="stack"><strong className="t-h4">{{{_js(c.brand)}}}</strong><p className="t-caption muted">{{{_js(c.footer_line)}}}</p></div>{cols}
+          <div className="stack"><strong className="t-h4">{{{_js(c.brand)}}}</strong>__CONTACT__<p className="t-caption muted">{{{_js(c.footer_line)}}}</p></div>{cols}
           <form className="stack" noValidate onSubmit={{(e) => {{ e.preventDefault(); setState(/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(email) ? "ok" : "error"); }}}}>
             <label htmlFor="newsletter" className="t-body">Nhận tin mới qua email</label>
             {{/* §6.1: messages sit above the field, where autofill menus and the keyboard cannot cover them */}}
@@ -592,6 +702,8 @@ def _footer(s: Section, c: PageCopy) -> str:
             </div>
           </form>
         </div>'''
+    shown = c.contact and c.contact not in c.footer_line  # the footer line may already carry it
+    inner = inner.replace("__CONTACT__", f'<p className="t-body">{{{_js(c.contact)}}}</p>' if shown else "")
     return _component(s, _root(s, "s-footer", inner, tag="footer"), client=True,
                       body='  const [email, setEmail] = useState("");\n  const [state, setState] = useState<"idle" | "ok" | "error">("idle");\n')
 
@@ -608,12 +720,12 @@ def _hero_overlay(s: Section, c: PageCopy) -> str:
         <p className="t-lead on-photo">{{{_js(c.subhead)}}}</p>
         <div className="row">
           <button type="button" className="btn btn-inverse" data-swarm-id="cta-primary" data-swarm-role="button"
-            onClick={{() => setSent(true)}}>{{sent ? "Đã ghi nhận, chúng tôi sẽ liên hệ" : {_js(c.cta)}}}</button>
-          <a href="#details" className="link-arrow on-photo" data-swarm-id="cta-secondary" data-swarm-role="link">{c.cta_secondary} <span aria-hidden>→</span></a>
+            onClick={{() => openOrder()}}>{{{_js(c.cta)}}}</button>
+          <a href="{c.more_href}" className="link-arrow on-photo" data-swarm-id="cta-secondary" data-swarm-role="link">{c.cta_secondary} <span aria-hidden>→</span></a>
         </div>
       </div></div>
     </section>'''
-    return _component(s, jsx, client=True, body="  const [sent, setSent] = useState(false);\n")
+    return _component(s, jsx, client=True)
 
 
 def _hero_editorial(s: Section, c: PageCopy) -> str:
@@ -625,13 +737,13 @@ def _hero_editorial(s: Section, c: PageCopy) -> str:
             <p className="t-lead">{{{_js(c.subhead)}}}</p>
             <div className="row">
               <button type="button" className="btn btn-primary" data-swarm-id="cta-primary" data-swarm-role="button"
-                onClick={{() => setSent(true)}}>{{sent ? "Đã ghi nhận, chúng tôi sẽ liên hệ" : {_js(c.cta)}}}</button>
-              <a href="#details" className="link-arrow" data-swarm-id="cta-secondary" data-swarm-role="link">{c.cta_secondary} <span aria-hidden>→</span></a>
+                onClick={{() => openOrder()}}>{{{_js(c.cta)}}}</button>
+              <a href="{c.more_href}" className="link-arrow" data-swarm-id="cta-secondary" data-swarm-role="link">{c.cta_secondary} <span aria-hidden>→</span></a>
             </div>
           </div>
           <Art label={{{_js(c.brand, "image_alt")}}} ratio="21 / 9" sizes="100vw" />
         </div>'''
-    return _component(s, _root(s, "s-hero-editorial", inner), client=True, body="  const [sent, setSent] = useState(false);\n")
+    return _component(s, _root(s, "s-hero-editorial", inner), client=True)
 
 
 def _hero_centered(s: Section, c: PageCopy) -> str:
@@ -642,12 +754,12 @@ def _hero_centered(s: Section, c: PageCopy) -> str:
           <p className="t-lead">{{{_js(c.subhead)}}}</p>
           <div className="row center">
             <button type="button" className="btn btn-primary" data-swarm-id="cta-primary" data-swarm-role="button"
-              onClick={{() => setSent(true)}}>{{sent ? "Đã ghi nhận, chúng tôi sẽ liên hệ" : {_js(c.cta)}}}</button>
-            <a href="#details" className="link-arrow" data-swarm-id="cta-secondary" data-swarm-role="link">{c.cta_secondary} <span aria-hidden>→</span></a>
+              onClick={{() => openOrder()}}>{{{_js(c.cta)}}}</button>
+            <a href="{c.more_href}" className="link-arrow" data-swarm-id="cta-secondary" data-swarm-role="link">{c.cta_secondary} <span aria-hidden>→</span></a>
           </div>
-          <div className="hero-panel"><Art label={{{_js(c.brand, "image_alt")}}} ratio="16 / 9" sizes="(min-width: 1024px) 80vw, 100vw" /></div>
+          <div className="hero-panel">{_hero_visual(c, 'ratio="16 / 9" sizes="(min-width: 1024px) 80vw, 100vw"')}</div>
         </div>'''
-    return _component(s, _root(s, "s-hero-centered", inner), client=True, body="  const [sent, setSent] = useState(false);\n")
+    return _component(s, _root(s, "s-hero-centered", inner), client=True)
 
 
 def _full_image(s: Section, c: PageCopy) -> str:
@@ -658,12 +770,12 @@ def _full_image(s: Section, c: PageCopy) -> str:
             <p className="t-lead">{{{_js(c.subhead)}}}</p>
             <div className="row">
               <button type="button" className="btn btn-primary" data-swarm-id="cta-primary" data-swarm-role="button"
-                onClick={{() => setSent(true)}}>{{sent ? "Đã ghi nhận, chúng tôi sẽ liên hệ" : {_js(c.cta)}}}</button>
+                onClick={{() => openOrder()}}>{{{_js(c.cta)}}}</button>
             </div>
           </div>
           <Art label={{{_js(c.brand, "image_alt")}}} ratio="16 / 8" />
         </div>'''
-    return _component(s, _root(s, "s-hero-image", inner), client=True, body="  const [sent, setSent] = useState(false);\n")
+    return _component(s, _root(s, "s-hero-image", inner), client=True)
 
 
 SECTION_TITLES_VI = {"categories": "Danh mục", "related": "Sản phẩm liên quan", "collection": "Nổi bật"}
@@ -674,16 +786,18 @@ def _scroller(s: Section, c: PageCopy) -> str:
     inner = f'''        <div className="section-head"><p className="eyebrow">{SECTION_TITLES_VI.get(s.id, "Khám phá")}</p><h2 className="t-h2">Chọn theo nhu cầu của bạn</h2></div>
         <div className="scroller">
           {{CATS.map((name, i) => (
-            <a key={{name}} href="#" className="product scroller-item" data-swarm-id={{`{rid}-${{i + 1}}`}} data-swarm-role="card">
+            <a key={{name}} href={{ROUTES.catalog ? (FILLED.includes(name) ? `${{ROUTES.catalog}}?dm=${{encodeURIComponent(name)}}` : ROUTES.catalog) : undefined}} className="product scroller-item" data-swarm-id={{`{rid}-${{i + 1}}`}} data-swarm-role="card">
               <Art label={{name}} ratio="4 / 5" tone={{i + 1}} sizes="(min-width: 1024px) 25vw, 70vw" /><span className="t-h4">{{name}}</span>
             </a>
           ))}}
         </div>'''
-    return _component(s, _root(s, "s-scroller", inner), prelude=f"\nconst CATS = {_js(c.categories)};\n")
+    # a category with items opens the catalog filtered to it; one without opens the whole catalog
+    filled = [cat for cat in c.categories if any((i.category or guess_category(i.name, c.categories)) == cat for i in c.items)]
+    return _component(s, _root(s, "s-scroller", inner), prelude=f"\nconst CATS = {_js(c.categories)};\nconst FILLED = {_js(filled)};\n")
 
 
 def _grid4(s: Section, c: PageCopy) -> str:
-    items = [i.model_dump() for i in c.items]
+    items = [i.model_dump() | {"amount": _amount(i.price)} for i in c.items]
     cats = sorted({i.category for i in c.items if i.category}, key=lambda x: c.categories.index(x) if x in c.categories else 99)
     tabs = ""
     if cats:  # category tabs filter the grid for real (§ interaction sweep)
@@ -694,25 +808,29 @@ def _grid4(s: Section, c: PageCopy) -> str:
               data-swarm-id={`category-tab-${i + 1}`} data-swarm-role="tab" onClick={() => setActive(cat)}>{cat}</button>
           ))}
         </div>'''
-    inner = '''        <div className="row between align-end"><div className="section-head"><p className="eyebrow">Bán chạy</p><h2 className="t-h2">Khách mua lại nhiều nhất tháng này</h2></div><span className="t-body muted" aria-live="polite">{cart ? `Giỏ hàng: ${cart}` : ""}</span></div>''' + tabs + '''
+    inner = '''        <div className="row between align-end"><div className="section-head"><p className="eyebrow">Bán chạy</p><h2 className="t-h2">Khách mua lại nhiều nhất tháng này</h2></div><p className="t-body muted added-note" aria-live="polite">{added ? `Đã thêm ${added} vào giỏ` : ""}</p></div>''' + tabs + '''
         <div className="grid-4">
           {ITEMS.filter((it) => active === "Tất cả" || it.category === active).map((it, i) => (
             <article key={it.name} className="product" data-swarm-id={`product-card-${i + 1}`} data-swarm-role="card">
               <div className="product-media">
-                <Art label={it.name} ratio="4 / 5" tone={i + 2} sizes="(min-width: 1024px) 25vw, (min-width: 768px) 50vw, 100vw" />
+                <Art label={it.name} src={it.image} ratio="4 / 5" tone={i + 2} sizes="(min-width: 1024px) 25vw, (min-width: 768px) 50vw, 100vw" />
                 {it.tag && <span className="product-tag">{it.tag}</span>}
               </div>
-              <div className="product-meta"><h3 className="t-h4">{it.name}</h3><span className="t-body price">{it.price}</span></div>
+              <div className="product-meta"><h3 className="t-h4">{ROUTES.pdp ? <a href={detail(it.name)} className="product-link">{it.name}</a> : it.name}</h3><span className="t-body price">{it.price}</span></div>
               {it.note && <p className="t-caption muted">{it.note}</p>}
               {/* §6.2: an action repeated on every card is secondary, never a row of primaries */}
               <button type="button" className="btn btn-ghost" data-swarm-id={`add-to-cart-${i + 1}`} data-swarm-role="button"
-                onClick={() => { setCart(cart + 1); window.dispatchEvent(new CustomEvent("cart:add")); }}>Thêm vào giỏ</button>
+                onClick={() => {
+                  if (!it.amount || !ORDER.cart) return openOrder(it.name); // no cart page yet / no price: order this item
+                  addToCart({ name: it.name, price: it.amount, image: it.image, note: it.note });
+                  setAdded(it.name);
+                }}>{it.amount && ORDER.cart ? "Thêm vào giỏ" : ORDER.title}</button>
             </article>
           ))}
         </div>'''
     return _component(s, _root(s, "s-grid", inner), client=True,
                       prelude=f"\nconst ITEMS = {_js(items)};\nconst CATS = {_js(cats)};\n",
-                      body='  const [cart, setCart] = useState(0);\n  const [active, setActive] = useState("Tất cả");\n')
+                      body='  const [added, setAdded] = useState("");\n  const [active, setActive] = useState("Tất cả");\n')
 
 
 def _announcement(s: Section, c: PageCopy) -> str:
@@ -764,7 +882,7 @@ def _picker(s: Section, c: PageCopy) -> str:
               const it = ITEMS[(pick + k) % ITEMS.length];
               return (
                 <article key={`${pick}-${k}`} className="product picker-card">
-                  <Art label={it.name} ratio="1 / 1" tone={pick * 3 + k + 1} sizes="(min-width: 1024px) 16vw, 33vw" />
+                  <Art label={it.name} src={it.image} ratio="1 / 1" tone={pick * 3 + k + 1} sizes="(min-width: 1024px) 16vw, 33vw" />
                   <h3 className="t-body picker-name">{it.name}</h3>
                   <span className="t-caption muted price">{it.price}</span>
                 </article>
@@ -809,7 +927,7 @@ def _auth(s: Section, c: PageCopy) -> str:
 
 def _title_count(s: Section, c: PageCopy) -> str:
     inner = f'''        <div className="row between">
-          <h1 className="t-h1">{{{_js(c.categories[0])}}} <span className="t-body muted">{len(c.items)} sản phẩm</span></h1>
+          <h1 className="t-h1">Tất cả sản phẩm <span className="t-body muted">{len(c.items)} sản phẩm</span></h1>
           <label className="row t-body">Sắp xếp
             <select className="input" value={{sort}} onChange={{(e) => setSort(e.target.value)}} data-swarm-id="sort-select" data-swarm-role="input">
               <option value="new">Mới nhất</option><option value="asc">Giá tăng dần</option><option value="desc">Giá giảm dần</option>
@@ -820,7 +938,9 @@ def _title_count(s: Section, c: PageCopy) -> str:
 
 
 def _sidebar_grid(s: Section, c: PageCopy) -> str:
-    items = [i.model_dump() | {"cat": c.categories[n % len(c.categories)]} for n, i in enumerate(c.items)]
+    # each item's own category (or the one its name says); the filter lists only categories that have items
+    items = [i.model_dump() | {"cat": i.category or guess_category(i.name, c.categories)} for i in c.items]
+    used = [cat for cat in c.categories if any(it["cat"] == cat for it in items)]
     inner = '''        <div className="sidebar-grid">
           <button type="button" className="btn btn-ghost filter-toggle" data-swarm-id="filter-drawer-toggle" data-swarm-role="button"
             aria-expanded={drawer} onClick={() => setDrawer(!drawer)}>Bộ lọc</button>
@@ -831,16 +951,25 @@ def _sidebar_grid(s: Section, c: PageCopy) -> str:
             ))}
           </aside>
           <div className="grid-3">
+            {/* skill: an empty state says what to do next, never a blank grid */}
+            {!ITEMS.some((it) => filter === "Tất cả" || it.cat === filter) && (
+              <p className="t-body muted" role="status">Danh mục “{filter}” đang cập nhật sản phẩm.{" "}
+                <button type="button" className="btn-link" data-swarm-id="filter-reset" data-swarm-role="button"
+                  onClick={() => setFilter("Tất cả")}>Xem tất cả sản phẩm</button></p>
+            )}
             {ITEMS.filter((it) => filter === "Tất cả" || it.cat === filter).map((it, i) => (
-              <a key={it.name} href="#" className="product" data-swarm-id={`product-card-${i + 1}`} data-swarm-role="card">
-                <Art label={it.name} ratio="4 / 5" tone={i} /><h3 className="t-h4">{it.name}</h3><p className="t-body muted">{it.price}</p>
+              <a key={it.name} href={detail(it.name)} className="product" data-swarm-id={`product-card-${i + 1}`} data-swarm-role="card">
+                <Art label={it.name} src={it.image} ratio="4 / 5" tone={i} /><h3 className="t-h4">{it.name}</h3><p className="t-body muted">{it.price}</p>
               </a>
             ))}
           </div>
         </div>'''
     return _component(s, _root(s, "s-catalog", inner), client=True,
-                      prelude=f"\nconst ITEMS = {_js(items)};\nconst CATS = {_js(c.categories)};\n",
-                      body='  const [filter, setFilter] = useState("Tất cả");\n  const [drawer, setDrawer] = useState(false);\n')
+                      prelude=f"\nconst ITEMS = {_js(items)};\nconst CATS = {_js(used)};\n",
+                      body='  const [filter, setFilter] = useState("Tất cả");\n  const [drawer, setDrawer] = useState(false);\n'
+                           # a category card elsewhere links here as ?dm=<category>
+                           '  useEffect(() => {\n    const dm = new URLSearchParams(window.location.search).get("dm");\n'
+                           '    if (dm && CATS.includes(dm)) setFilter(dm);\n  }, []);\n')
 
 
 def _load_more(s: Section, c: PageCopy) -> str:
@@ -865,35 +994,47 @@ def _tabs(s: Section, c: PageCopy) -> str:
 
 
 def _pdp_main(s: Section, c: PageCopy) -> str:
-    item = c.items[0]
-    inner = f'''        <div className="split split-7-5">
+    # Every item of the list; a product card links here as ?sp=<name> and that one is shown (first by default).
+    items = [{"name": i.name, "price": i.price, "note": i.note, "image": i.image, "amount": _amount(i.price) if c.shop else None}
+             for i in c.items[:12]]
+    inner = '''        <div className="split split-7-5">
           <div className="stack">
-            <Art label={{{_js(item.name, "image_alt")}}} tone={{img}} />
+            <Art label={it.name} src={img === 0 ? it.image : undefined} tone={img} />
             <div className="row">
-              {{[0, 1, 2].map((i) => (
-                <button key={{i}} type="button" className={{img === i ? "thumb is-active" : "thumb"}} aria-label={{`Ảnh ${{i + 1}}`}}
-                  data-swarm-id={{`gallery-thumb-${{i + 1}}`}} data-swarm-role="button" onClick={{() => setImg(i)}}><Art label="" ratio="1 / 1" tone={{i}} /></button>
-              ))}}
+              {[0, 1, 2].map((i) => (
+                <button key={i} type="button" className={img === i ? "thumb is-active" : "thumb"} aria-label={`Ảnh ${i + 1}`}
+                  data-swarm-id={`gallery-thumb-${i + 1}`} data-swarm-role="button" onClick={() => setImg(i)}><Art label="" src={i === 0 ? it.image : undefined} ratio="1 / 1" tone={i} /></button>
+              ))}
             </div>
           </div>
           <div className="stack">
-            <h1 className="t-h1">{{{_js(item.name)}}}</h1>
-            <p className="t-h3">{{{_js(item.price)}}}</p>
+            <h1 className="t-h1">{it.name}</h1>
+            <p className="t-h3">{it.price}</p>
+            {it.note && <p className="t-body muted">{it.note}</p>}
             <div className="row" role="radiogroup" aria-label="Phân loại">
-              {{["S", "M", "L"].map((v, i) => (
-                <button key={{v}} type="button" role="radio" aria-checked={{variant === v}} className={{variant === v ? "filter is-active" : "filter"}}
-                  data-swarm-id={{`variant-picker-${{i + 1}}`}} data-swarm-role="tab" onClick={{() => setVariant(v)}}>{{v}}</button>
-              ))}}
+              {["S", "M", "L"].map((v, i) => (
+                <button key={v} type="button" role="radio" aria-checked={variant === v} className={variant === v ? "filter is-active" : "filter"}
+                  data-swarm-id={`variant-picker-${i + 1}`} data-swarm-role="tab" onClick={() => setVariant(v)}>{v}</button>
+              ))}
             </div>
-            {{/* §6.4: the button is never disabled; a missing choice is explained instead */}}
-            <p id="variant-msg" className="t-caption" role="status">{{missing && !variant ? "Chọn phân loại trước khi thêm vào giỏ" : ""}}</p>
+            {/* §6.4: the button is never disabled; a missing choice is explained instead */}
+            <p id="variant-msg" className="t-caption" role="status">{missing && !variant ? "Chọn phân loại trước khi thêm vào giỏ" : ""}</p>
             <button type="button" className="btn btn-primary" data-swarm-id="add-to-cart" data-swarm-role="button"
-              aria-describedby="variant-msg" onClick={{() => (variant ? setAdded(true) : setMissing(true))}}>{{added ? "Đã thêm vào giỏ" : "Thêm vào giỏ"}}</button>
+              aria-describedby="variant-msg" onClick={add}>{added ? "Đã thêm vào giỏ" : it.amount && ORDER.cart ? "Thêm vào giỏ" : CTA}</button>
+            {added && <a href={ORDER.cart} className="btn-link" data-swarm-id="pdp-view-cart" data-swarm-role="link">Xem giỏ hàng</a>}
           </div>
         </div>'''
     return _component(s, _root(s, "s-pdp", inner), client=True,
-                      body='  const [img, setImg] = useState(0);\n  const [variant, setVariant] = useState("");\n'
-                           '  const [added, setAdded] = useState(false);\n  const [missing, setMissing] = useState(false);\n')
+                      body='  const [pick, setPick] = useState(0);\n  const it = ITEMS[pick];\n'
+                           '  const [img, setImg] = useState(0);\n  const [variant, setVariant] = useState("");\n'
+                           '  const [added, setAdded] = useState(false);\n  const [missing, setMissing] = useState(false);\n'
+                           '  useEffect(() => {\n    const sp = new URLSearchParams(window.location.search).get("sp");\n'
+                           '    const n = ITEMS.findIndex((x) => x.name === sp);\n    if (n > 0) setPick(n);\n  }, []);\n'
+                           # the chosen variant goes into the cart (developer/cart.py), or the order form without a cart page
+                           '  const add = () => {\n    if (!variant) return setMissing(true);\n'
+                           '    if (!it.amount || !ORDER.cart) return openOrder(it.name);\n'
+                           '    addToCart({ name: `${it.name} · ${variant}`, price: it.amount, image: it.image });\n    setAdded(true);\n  };\n',
+                      prelude=f"\nconst ITEMS = {_js(items)};\nconst CTA = {_js(c.cta)};\n")
 
 
 def _showcase(s: Section, c: PageCopy) -> str:
@@ -903,10 +1044,13 @@ def _showcase(s: Section, c: PageCopy) -> str:
           <h2 className="t-h2">{{{_js(title, "title")}}}</h2>
           <div className="stack">
             <p className="t-lead">{{{_js(text, "text")}}}</p>
-            <a href="#" className="link-arrow" data-swarm-id="{s.id}-more" data-swarm-role="link">Tìm hiểu thêm <span aria-hidden>→</span></a>
+            __MORE__
           </div>
         </div>
         <div className="showcase-media"><Art label={{{_js(title, "image_alt")}}} ratio="16 / 7" tone={{1}} /></div>'''
+    more = (f'<a href="{c.learn_href}" className="link-arrow" data-swarm-id="{s.id}-more" data-swarm-role="link">Tìm hiểu thêm <span aria-hidden>→</span></a>'
+            if c.learn_href else "")
+    inner = inner.replace("            __MORE__\n", f"            {more}\n" if more else "")
     return _component(s, _root(s, "s-showcase", inner))
 
 
@@ -982,7 +1126,7 @@ def _list_rows(s: Section, c: PageCopy) -> str:
         <ul className="list-rows">
           {{(all ? ROWS : ROWS.slice(0, 5)).map(([entry, meta], i) => (
             <li key={{entry}}>
-              <a href="#" className="list-row" data-swarm-id={{`list-row-${{i + 1}}`}} data-swarm-role="link">
+              <a className="list-row" data-swarm-id={{`list-row-${{i + 1}}`}}>
                 <span className="t-body">{{entry}}</span><span className="list-dots" aria-hidden />
                 <span className="t-caption muted">{{meta}}</span>{preview}
               </a>
@@ -1094,11 +1238,14 @@ img { display: block; max-width: 100%; }
 a { color: inherit; }
 p a, li a { color: var(--action-ink); text-decoration: underline; text-underline-offset: 3px; }  /* §2.7: never colour alone */
 strong, b { font-weight: 600; }  /* §2.2: two weights per family (400 / 600) */
-button, input, select { font: inherit; color: inherit; }
+button, input, select, textarea { font: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--action); outline-offset: 2px; }
 
 .container { max-width: var(--container-max); margin-inline: auto; padding-inline: var(--gutter); }
 .s { padding-block: var(--section-y); }
+.s[id] { scroll-margin-top: 80px; }  /* menu links land below the sticky header */
+.product-link { color: inherit; text-decoration: none; }
+.product-link:hover, .product-link:focus-visible { text-decoration: underline; text-underline-offset: 4px; }
 .stack { display: flex; flex-direction: column; gap: 16px; }
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; }
 .between { justify-content: space-between; }
@@ -1106,10 +1253,10 @@ button, input, select { font: inherit; color: inherit; }
 .muted { color: var(--text-secondary); }
 
 .t-display, .t-h1, .t-h2, .t-h3, .t-h4 { font-family: var(--font-heading); font-weight: 600; text-wrap: balance; }
-.t-display { font-size: var(--text-display); line-height: 1.05; letter-spacing: -0.03em; max-width: 16ch; }
-.t-h1 { font-size: var(--text-h1); line-height: 1.12; letter-spacing: -0.015em; }
-.t-h2 { font-size: var(--text-h2); line-height: 1.15; letter-spacing: -0.01em; }
-.t-h3 { font-size: var(--text-h3); line-height: 1.2; }
+.t-display { font-size: var(--text-display); line-height: 1.08; letter-spacing: -0.03em; max-width: 16ch; }
+.t-h1 { font-size: var(--text-h1); line-height: 1.1; letter-spacing: -0.025em; }
+.t-h2 { font-size: var(--text-h2); line-height: 1.2; letter-spacing: -0.02em; }
+.t-h3 { font-size: var(--text-h3); line-height: 1.3; letter-spacing: -0.01em; }
 .t-h4 { font-size: var(--text-h4); line-height: 1.25; }
 .t-lead { font-size: var(--text-lead); line-height: 1.5; max-width: 60ch; color: var(--text-secondary); }
 .t-body { font-size: var(--text-body); max-width: 65ch; }
@@ -1119,7 +1266,8 @@ button, input, select { font: inherit; color: inherit; }
   border: 1px solid transparent; border-radius: var(--radius-md); font-size: var(--text-body); font-weight: 600;
   cursor: pointer; text-decoration: none;
   transition: background-color var(--duration) var(--ease), border-color var(--duration) var(--ease), transform 160ms var(--ease); }
-.btn:active { transform: scale(0.98); }
+.btn:active, .filter:active, .tab:active, .icon-btn:active { transform: scale(0.98); }
+.btn:disabled, .btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; transform: none; }
 /* §6.2 three button weights: primary (filled) · secondary (outlined, >= 3:1) · tertiary (underlined link).
    All in --action: the brand accent (tech / bold presets) or near-black (luxury / warm presets, §2.1). */
 .btn-primary { background: var(--action); color: var(--action-fg); }
@@ -1147,6 +1295,10 @@ button, input, select { font: inherit; color: inherit; }
   background: var(--bg-elevated); flex: 1; min-width: 0; }
 .input:hover { border-color: var(--text-secondary); }
 .input[aria-invalid="true"] { border-color: var(--danger); }
+.input:focus-visible { outline: none; border-color: var(--action-ink);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--action) 22%, transparent); }
+.input[aria-invalid="true"]:focus-visible { border-color: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 18%, transparent); }
 
 .card { display: flex; flex-direction: column; gap: 16px; padding: var(--card-padding); background: var(--bg-surface);
   border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); text-decoration: none;
@@ -1167,9 +1319,9 @@ article.product { transition: transform var(--duration) var(--ease); }
 article.product:hover { transform: translateY(-2px); }  /* one- and two-line names keep prices on one baseline */
 .price { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .section-head { display: flex; flex-direction: column; gap: 8px; }
-.eyebrow { font-size: var(--text-caption); font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase;
+.eyebrow { font-size: var(--text-caption); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
   color: var(--text-secondary); }
-.align-start { align-items: start; }
+.align-start, .split.align-start { align-items: start; }  /* beats .split, declared below */
 .align-end { align-items: flex-end; }
 
 .split { display: grid; gap: var(--grid-gap); align-items: center; }
@@ -1188,6 +1340,7 @@ article.product:hover { transform: translateY(-2px); }  /* one- and two-line nam
 .nav-links.is-open { display: flex; flex-direction: column; position: absolute; inset: 64px 0 auto 0; padding: 24px var(--gutter);
   background: var(--bg-primary); border-bottom: 1px solid var(--border-subtle); }
 .nav-logo { transition: color var(--duration) var(--ease); }
+.nav-logo-img { display: block; height: 32px; width: auto; max-width: 160px; object-fit: contain; }
 .nav-logo:hover { text-decoration: underline; text-underline-offset: 4px; }
 .nav-link { text-decoration: none; min-height: 48px; display: inline-flex; align-items: center; white-space: nowrap; }
 .nav-link:hover { text-decoration: underline; text-underline-offset: 4px; }
@@ -1199,6 +1352,7 @@ article.product:hover { transform: translateY(-2px); }  /* one- and two-line nam
 .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--grid-gap);
   border-block: 1px solid var(--border-subtle); padding-block: 32px; }
 .metric dd { margin-top: 8px; }
+.metric dt, .cart-count, .t-num { font-variant-numeric: tabular-nums; }
 .s-metrics { padding-block: calc(var(--section-y) / 2); }  /* a facts strip is not a full chapter */
 .z-rows { display: flex; flex-direction: column; gap: var(--section-y); }
 .bento { display: grid; gap: 32px 24px; margin-top: 32px; }
@@ -1216,7 +1370,15 @@ article.product:hover { transform: translateY(-2px); }  /* one- and two-line nam
 .faq-q:hover > span:first-child { text-decoration: underline; text-underline-offset: 4px; }
 .faq-a { padding-bottom: 24px; color: var(--text-secondary); }
 .s-band { background: var(--text-primary); color: var(--bg-primary); }  /* neutral: the accent is for actions only */
-.band { display: flex; flex-direction: column; align-items: flex-start; gap: 32px; }
+.band { display: grid; gap: 32px; }
+.band-copy { display: flex; flex-direction: column; gap: 16px; }
+.band .t-h2 { max-width: 22ch; }
+.band-note { color: color-mix(in oklch, var(--bg-primary) 86%, var(--text-primary)); }  /* APCA Lc ≥ 60 on the dark band */
+.band-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 24px; }
+.s-band .link-arrow { color: var(--bg-primary); }
+@media (min-width: 1024px) {
+  .band { grid-template-columns: minmax(0, 1fr) auto; align-items: end; column-gap: 64px; }
+}
 .s-footer { border-top: 1px solid var(--border-subtle); }
 .footer-grid { display: grid; gap: var(--grid-gap); }
 @media (min-width: 768px) { .footer-grid { grid-template-columns: 1fr 1fr; } }
@@ -1242,7 +1404,7 @@ article.product:hover { transform: translateY(-2px); }  /* one- and two-line nam
 .cart-wrap { position: relative; }
 .cart-count { position: absolute; top: 6px; right: 4px; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9999px;
   display: grid; place-items: center; background: var(--action); color: var(--action-fg); font-size: 11px; font-weight: 600; }
-.cart-pop { position: absolute; right: 0; top: calc(100% + 8px); z-index: 20; width: 240px; padding: 16px;
+.cart-pop { position: absolute; right: 0; top: calc(100% + 8px); z-index: 20; width: 288px; padding: 16px;
   background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); box-shadow: var(--shadow-lg); }
 @media (max-width: 767px) { .nav-search { position: absolute; left: var(--gutter); right: var(--gutter); top: 72px; width: auto; } }
 .footer-col { display: flex; flex-direction: column; gap: 4px; }
@@ -1352,3 +1514,11 @@ article.product:hover { transform: translateY(-2px); }  /* one- and two-line nam
   *, *::before, *::after { transition-duration: 1ms !important; animation-duration: 1ms !important; }
 }
 """
+
+
+# App pages of the sitemap (cart, dashboards, settings, services, booking, learning, contact, workspace).
+from chromaswarm.developer.app_pages import APP_CSS, PREVIEW_CSS, PRODUCT_PREVIEW_TSX, _amount, preview_props  # noqa: E402
+from chromaswarm.developer.app_pages import RENDERERS as _APP_RENDERERS  # noqa: E402
+
+BY_STRUCTURE.update(_APP_RENDERERS)
+BASE_CSS += APP_CSS + SCENE_CSS + PREVIEW_CSS + ORDER_CSS + CART_CSS

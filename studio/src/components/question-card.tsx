@@ -48,7 +48,7 @@ export function QuestionCard({ question: q, notice, state, busy, onAnswer, chatM
       {q.kind === "text" && !chatMode && <FreeText busy={busy} onAnswer={onAnswer} placeholder={PLACEHOLDERS[q.key]} />}
       {q.kind === "clone_source" && <CloneSource busy={busy} onAnswer={onAnswer} />}
       {q.kind === "recommend_url" && <RecommendUrl busy={busy} onAnswer={onAnswer} />}
-      {q.kind === "assets" && <Assets busy={busy} onAnswer={onAnswer} />}
+      {q.kind === "assets" && <Assets q={q} state={state} busy={busy} onAnswer={onAnswer} />}
       {q.kind === "clone_content" && <CloneContent q={q} busy={busy} onAnswer={onAnswer} />}
       {q.kind === "approval" && <Approval state={state} busy={busy} onAnswer={onAnswer} />}
       {q.kind === "handover" && <Handover q={q} state={state} busy={busy} onAnswer={onAnswer} />}
@@ -135,39 +135,206 @@ function RecommendUrl({ busy, onAnswer }: { busy: boolean; onAnswer: Props["onAn
   );
 }
 
-function Assets({ busy, onAnswer }: { busy: boolean; onAnswer: Props["onAnswer"] }) {
+type Uploaded = { name: string; kind: string; path: string; url: string; width: number | null; height: number | null };
+type Slot = { kind: "logo" | "product-image" | "reference"; label: string; hint: string; multiple: boolean };
+const SLOTS: Slot[] = [
+  { kind: "logo", label: "Logo", hint: "PNG nền trong suốt, cao ít nhất 64px", multiple: false },
+  { kind: "product-image", label: "Ảnh sản phẩm / ảnh thật", hint: "JPG, PNG hoặc WebP, cạnh dài từ 1200px; ảnh đầu tiên dùng cho phần đầu trang", multiple: true },
+  { kind: "reference", label: "Ảnh chụp trang bạn thích", hint: "Chroma đọc màu, bố cục và độ thoáng từ ảnh này", multiple: false },
+];
+
+/** B4: the user's real files are uploaded (checked by the backend) and used on the page before any stock photo. */
+function Assets({ q, state, busy, onAnswer }: { q: Question; state: PipelineState; busy: boolean; onAnswer: Props["onAnswer"] }) {
   const [items, setItems] = useState("");
-  const [shot, setShot] = useState("");
+  const [content, setContent] = useState<Record<string, string>>({});
   const [url, setUrl] = useState("");
-  const submit = () => {
-    const assets = items
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .map((l) => ({ kind: "other", path_or_text: l }));
-    const references = shot.trim() || url.trim() ? [{ screenshot_path: shot.trim() || null, url: url.trim() || null }] : [];
-    const parts = [assets.length ? `${assets.length} tài nguyên` : "chưa có tài nguyên", references.length ? "1 tham khảo" : ""];
-    onAnswer({ value: { assets, references, done: true }, label: parts.filter(Boolean).join(", ") });
+  const [files, setFiles] = useState<Uploaded[]>([]);
+  const [uploading, setUploading] = useState(0);
+  const [error, setError] = useState("");
+  // Photo per line of the real list ("Bàn gỗ sồi | 6.900.000₫" → its own photo), by line number
+  const [itemPhotos, setItemPhotos] = useState<Record<number, Uploaded>>({});
+
+  const send = async (kind: Slot["kind"], file: File): Promise<Uploaded | null> => {
+    const body = new FormData();
+    body.append("kind", kind);
+    body.append("file", file);
+    setUploading((n) => n + 1);
+    try {
+      const r = await fetch(`${BACKEND_HTTP}/sessions/${encodeURIComponent(state.session_id)}/uploads`, { method: "POST", body });
+      const data = await r.json();
+      if (!r.ok) { setError(`${file.name}: ${data.detail ?? "không tải lên được."}`); return null; }
+      return data as Uploaded;
+    } catch {
+      setError("Không kết nối được tới backend để tải ảnh lên.");
+      return null;
+    } finally {
+      setUploading((n) => n - 1);
+    }
   };
+
+  const upload = async (kind: Slot["kind"], list: FileList | null) => {
+    if (!list?.length) return;
+    setError("");
+    for (const file of Array.from(list)) {
+      const data = await send(kind, file);
+      if (data) setFiles((prev) => [...prev.filter((f) => f.name !== data.name && (kind === "product-image" || f.kind !== kind)), data]);
+    }
+  };
+
+  const uploadItem = async (line: number, list: FileList | null) => {
+    const file = list?.[0];
+    if (!file) return;
+    setError("");
+    const data = await send("product-image", file);
+    if (data) setItemPhotos((prev) => ({ ...prev, [line]: data }));
+  };
+
+  // Same lines the backend reads (developer/real_content.py): non-empty, list marks trimmed, at most 8
+  const itemLines = (content.items ?? "").split("\n").map((l) => l.replace(/^[\s\-•*]+|[\s\-•*]+$/g, "")).filter(Boolean).slice(0, 8);
+
+  const submit = () => {
+    const text = items.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => ({ kind: "other", path_or_text: l }));
+    const own = files.filter((f) => f.kind !== "reference").map((f) => ({ kind: f.kind, path_or_text: f.path }));
+    const shot = files.find((f) => f.kind === "reference");
+    const references = shot || url.trim() ? [{ screenshot_path: shot?.path ?? null, url: url.trim() || null }] : [];
+    const item_photos = itemLines.map((_, i) => itemPhotos[i]?.path ?? "");
+    const photos = files.filter((f) => f.kind === "product-image").length + item_photos.filter(Boolean).length;
+    const filled = Object.values(content).filter((v) => v.trim()).length;
+    const parts = [
+      filled ? `${filled} mục nội dung thật` : "",
+      photos ? `${photos} ảnh` : "",
+      files.some((f) => f.kind === "logo") ? "logo" : "",
+      text.length ? `${text.length} ghi chú` : "",
+      references.length ? "1 trang tham khảo" : "",
+    ].filter(Boolean);
+    onAnswer({ value: { assets: [...own, ...text], references, content: { ...content, item_photos }, done: true }, label: parts.length ? parts.join(", ") : "Chưa có tài nguyên" });
+  };
+
   return (
-    <div className="flex flex-col gap-4">
-      <label className="flex flex-col gap-2 text-sm">
-        <span className="text-fg-2">Tài nguyên (mỗi dòng một mục: logo, ảnh, slogan, bảng giá…)</span>
-        <textarea value={items} onChange={(e) => setItems(e.target.value)} rows={4} className={input} placeholder={"logo.svg\nSlogan: Nội thất gỗ sồi, làm thủ công tại Đà Lạt"} />
-      </label>
-      <div className="grid gap-4 sm:grid-cols-2">
+    <div className="flex flex-col gap-6">
+      <div className="grid gap-4 md:grid-cols-3">
+        {SLOTS.map((slot) => {
+          const mine = files.filter((f) => f.kind === slot.kind);
+          return (
+            <div key={slot.kind} className="flex flex-col gap-3 rounded-xl border border-line p-4" data-swarm-section={`upload-${slot.kind}`}>
+              <div className="flex flex-col gap-1">
+                <span className="text-sm font-medium text-fg">{slot.label}</span>
+                <span className="text-xs leading-relaxed text-fg-3">{slot.hint}</span>
+              </div>
+              {mine.length > 0 && (
+                <ul className="grid grid-cols-3 gap-2">
+                  {mine.map((f) => (
+                    <li key={f.name} className="group relative aspect-square overflow-hidden rounded-lg border border-line bg-surface">
+                      {/* eslint-disable-next-line @next/next/no-img-element -- the user's own upload served by the backend */}
+                      <img src={`${BACKEND_HTTP}${f.url}`} alt={`${slot.label} đã tải lên`} className="size-full object-contain" />
+                      <button type="button" onClick={() => setFiles((prev) => prev.filter((x) => x.name !== f.name))}
+                        aria-label={`Bỏ ${slot.label.toLowerCase()} này`}
+                        className="absolute right-1 top-1 grid size-7 place-items-center rounded-md bg-bg/90 text-xs text-fg-2 opacity-0 transition-opacity duration-200 hover:text-fg focus-visible:opacity-100 group-hover:opacity-100">
+                        ✕
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <label className={`${secondaryBtn} inline-flex cursor-pointer items-center justify-center focus-within:border-accent`}>
+                <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple={slot.multiple} className="sr-only"
+                  disabled={busy} onChange={(e) => { void upload(slot.kind, e.target.files); e.target.value = ""; }}
+                  data-swarm-id={`upload-${slot.kind}`} data-swarm-role="input" />
+                {mine.length && !slot.multiple ? "Đổi ảnh" : "Chọn ảnh"}
+              </label>
+            </div>
+          );
+        })}
+      </div>
+      <p className="min-h-5 text-sm" role="status" aria-live="polite">
+        {uploading > 0 ? <span className="text-fg-2">Đang tải {uploading} ảnh lên…</span> : error ? <span className="text-danger">{error}</span> : null}
+      </p>
+      {q.options.length > 0 && (
+        <fieldset className="flex flex-col gap-4" data-swarm-section="real-content">
+          <legend className="mb-1 flex flex-col gap-1">
+            <span className="text-sm font-medium text-fg">Nội dung thật của bạn</span>
+            <span className="text-xs leading-relaxed text-fg-3">
+              Điền mục nào có — trang dùng đúng lời của bạn thay cho chữ mẫu. Mỗi dòng một mục, ngăn các phần bằng dấu |
+            </span>
+          </legend>
+          <div className="grid gap-4 md:grid-cols-2">
+            {q.options.map((f) => {
+              const oneLine = f.value === "offer" || f.value === "contact";
+              const rows = Math.min(4, f.hint.split("\n").length + 1);
+              return (
+                <div key={f.value} className={`flex flex-col gap-2 text-sm ${f.value === "offer" || f.value === "items" ? "md:col-span-2" : ""}`}>
+                  <label className="flex flex-col gap-2">
+                    <span className="text-fg-2">{f.label}</span>
+                    <textarea value={content[f.value] ?? ""} rows={oneLine ? 2 : rows} className={input}
+                      placeholder={`Ví dụ: ${f.hint}`} disabled={busy}
+                      onChange={(e) => setContent((c) => ({ ...c, [f.value]: e.target.value }))}
+                      data-swarm-id={`real-${f.value}`} data-swarm-role="input" />
+                  </label>
+                  {f.value === "items" && itemLines.length > 0 && (
+                    <ItemPhotos lines={itemLines} photos={itemPhotos} busy={busy} onPick={uploadItem}
+                      onRemove={(i) => setItemPhotos((prev) => { const next = { ...prev }; delete next[i]; return next; })} />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </fieldset>
+      )}
+      <div className="grid gap-4 md:grid-cols-2">
         <label className="flex flex-col gap-2 text-sm">
-          <span className="text-fg-2">Ảnh chụp trang mẫu (tên file)</span>
-          <input value={shot} onChange={(e) => setShot(e.target.value)} className={input} placeholder="reference.png" />
+          <span className="text-fg-2">Slogan hoặc ghi chú khác (mỗi dòng một mục)</span>
+          <textarea value={items} onChange={(e) => setItems(e.target.value)} rows={3} className={input} placeholder={"Slogan: câu bạn hay nói với khách"} />
         </label>
         <label className="flex flex-col gap-2 text-sm">
-          <span className="text-fg-2">Link trang mẫu</span>
-          <input value={url} onChange={(e) => setUrl(e.target.value)} className={input} placeholder="https://…" />
+          <span className="text-fg-2">Link trang mẫu (nếu có)</span>
+          <input value={url} onChange={(e) => setUrl(e.target.value)} className={`${input} h-12 py-0`} placeholder="https://…" />
         </label>
       </div>
-      <button type="button" disabled={busy} onClick={submit} data-swarm-id="assets-done" data-swarm-role="button" className={`${primaryBtn} self-start`}>
+      <button type="button" disabled={busy || uploading > 0} onClick={submit} data-swarm-id="assets-done" data-swarm-role="button" className={`${primaryBtn} self-start`}>
         Đã gửi đủ
       </button>
+    </div>
+  );
+}
+
+const PRICE_TAIL = /[\s\-–:,]*(\d[\d.,]*\s*(₫|đ|vnđ|vnd|k|nghìn|ngàn|triệu|tr)(\s*\/\s*\S+)?|miễn phí|liên hệ|\$\s?\d[\d.,]*)\s*$/i;
+
+/** One row per line of the real list: its name and its own photo (shown on that item's card on the page). */
+function ItemPhotos({ lines, photos, busy, onPick, onRemove }: {
+  lines: string[]; photos: Record<number, Uploaded>; busy: boolean;
+  onPick: (line: number, list: FileList | null) => void; onRemove: (line: number) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2" data-swarm-section="item-photos">
+      <span className="text-xs leading-relaxed text-fg-3">Ảnh cho từng mục (không bắt buộc) — hiện đúng ở thẻ của mục đó trên trang</span>
+      <ul className="grid gap-2 sm:grid-cols-2">
+        {lines.map((line, i) => {
+          // Same reading as the backend: "Croissant bơ 35k" → name without the price
+          const first = line.split(/\s*\|\s*|\t+/)[0] || line;
+          const name = /\||\t/.test(line) ? first : first.replace(PRICE_TAIL, "").trim() || first;
+          const photo = photos[i];
+          return (
+            <li key={`${i}-${name}`} className="flex min-w-0 items-center gap-3 rounded-lg border border-line p-2">
+              <span className="grid size-12 shrink-0 place-items-center overflow-hidden rounded-md border border-line bg-surface text-xs text-fg-3">
+                {/* eslint-disable-next-line @next/next/no-img-element -- the user's own upload served by the backend */}
+                {photo ? <img src={`${BACKEND_HTTP}${photo.url}`} alt={`Ảnh ${name}`} className="size-full object-cover" /> : "Ảnh"}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-sm text-fg" title={name}>{name}</span>
+              {photo && (
+                <button type="button" onClick={() => onRemove(i)} aria-label={`Bỏ ảnh của ${name}`} disabled={busy}
+                  className="grid size-10 shrink-0 place-items-center rounded-md text-xs text-fg-2 hover:text-fg">✕</button>
+              )}
+              <span className="relative inline-flex h-10 shrink-0 cursor-pointer items-center rounded-lg border border-line px-3 text-xs font-medium text-fg-2 transition-colors duration-200 hover:border-fg-3 hover:text-fg focus-within:border-accent">
+                <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="absolute inset-0 cursor-pointer opacity-0"
+                  disabled={busy} aria-label={`${photo ? "Đổi" : "Thêm"} ảnh cho ${name}`}
+                  onChange={(e) => { onPick(i, e.target.files); e.target.value = ""; }}
+                  data-swarm-id={`item-photo-${i + 1}`} data-swarm-role="input" />
+                {photo ? "Đổi ảnh" : "Thêm ảnh"}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

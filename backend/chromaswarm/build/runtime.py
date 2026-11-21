@@ -8,10 +8,12 @@ the real implementation. Tests inject a fake with the same methods.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
@@ -22,15 +24,18 @@ from pydantic import BaseModel
 from chromaswarm.agents.planner import Section
 from chromaswarm.design.dept import TokenChange, TokenFile, fix_contrast, repair
 from chromaswarm.developer.content import PageCopy, copy_for
+from chromaswarm.developer.order import order_file
+from chromaswarm.developer.nextjs import routes_file
 from chromaswarm.developer.nextjs import (WorkspaceFile, content_file, heal_file, images_file, match_file, motion_file,
-                                         page_file, render_section, scaffold, skeleton, wireframe_file)
+                                         page_file, render_section, scaffold, skeleton, style_file, style_pages,
+                                         wireframe_file)
 from chromaswarm.clone import components as cmp
 from chromaswarm.clone import motion as motion_probe
 from chromaswarm.clone.motion_check import build_report as motion_report
 from chromaswarm.playwright_engine.style_dna_scraper import SETTLE_JS
 from chromaswarm.mcp_motion.client import MotionEffect, build_effects
 from chromaswarm.mcp_motion.server import pick_effect
-from chromaswarm.developer.workspace import TOKENS_PATH, DevServer, Workspace
+from chromaswarm.developer.workspace import STYLE_PATH, TOKENS_PATH, DevServer, Workspace
 from chromaswarm.engines.design_spec import DesignSpec
 from chromaswarm.playwright_engine.swarm import Agent, ColorReading, Finding, SwarmOverlay, design_pass
 from chromaswarm.clone.fidelity import Fidelity, score, snapshot_page
@@ -77,7 +82,7 @@ class BuildRuntime(Protocol):
     async def check_section(self, session: str, section_id: str, spec: DesignSpec) -> SectionCheck: ...
     async def integrate(self, session: str, planned: list[str]) -> IntegrationReport: ...
     async def heal(self, session: str, rules: list[str], contrast: list[dict]) -> list[TokenChange]: ...
-    async def master_qa(self, session: str, spec: DesignSpec) -> QaReport: ...
+    async def master_qa(self, session: str, spec: DesignSpec, creative: bool = False) -> QaReport: ...
     # optional: async def critique(self, session: str, context: str = "") -> Critique | None
     # optional: async def fidelity(self, session: str, reference_url: str, shots: Path | None = None) -> Fidelity | None
     async def close(self, session: str) -> None: ...
@@ -106,9 +111,12 @@ class _Session:
     ref_names: dict[str, str] = field(default_factory=dict)
     ref_page: str = ""
     match: dict[str, dict[str, dict[str, str]]] = field(default_factory=dict)
+    shot_pages: dict[int, Page] = field(default_factory=dict)  # clean tabs for the section eye, by width
+    checker: Browser | None = None  # hidden browser for checks; closed when the checks of a step pass
+    fluid: bool = False  # the window's tab follows the window size (handover) instead of the fixed build size
 
 
-CREATE_ONLY = {"app/heal.css", "app/motion.css", "app/match.css"}  # accumulate across pages and heal loops
+CREATE_ONLY = {"app/heal.css", "app/motion.css", "app/match.css", "app/style.css", "content/motion.ts"}  # accumulate across pages and heal loops
 
 
 HANDOVER_BAR_JS = r"""(options) => {
@@ -173,6 +181,32 @@ HANDOVER_BAR_JS = r"""(options) => {
 }"""
 
 
+OUTLINE_JS = r"""() => {
+  const line = (el, depth) => {
+    const cls = [...el.classList].filter(c => !c.startsWith('swarm')).slice(0, 4).join('.');
+    const kids = depth < 3 ? [...el.children].filter(k => !['SCRIPT', 'STYLE', 'svg', 'path'].includes(k.tagName)).slice(0, 6) : [];
+    const me = '  '.repeat(depth) + el.tagName.toLowerCase() + (cls ? '.' + cls : '');
+    return [me, ...kids.map(k => line(k, depth + 1))].join('\n');
+  };
+  return [...document.querySelectorAll('[data-swarm-section]')].map(sec => {
+    const r = sec.getBoundingClientRect();
+    return `## ${sec.dataset.swarmSection} (${Math.round(r.height)}px high)\n` + line(sec, 0).slice(0, 900);
+  }).join('\n');
+}"""
+
+
+# For a section's own picture: sticky / fixed elements outside it (the header) are laid out in place,
+# so they never cover the section the reviewer is judging.
+UNSTICK_JS = r"""(id) => {
+  const target = document.querySelector(`[data-swarm-section="${id}"]`);
+  for (const el of document.querySelectorAll('body *')) {
+    if (target && (target.contains(el) || el.contains(target))) continue;
+    const pos = getComputedStyle(el).position;
+    if (pos === 'sticky' || pos === 'fixed') el.style.setProperty('position', 'static', 'important');
+  }
+}"""
+
+
 class LocalBuildRuntime:
     def __init__(self, root: Path, headed: bool = True, speed: float = 1.5, motion: bool = True):
         self.root = root
@@ -219,21 +253,84 @@ class LocalBuildRuntime:
         s.base_url = await s.server.start(Step.B9_DEVELOP)
         url = s.base_url.rstrip("/") + (route if route != "/" else "")
         if s.page is None:
-            s.pw = await async_playwright().start()
-            s.browser = await s.pw.chromium.launch(headless=not self.headed)
-            s.page = await s.browser.new_page(viewport={"width": 1440, "height": 900})
-            s.page.on("console", lambda m: s.console_errors.append(m.text) if m.type == "error" else None)
-            s.page.on("pageerror", lambda e: s.console_errors.append(str(e)))
-            await s.page.expose_binding("__chromaswarmChoice", lambda _src, value: self._choice(session, value))
-            await s.page.goto(url)
-            s.overlay = await SwarmOverlay.attach(s.page, instant=not self.headed, speed=self.speed)
+            await self._open_window(s, session, url)
         else:
             await s.page.evaluate("() => document.querySelector('chromaswarm-handover')?.remove()")
+            if s.fluid:  # the handover tab follows the window; measurements need the fixed desktop size again
+                await s.page.set_viewport_size({"width": 1440, "height": 900})
+                s.fluid = False
             await s.page.goto(url)
             assert s.overlay
             await s.overlay.resume()  # a new build after B12: the swarm comes back
         s.handed_over = False
         return url
+
+    async def import_uploads(self, session: str, files: list[Path]) -> list[str]:
+        """The user's uploaded photos and logo into public/images/; returns their paths in the app."""
+        ws = self._s(session).workspace
+        out = []
+        for f in files:
+            ws.copy_file(Step.B9_DEVELOP, f, f"public/images/{f.name}")
+            out.append(f"/images/{f.name}")
+        return out
+
+    def has_session(self, session: str) -> bool:
+        s = self._sessions.get(session)
+        return bool(s and s.page)
+
+    async def reopen(self, session: str, url: str, options: list[dict]) -> str | None:
+        """After a backend restart, a handed-over page (B12) is served and shown again: same app on
+        disk, same port when free, the handover buttons back in the window. Nothing is rewritten."""
+        s = self._s(session)
+        if s.page or not (s.workspace.root / "package.json").is_file():
+            return None
+        target = urlparse(url)
+        s.route = target.path or "/"
+        await s.workspace.install(Step.B9_DEVELOP)  # restarting the server the build step started
+        s.base_url = await s.server.start(Step.B9_DEVELOP, port=target.port)
+        new_url = s.base_url.rstrip("/") + (s.route if s.route != "/" else "")
+        await self._open_window(s, session, new_url, fluid=True)  # the user's window: no build tab first
+        await self.handover(session, options)
+        return new_url
+
+    async def _open_window(self, s: _Session, session: str, url: str, fluid: bool = False) -> None:
+        """The one window the user sees. Build: fixed 1440×900 (Design and QA measure at that size).
+        `fluid`: sized by the window itself (handover), so resizing it is real responsive."""
+        if s.pw is None:
+            s.pw = await async_playwright().start()
+        if s.browser is None:
+            s.browser = await s.pw.chromium.launch(headless=not self.headed, args=["--window-size=1440,960"])
+        s.page = await (s.browser.new_page(no_viewport=True) if fluid
+                        else s.browser.new_page(viewport={"width": 1440, "height": 900}))
+        s.fluid = fluid
+        await self._listen(s, session, s.page)
+        await s.page.goto(url)
+        s.overlay = await SwarmOverlay.attach(s.page, instant=not self.headed, speed=self.speed)
+
+    async def _checker(self, s: _Session) -> Browser:
+        """A hidden browser for every check (section shots, critic, fidelity): nothing pops up on screen,
+        the user only ever sees the build / handover window."""
+        if s.checker is None or not s.checker.is_connected():
+            if s.pw is None:
+                s.pw = await async_playwright().start()
+            s.checker = await s.pw.chromium.launch(headless=True)
+        return s.checker
+
+    async def release_checks(self, session: str) -> None:
+        """A step's checks passed: close its hidden tabs and browser (they reopen if a later step needs them)."""
+        s = self._sessions.get(session)
+        if not s:
+            return
+        s.shot_pages.clear()
+        if s.checker:
+            with contextlib.suppress(Exception):
+                await s.checker.close()
+            s.checker = None
+
+    async def _listen(self, s: _Session, session: str, page: Page) -> None:
+        page.on("console", lambda m: s.console_errors.append(m.text) if m.type == "error" else None)
+        page.on("pageerror", lambda e: s.console_errors.append(str(e)))
+        await page.expose_binding("__chromaswarmChoice", lambda _src, value: self._choice(session, value))
 
     async def _choice(self, session: str, value: Any) -> None:
         if self.on_choice and isinstance(value, dict):
@@ -245,6 +342,9 @@ class LocalBuildRuntime:
         section_copy = copy_for(written[-1].structure, [w.structure for w in written[:-1]], copy)
         self._write_component(s, written[-1], section_copy, page, keep=[w.id for w in written])
         s.workspace.write(Step.B9_DEVELOP, page_file(written, page, route))
+        if copy.order:  # the form the page's main button opens (developer/order.py)
+            s.workspace.write(Step.B9_DEVELOP, order_file(copy.order))
+            s.workspace.write(Step.B9_DEVELOP, routes_file(copy.routes))
 
     def _write_component(self, s: _Session, section: Section, copy: PageCopy, page: str,
                          keep: list[str] | None = None) -> None:
@@ -407,6 +507,22 @@ class LocalBuildRuntime:
         return SectionCheck(section=section_id, match_before=before.score, match_after=after.score, tuned=tuned,
                             components=len(mine), crews=crews_used)
 
+    async def motion_js(self, session: str, page: str, section_id: str, effects: list[str]) -> list[str]:
+        """GSAP / Three.js effects for a Creative section: listed in content/motion.ts, played by
+        components/Motion.tsx. Returns the effects written."""
+        from chromaswarm.developer.motion_js import motion_config, parse_config
+        if not self.motion_enabled or not effects:
+            return []
+        s = self._s(session)
+        path = "content/motion.ts"
+        pages = parse_config(s.workspace.read(path)) if (s.workspace.root / path).exists() else {}
+        pages.setdefault(page or "index", {})[section_id] = effects
+        s.workspace.write(Step.B9_DEVELOP, WorkspaceFile(path=path, content=motion_config(pages)))
+        if s.overlay:
+            await s.overlay.move(Agent.MOTION, f'[data-swarm-section="{section_id}"]')
+            await s.overlay.note(Agent.MOTION, f"B8.1 · GSAP / Three.js: {', '.join(effects)}")
+        return effects
+
     async def _wait_for(self, s: _Session, selector: str, timeout_ms: int = 30000) -> bool:
         assert s.page
         with contextlib.suppress(Exception):
@@ -441,7 +557,8 @@ class LocalBuildRuntime:
             await asyncio.sleep(1.0)  # HMR applies the stylesheet
             report = (await design_pass(s.overlay, spec.typography, sections=[section_id])).sections[0]
             leftover = report.findings
-        await s.overlay.clear()
+        with contextlib.suppress(PlaywrightError):  # the next section's write may reload the page meanwhile
+            await s.overlay.clear()
         factory = None
         if s.ref_components.get(section_id):
             try:
@@ -505,8 +622,61 @@ class LocalBuildRuntime:
         await s.page.evaluate("() => scrollTo(0, 0)")
         return IntegrationReport(missing=missing, console_errors=list(s.console_errors), open=report.findings)
 
+    # -------------------------------------------------------------- art director (stylist)
+    async def outline(self, session: str) -> str:
+        """Compact DOM outline of the page's sections (tags and classes, no text) for the art director."""
+        s = self._s(session)
+        if not s.page:
+            return ""
+        return await s.page.evaluate(OUTLINE_JS)
+
+    async def write_style_layer(self, session: str, page: str, css: str, step: Step = Step.B10_INTEGRATE) -> None:
+        s = self._s(session)
+        current = s.workspace.read(STYLE_PATH) if (s.workspace.root / STYLE_PATH).exists() else ""
+        pages = style_pages(current)
+        pages[page or "index"] = css
+        s.workspace.write(step, style_file(pages))
+        if s.page:
+            await asyncio.sleep(1.0)  # HMR applies the stylesheet
+
+    # -------------------------------------------------------------- B9 eyes (qa/section_eye.py)
+    async def section_shots(self, session: str, section_id: str, folder: Path, tag: str) -> dict | None:
+        """The section alone at 1440 and 375, on clean tabs (no overlay, reduced motion), saved as JPEGs.
+        Returns {"images": [desktop, mobile data URIs], "files": [names], "overflow": phone page wider than the screen}."""
+        s = self._s(session)
+        if not (s.browser and s.base_url):
+            return None
+        url = s.base_url.rstrip("/") + (s.route if s.route != "/" else "")
+        folder.mkdir(parents=True, exist_ok=True)
+        out: dict = {"images": [], "files": [], "overflow": False}
+        for width, height, name in ((1440, 900, "desktop"), (375, 812, "mobile")):
+            page = s.shot_pages.get(width)
+            if page is None or page.is_closed():
+                page = await (await self._checker(s)).new_page(viewport={"width": width, "height": height},
+                                                                reduced_motion="reduce")
+                s.shot_pages[width] = page
+            try:
+                await page.goto(url, wait_until="load", timeout=45000)
+                with contextlib.suppress(Exception):
+                    await page.wait_for_load_state("networkidle", timeout=8000)
+                await page.evaluate(UNSTICK_JS, section_id)
+                el = page.locator(f'[data-swarm-section="{section_id}"]').first
+                await el.scroll_into_view_if_needed(timeout=5000)
+                await page.wait_for_timeout(400)
+                data = await el.screenshot(type="jpeg", quality=72, timeout=15000)
+            except Exception as e:  # noqa: BLE001 — looking never stops a build
+                log.warning("section shot %s/%s failed: %s", section_id, name, e)
+                return None
+            file = f"{section_id}-{tag}-{name}.jpg"
+            (folder / file).write_bytes(data)
+            out["files"].append(file)
+            out["images"].append("data:image/jpeg;base64," + base64.b64encode(data).decode())
+            if width == 375:
+                out["overflow"] = await page.evaluate("document.documentElement.scrollWidth > innerWidth + 1")
+        return out
+
     # -------------------------------------------------------------- B11
-    async def master_qa(self, session: str, spec: DesignSpec) -> QaReport:
+    async def master_qa(self, session: str, spec: DesignSpec, creative: bool = False) -> QaReport:
         s = self._s(session)
         assert s.page and s.overlay
         await s.page.reload()
@@ -514,7 +684,7 @@ class LocalBuildRuntime:
         await self._wait_for_heal_css(s)
         s.console_errors.clear()
         report = await run_master_qa(s.page, s.overlay, spec.typography, errors=s.console_errors,
-                                     instant=not self.headed)
+                                     instant=not self.headed, creative=creative)
         return report
 
     async def critique(self, session: str, context: str = "") -> Critique | None:
@@ -522,7 +692,7 @@ class LocalBuildRuntime:
         s = self._s(session)
         if not (s.browser and s.page):
             return None
-        page = await s.browser.new_page(viewport={"width": 1440, "height": 900})
+        page = await (await self._checker(s)).new_page(viewport={"width": 1440, "height": 900})
         url = (s.base_url or s.page.url).rstrip("/") + (s.route if s.route != "/" else "")
         try:
             # The build tab may still be re-compiling (dev server HMR) and abort the first load: retry once.
@@ -550,7 +720,8 @@ class LocalBuildRuntime:
         if not (s.browser and s.page):
             return None
         url = (s.base_url or s.page.url).rstrip("/") + (s.route if s.route != "/" else "")
-        pages = [await s.browser.new_page(viewport={"width": 1440, "height": 900}) for _ in range(2)]
+        checker = await self._checker(s)
+        pages = [await checker.new_page(viewport={"width": 1440, "height": 900}) for _ in range(2)]
         try:
             snaps = []
             for page, target, name in zip(pages, (reference_url, url), ("original", "clone")):
@@ -704,6 +875,15 @@ class LocalBuildRuntime:
             return
         await s.overlay.clear()
         await s.overlay.handover()
+        await self.release_checks(session)  # every check is done: no hidden tab outlives the handover
+        if self.headed and s.browser and not s.fluid:
+            # The build tab has a fixed 1440×900 viewport: replace it with ONE tab sized by the window itself.
+            build_page = s.page
+            await self._open_window(s, session, build_page.url, fluid=True)
+            with contextlib.suppress(Exception):
+                await s.page.wait_for_load_state("networkidle", timeout=15000)
+            await s.overlay.handover()
+            await build_page.close()
         await s.page.evaluate(HANDOVER_BAR_JS, options)
         await s.page.bring_to_front()
         s.handed_over = True
@@ -713,6 +893,8 @@ class LocalBuildRuntime:
         if not s:
             return
         with contextlib.suppress(Exception):
+            if s.checker:
+                await s.checker.close()
             if s.browser:
                 await s.browser.close()
             if s.pw:

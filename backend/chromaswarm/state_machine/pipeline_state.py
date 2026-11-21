@@ -230,6 +230,18 @@ class PipelineState(BaseModel):
     # what it was written from so a B7/B12 change rewrites it. None = rule-based sample copy.
     page_copy: dict | None = None
     page_copy_key: str | None = None
+    # B4 (Creative): the business's real content in the user's words (developer/real_content.py,
+    # RealContent dump). None = not asked yet / skipped; it replaces sample copy in content.build_copy.
+    real_content: dict | None = None
+    page_photos: list[dict] | None = None  # photo bot (developer/photo_bot.py): url, creator, license…
+    page_photos_key: str | None = None
+    # B5: Style DNA read by a vision model from the uploaded reference screenshot (design/reference_vision.py)
+    reference_reading: dict | None = None
+    reference_reading_key: str | None = None
+    # Art director rounds (developer/stylist.py): {"kind": "compose" | "refine", "css", "notes", "kept": None|bool, ...}
+    style_rounds: list[dict] = Field(default_factory=list)
+    # B9 eyes (qa/section_eye.py): section id -> {"name", "files", "ok", "score", "issues", "fixed", "tries"}
+    section_reviews: dict[str, dict] = Field(default_factory=dict)
     design_score: float | None = None  # B11 design critic (vision model), 1-10; None = no critic
     design_critique: list[str] = Field(default_factory=list)  # "where: problem → fix"
     clone_fidelity: float | None = None  # Clone mode, B11: closeness to the reference, 0-100 (clone/fidelity.py)
@@ -413,6 +425,8 @@ class PipelineState(BaseModel):
         self.heal_contrast = []
         self.design_score = None
         self.design_critique = []
+        self.style_rounds = []
+        self.section_reviews = {}
         self.clone_fidelity = None
         self.clone_fidelity_notes = []
         self.clone_compare = None
@@ -432,6 +446,7 @@ CODEGEN_TOOLS = frozenset({"write_workspace_file", "run_dev_server"})
 BROWSER_TOOLS = frozenset({"swarm_cursor", "browser_measure", "write_tokens"})
 QA_TOOLS = frozenset({"qa_hover", "qa_click", "qa_scroll", "qa_viewport", "qa_report"})
 MCP_TOOLS = frozenset({"mcp_motion"})  # B8.1 Motion & 2D/3D MCP Specialist (Design department)
+STYLE_TOOLS = frozenset({"write_style_layer"})  # art director: app/style.css only (developer/stylist.py)
 
 ALLOWED_TOOLS: dict[Step, frozenset[str]] = {
     Step.B1_READ_PROMPT: READ_ONLY_TOOLS,
@@ -442,9 +457,10 @@ ALLOWED_TOOLS: dict[Step, frozenset[str]] = {
     Step.B6_PLAN: READ_ONLY_TOOLS | DOC_TOOLS,
     Step.B7_APPROVAL: READ_ONLY_TOOLS,
     Step.B8_DESIGN: READ_ONLY_TOOLS | BROWSER_TOOLS,
-    Step.B9_DEVELOP: READ_ONLY_TOOLS | CODEGEN_TOOLS | BROWSER_TOOLS | MCP_TOOLS,  # both departments, pipelined
-    Step.B10_INTEGRATE: READ_ONLY_TOOLS | CODEGEN_TOOLS | BROWSER_TOOLS,
-    Step.B11_MASTER_QA: READ_ONLY_TOOLS | QA_TOOLS,
+    Step.B9_DEVELOP: READ_ONLY_TOOLS | CODEGEN_TOOLS | BROWSER_TOOLS | MCP_TOOLS | STYLE_TOOLS,  # both departments, pipelined
+    Step.B10_INTEGRATE: READ_ONLY_TOOLS | CODEGEN_TOOLS | BROWSER_TOOLS | STYLE_TOOLS,
+    # B11 may only touch the style layer (critic-driven refine, reverted unless QA passes and the score rises)
+    Step.B11_MASTER_QA: READ_ONLY_TOOLS | QA_TOOLS | STYLE_TOOLS,
     Step.B12_HANDOVER: READ_ONLY_TOOLS,
 }
 

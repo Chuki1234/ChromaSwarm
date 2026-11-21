@@ -37,6 +37,8 @@ DIMENSIONS: dict[str, tuple[float, str]] = {
     "modernity": (1.3, "looks like a current professional brand site (2024-2026), not a template or AI-generated page"),
 }
 
+from chromaswarm.qa.taste import taste_block  # noqa: E402
+
 SYSTEM = """You are a senior product designer reviewing a web page from screenshots
 (desktop first screen, the rest of the desktop page in order, then the mobile first screen).
 Grade each dimension from 1 to 10 using this scale, and be strict:
@@ -47,7 +49,12 @@ Grade each dimension from 1 to 10 using this scale, and be strict:
  1-2  = broken.
 Signs of AI-generated / template pages that must lower "modernity" and "composition":
 purple-pink gradients, every section a centered title + 3 identical cards, icons on every heading,
-heavy drop shadows, generic copy, placeholder images, too many saturated buttons, everything centered.
+heavy drop shadows, generic copy, placeholder images, too many saturated buttons, everything centered,
+emoji used as icons, a card with shadow + border + gradient at once, random corner radii, tiny grey text on grey,
+several buttons with equal weight (there must be ONE primary action per screen), reading lines far wider than ~70 characters.
+Reward hairline 1px borders over heavy shadows, a clear asymmetric focal anchor on every screen, tight heading
+tracking and tabular numbers; default fonts (Inter, Roboto, Open Sans, Arial) as headings lower "typography".
+Also judge "hierarchy" by asking: what is seen 1st, 2nd, 3rd, and is the single main action obvious within 3 seconds?
 Return JSON only:
 {"scores": {<dimension>: <int 1-10>, ...},
  "strengths": [<short Vietnamese phrase>, ...max 3],
@@ -139,7 +146,7 @@ async def critique(page: Page, chat: JSONChat | None = None, context: str = "") 
     try:
         images = await screenshots(page)
         user = "Review this page." + (f" Context: {context}" if context else "")
-        raw = await asyncio.to_thread(chat.complete_json, SYSTEM, user, images)
+        raw = await asyncio.to_thread(chat.complete_json, SYSTEM, f"{user}\n\n{taste_block()}", images)
         return parse_critique(raw, getattr(chat, "model", "?"))
     except Exception as e:  # never stop a build because the critic failed
         log.warning("design critic failed: %s", e)

@@ -8,7 +8,7 @@ import re
 import zipfile
 from pathlib import Path
 
-SKIP_DIRS = {"node_modules", ".next", ".turbo", ".git"}
+SKIP_DIRS = {"node_modules", ".next", ".turbo", ".git", "data"}  # data/: received orders (customers' phone numbers)
 SKIP_FILES = re.compile(r"(\.tsbuildinfo|\.log|\.DS_Store)$")
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 

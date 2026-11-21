@@ -12,7 +12,7 @@ from chromaswarm.qa.master import heal_css, run_master_qa
 DEFECTS = (Path(__file__).parents[1] / "chromaswarm/qa/fixtures/qa_defects.html").resolve().as_uri()
 
 SEEDED = {
-    "no-hover", "no-state-change", "console-error", "no-focus-visible",  # test 1
+    "no-hover", "no-state-change", "console-error", "no-focus-visible", "dead-link",  # test 1
     "sticky-legibility", "stuck-hidden", "broken-image",                 # test 2
     "overflow-x", "collision", "tap-target", "tap-spacing",              # test 3
     "slop-1-gradient", "slop-3-centered", "slop-5-shadow", "slop-6-copy",  # test 4
@@ -20,7 +20,7 @@ SEEDED = {
     "disabled-control", "generic-label", "long-text", "font-weights", "number-format",
     "card-row-ragged", "accent-area",
 }
-UNPATCHABLE = {"no-state-change", "console-error", "broken-image", "collision", "slop-6-copy",
+UNPATCHABLE = {"no-state-change", "console-error", "dead-link", "broken-image", "collision", "slop-6-copy",
                "placeholder-as-label", "disabled-control", "generic-label", "font-weights", "number-format",
                "card-row-ragged", "accent-area"}
 

@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from chromaswarm.agents.consultant import base_font_for, extract_cta, split_color
 from chromaswarm.developer.i18n import page_lang
+from chromaswarm.developer.motion_js import SCENE_HEROES, wants_3d
 from chromaswarm.engines.design_spec import DesignInputs, DesignSpec
 from chromaswarm.engines.presets import Layout, Surface, Theme
 from chromaswarm.engines.spacing import Density
@@ -132,6 +133,69 @@ BLUEPRINTS: dict[str, list[Section]] = {
     ],
 }
 BLUEPRINTS["account"] = BLUEPRINTS["login"]
+
+# App pages (developer/app_pages.py): working screens, not marketing sections.
+_CLOSING = Section(id="closing-cta", name="Closing CTA", structure="full-bleed-band", content="One restated offer",
+                   interactive=[_i("cta-closing", "button", "same action as cta-primary")])
+_FAQ = Section(id="faq", name="FAQ", structure="accordion", content="Concrete questions about this step",
+               interactive=[_i("faq-item", "button", "expand / collapse, aria-expanded")])
+_INTRO = Section(id="page-hero", name="Page intro", structure="hero-text", content="Title + one-line summary of the page",
+                 interactive=[_i("cta-primary", "button", "primary action of the page")])
+_KPIS = Section(id="kpis", name="Key figures", structure="kpi-row", content="4 KPIs with change vs the previous period; range tabs",
+                interactive=[_i("range-tab", "tab", "switch 7 / 30 / 90 days, figures update")])
+_CHART = Section(id="trend", name="Trend chart", structure="chart-panel", content="12-month bar chart, value on hover / focus",
+                 interactive=[_i("chart-bar", "card", "hover or focus shows the value")])
+_TABLE = Section(id="recent", name="Recent records", structure="data-table",
+                 content="Searchable, filterable, sortable table with status pills and an empty state",
+                 interactive=[_i("table-search", "input", "filter rows as you type"), _i("status-tab", "tab", "filter by status"),
+                              _i("sort-amount", "button", "sort by amount")])
+BLUEPRINTS.update({
+    "cart": [NAV, Section(id="cart", name="Cart & checkout", structure="cart-checkout",
+                          content="Cart lines with quantity steppers and remove, live totals, checkout form with validation",
+                          interactive=[_i("qty-plus", "button", "change quantity, totals update"),
+                                       _i("remove-line", "button", "remove the line; empty state when none left"),
+                                       _i("pay", "tab", "choose a payment method"),
+                                       _i("place-order", "button", "validate, then a confirmation")]),
+             Section(id="related", name="You may also like", structure="horizontal-scroller", content="4-6 related items",
+                     interactive=[_i("product-card", "card", "navigate")]), FOOTER],
+    "dashboard": [NAV, _KPIS, _CHART, _TABLE],
+    "student": [NAV, _KPIS.model_copy(update={"id": "progress", "name": "Learning progress"}),
+                _TABLE.model_copy(update={"id": "submissions", "name": "Recent submissions"})],
+    "my-bookings": [NAV, _TABLE.model_copy(update={"id": "my-bookings", "name": "My bookings"}), _FAQ, FOOTER],
+    "workspace": [NAV, Section(id="board", name="Task board", structure="task-board",
+                               content="Three columns (to do / doing / done), add a task, move tasks between columns",
+                               interactive=[_i("task-add", "button", "validate and add a task"),
+                                            _i("task-next", "button", "move a task to the next column")])],
+    "settings": [NAV, Section(id="settings", name="Settings", structure="settings-form",
+                              content="Section nav, profile form, notification and security switches, save with states",
+                              interactive=[_i("settings-tab", "tab", "switch section"), _i("toggle", "button", "switch on / off"),
+                                           _i("settings-save", "button", "validate, saved / nothing-to-save states")]),
+                 Section(id="billing", name="Plans & billing", structure="plan-cards", surface="alt",
+                         content="3 plans, the recommended one wider; monthly / yearly switch updates prices",
+                         interactive=[_i("cycle-tab", "tab", "monthly / yearly"), _i("plan", "button", "choose a plan")])],
+    "services": [NAV, _INTRO, Section(id="service-menu", name="Service menu", structure="price-list", surface="alt",
+                                      content="Services with duration and price on a dotted leader; pick one to book",
+                                      interactive=[_i("service-book", "button", "pick the service")]), _FAQ, _CLOSING, FOOTER],
+    "booking": [NAV, Section(id="booking", name="Booking flow", structure="booking-flow",
+                             content="Service select, next 7 days, time slots (some full), contact fields, confirmation",
+                             interactive=[_i("booking-day", "tab", "pick a day"), _i("booking-time", "tab", "pick a time"),
+                                          _i("booking-confirm", "button", "validate, then a confirmation")]), _FAQ, FOOTER],
+    "learn": [NAV, Section(id="lesson", name="Learning room", structure="lesson-player",
+                           content="Lesson list with progress, the lesson, mark complete, next lesson",
+                           interactive=[_i("lesson", "tab", "open a lesson"), _i("lesson-complete", "button", "mark complete, progress updates")])],
+    "contact": [NAV, Section(id="contact", name="Contact", structure="contact-form",
+                             content="Address, email and hours beside a validated message form",
+                             interactive=[_i("contact-send", "button", "validate, then a confirmation")]), _FAQ, FOOTER],
+    "directory": BLUEPRINTS["catalog"],
+    "projects": [NAV, _INTRO, Section(id="work", name="Projects", structure="bento", surface="alt",
+                                      content="Mixed-size project tiles",
+                                      interactive=[_i("collection-card", "card", "hover lift + quick view")]), _CLOSING, FOOTER],
+    "project": [NAV, Section(id="hero", name="Project hero", structure="hero-editorial", content="Project name, role, year, one wide image",
+                             interactive=[_i("cta-primary", "button", "contact")]),
+                Section(id="feature-story", name="Process", structure="alternating-z", content="Brief, process, result"),
+                Section(id="gallery", name="Gallery", structure="gallery", content="Project images", count=6), _CLOSING, FOOTER],
+})
+APP_PAGES = {"dashboard", "student", "workspace", "settings", "learn"}  # tool screens: no marketing footer
 GENERIC = [NAV, Section(id="page-hero", name="Page intro", structure="split-7-5", content="Title + summary",
                         interactive=[_i("cta-primary", "button", "primary action")]),
            Section(id="page-body", name="Main content", structure="tabs", content="Primary task of the page",
@@ -152,8 +216,14 @@ def page_sections(state: PipelineState) -> list[Section]:
     first_page = not state.page_routes or state.page_routes.get(state.selected_page or "") == "/"
     listed = len([b for b in brief.get("sections") or [] if b.get("kind") != "hero"]) >= 3  # brief.MIN_LISTED_SECTIONS
     if listed and first_page and state.selected_page in ("landing", "home"):
-        return sections_from_brief(brief, Layout(state.pillars.layout), theme, surface)
-    return sections_for(state.selected_page or "", Layout(state.pillars.layout), theme, surface)
+        sections = sections_from_brief(brief, Layout(state.pillars.layout), theme, surface)
+    else:
+        sections = sections_for(state.selected_page or "", Layout(state.pillars.layout), theme, surface)
+    # A Three.js scene behind an open hero: asked for in the prompt, or the precision-tech theme.
+    hero = next((s for s in sections if s.id == "hero" and s.structure in SCENE_HEROES), None)
+    if hero and (wants_3d(state.raw_prompt or "") or theme is Theme.PRECISION_TECH):
+        hero.effect = f"{hero.effect or 'subtle entrance reveal'} + 3D scene (Three.js) behind the headline"
+    return sections
 
 
 # A brief's section kinds (agents/brief.SECTION_KINDS) -> buildable sections, with their controls.
@@ -275,7 +345,7 @@ def design_inputs(state: PipelineState, project_name: str, dna: StyleDNA | None 
         project_name=project_name, page=page, theme=theme, layout=Layout(p.layout),
         surface=Surface(p.surface) if p.surface in {x.value for x in Surface} else Surface.FLAT, density=Density(p.margins),
         mode=mode, seed_color=seed, exact_accent=user_seed,
-        brand_actions=bool(brief_accent and seed == brief_accent), page_kind="app" if state.selected_page in ("dashboard", "workspace") else "landing",
+        brand_actions=bool(brief_accent and seed == brief_accent), page_kind="app" if state.selected_page in APP_PAGES else "landing",
         base_font_px=base_font_for(p.scope or ""), persona=p.scope or "", primary_cta=extract_cta(p.scope or "") or "",
         motion_effects=effects, style_dna=dna,
         heading_font=clone.heading_font if clone else (state.brief or {}).get("heading_font"),
@@ -324,6 +394,12 @@ def render_product_md(state: PipelineState, project_name: str, seed_note: str | 
         lines += [f"- Ghi chú khi đọc trang mẫu: {n}" for n in clone.notes]
     if seed_note:
         lines += ["", f"> {seed_note}"]
+    if not clone:  # B4 real-content form (developer/real_content.py): what is the user's, what is still a sample
+        from chromaswarm.developer.real_content import RealContent
+        real = RealContent.model_validate(state.real_content or {})
+        lines += ["", "### Nội dung thật",
+                  f"- Của bạn: {', '.join(real.given())}." if real.given() else "- Chưa có: toàn bộ chữ là chữ mẫu.",
+                  *([f"- Còn là chữ mẫu, cần thay: {', '.join(real.missing())}."] if real.given() and real.missing() else [])]
     lines += [
         "",
         "## 4. Luồng liên trang",
@@ -337,11 +413,41 @@ def render_product_md(state: PipelineState, project_name: str, seed_note: str | 
 BREAKPOINTS = [(1440, 900), (1024, 768), (768, 1024), (375, 812)]
 
 
+# Section structures that hold a form, a filter or a picker: the states each must render (skill, Step 2-3).
+STATEFUL = {"grid-4": "lọc theo danh mục → luôn có sản phẩm; nút thêm giỏ báo số lượng",
+            "sidebar-grid-4": "lọc → danh mục trống hiện lời hướng dẫn, không để trắng",
+            "picker-recommend": "chưa chọn → gợi ý mặc định; đã chọn → 3 sản phẩm",
+            "tabs": "tab đang chọn được đánh dấu (aria-selected), nội dung đổi theo",
+            "full-bleed-band": "email sai → lỗi ngay dưới ô, giữ nguyên chữ đã nhập; đúng → lời xác nhận",
+            "accordion": "mở / đóng, aria-expanded"}
+
+
+def design_intent(state: PipelineState, sections: list[Section]) -> list[str]:
+    """Step 2 of the user's frontend-ui skill, written before any code: the single main action,
+    what is seen 1st / 2nd / 3rd, and the states every interactive section must render."""
+    brief = state.brief or {}
+    action = brief.get("primary_cta") or extract_cta(state.pillars.scope or "") or "(chưa rõ, dùng nút chính của trang)"
+    body = [s for s in sections if s.structure not in ("announcement-bar", "sticky-bar", "footer-columns")
+            and not s.id.startswith("hero")]
+    hero = next((s for s in sections if s.id.startswith("hero")), None)
+    order = ([f"1. **{hero.name}**: tiêu đề + nút chính “{action}”"] if hero else []) + \
+            [f"{n}. **{s.name}**: {s.content}" for n, s in enumerate(body[:2], 2 if hero else 1)]
+    states = [f"  - `{s.id}`: {STATEFUL[s.structure]}" for s in sections if s.structure in STATEFUL]
+    return ["## 0. Ý đồ thiết kế (trước khi viết code)", "",
+            f"- **Hành động chính duy nhất:** “{action}”. Chỉ nút này tô màu nhấn; mọi hành động khác là nút phụ.",
+            f"- **Khách hàng:** {brief.get('audience') or state.pillars.scope or '—'}",
+            "- **Thứ tự mắt nhìn:**", *[f"  {o}" for o in order],
+            "- **Trạng thái phải có:**", *(states or ["  - (trang tĩnh, không có form hay bộ lọc)"]),
+            "- **Tự kiểm (skill frontend-ui):** dòng chữ ≤ ~70 ký tự; bo góc và cỡ chữ chỉ lấy từ thang; "
+            "một cách tách bề mặt cho mỗi thẻ; mọi nút có tên; ảnh có alt; chạy được ở 375 / 768 / 1280px.", ""]
+
+
 def render_plan_md(state: PipelineState, spec: DesignSpec) -> str:
     sections = page_sections(state)
     lines = [
         f"# PLAN.md — Kế hoạch triển khai trang: {spec.inputs.page}",
         "",
+        *([] if state.selected_page == CLONE_PAGE else design_intent(state, sections)),
         "## 1. Cấu trúc phân vùng & nhịp thị giác",
         "",
         "| # | Section | `data-swarm-section` | Cấu trúc | Nội dung |",

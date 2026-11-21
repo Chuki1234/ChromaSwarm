@@ -22,7 +22,7 @@ def good(base) -> dict:
         "items": [["Áo Hoodie Oversize", "Giá: 2.490.000₫ - Rộng rãi, dễ phối"]] * len(base.items),
         "cards": [["Quần Cargo", "Nhiều túi"]] * len(base.cards),
         "categories": ["Áo", "Quần", "Giày", "Phụ kiện"][:len(base.categories)],
-        "faqs": [["Đổi size được không?", "Được, trong 30 ngày nếu còn tem."]] * len(base.faqs),
+        "faqs": [["Đổi size được không?", "Được, trong 7 ngày nếu còn tem."]] * len(base.faqs),
     }
 
 
