@@ -81,7 +81,7 @@ class FakeBuild:
         self.log.append("heal")
         return []
 
-    async def master_qa(self, session, spec):
+    async def master_qa(self, session, spec, creative=False):
         self.log.append("qa")
         return self.qa_results.pop(0) if len(self.qa_results) > 1 else self.qa_results[0]
 
@@ -296,7 +296,7 @@ def test_b12_next_page_keeps_design_and_builds_on_its_own_route(tmp_path):
     assert p.page_routes == {"landing": "/", "home": "/home"}
     assert "start:/home" in fake.log and fake.log.count("tokens-keep") == 1  # tokens of page 1 kept
     assert "refresh:site-header:landing" in fake.log  # page 1's header now links to page 2
-    assert ("Home / Storefront", "/home") in fake.refreshed_links
+    assert ("Cửa hàng", "/home") in fake.refreshed_links  # a short label in the page's language
     assert p.step is Step.B12_HANDOVER
     assert [o["value"] for o in snap["question"]["options"]][0] == "catalog"  # landing + home are built
 

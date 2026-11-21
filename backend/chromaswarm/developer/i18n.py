@@ -36,19 +36,20 @@ def defaults_en(domain: Domain | None) -> dict:
     d = domain or Domain.OTHER
     table = {
         Domain.ECOMMERCE: dict(
-            nav=["Collection", "Our story", "FAQ", "Contact"],
-            facts=[("48h", "city delivery"), ("30 days", "free returns"), ("2 years", "warranty"), ("100%", "checked before shipping")],
-            items=[("Signature piece", "Our best seller", "$249", "New"), ("Compact edition", "For smaller spaces", "$169", ""),
-                   ("Value bundle", "10% off together", "$399", ""), ("Accessory", "Completes the set", "$39", "")],
-            categories=["Living room", "Bedroom", "Workspace", "Accessories"],
-            faqs=[("How fast is delivery?", "Within 48 hours in the city, 3–5 business days elsewhere."),
-                  ("Can I return it?", "Free returns within 30 days if the product is undamaged."),
-                  ("Do you install it?", "Yes, our team installs it on delivery at no extra cost."),
+            nav=["Shop", "How to order", "FAQ", "Contact"],
+            facts=[("2–4 days", "nationwide delivery"), ("Check", "before you pay"), ("7 days", "exchange if faulty"),
+                   ("Advice", "by message before you buy")],
+            items=[("Best seller", "Most ordered this month", "$39", "Popular"), ("New arrival", "Limited stock", "$45", ""),
+                   ("Bundle of two", "Cheaper than buying separately", "$69", ""), ("Gift set", "Wrapped, with a card", "$25", "")],
+            categories=["Best sellers", "New in", "Bundles", "Gifts"],
+            faqs=[("How fast is delivery?", "1–2 days in the city, 2–4 business days elsewhere."),
+                  ("Can I check the order before paying?", "Yes, open the parcel before you pay."),
+                  ("What if it arrives faulty?", "We exchange it within 7 days."),
                   ("How can I pay?", "Card, bank transfer or cash on delivery."),
-                  ("What does the warranty cover?", "Two years for manufacturing defects.")]),
+                  ("Do you sell in bulk?", "Yes, message us for a quote.")]),
         Domain.SAAS: dict(
             nav=["Features", "Pricing", "Customers", "Docs"],
-            facts=[("99.9%", "uptime"), ("5 min", "to get started"), ("24/7", "support"), ("ISO 27001", "data security")],
+            facts=[("14 days", "free trial, no card"), ("5 min", "to get started"), ("24/7", "support"), ("ISO 27001", "data security")],
             items=[("Starter", "Up to 5 people", "$0", ""), ("Team", "Unlimited projects", "$19/mo", "Popular"),
                    ("Enterprise", "SSO, roles, SLA", "Contact us", "")],
             categories=["Planning", "Reporting", "Automation", "Integrations"],
@@ -59,7 +60,7 @@ def defaults_en(domain: Domain | None) -> dict:
                   ("How do integrations work?", "Through our API and ready-made connectors.")]),
         Domain.BOOKING: dict(
             nav=["Services", "Pricing", "Book", "Contact"],
-            facts=[("8am–9pm", "every day"), ("15 min", "booking confirmation"), ("4.9/5", "rating"), ("Free", "rescheduling 2h ahead")],
+            facts=[("8am–9pm", "every day"), ("15 min", "booking confirmation"), ("Private", "room for every guest"), ("Free", "rescheduling 2h ahead")],
             items=[("Standard session", "60 minutes", "$35", ""), ("Signature session", "90 minutes", "$55", "Most booked"),
                    ("Membership", "5 visits within 3 months", "$150", "")],
             categories=["Care", "Relax", "Membership", "Gifts"],
@@ -81,7 +82,7 @@ def defaults_en(domain: Domain | None) -> dict:
                   ("Where do I ask questions?", "In the student group and the weekly live Q&A.")]),
         Domain.PORTFOLIO: dict(
             nav=["Work", "About", "Experience", "Contact"],
-            facts=[("8 years", "experience"), ("40+", "projects"), ("12", "returning clients"), ("3", "awards")],
+            facts=[("4–8 weeks", "per project"), ("Weekly", "progress updates"), ("Remote", "or on site"), ("30 days", "support after launch")],
             items=[("Featured project", "Design & build", "", ""), ("Second project", "User research", "", ""),
                    ("Third project", "Brand identity", "", "")],
             categories=["Design", "Development", "Research", "Writing"],
@@ -97,13 +98,13 @@ def defaults_en(domain: Domain | None) -> dict:
 
 
 STORY_EN: dict[Domain, list[tuple[str, str]]] = {
-    Domain.ECOMMERCE: [("Materials first, then form", "Every piece starts from durable, safe materials before its shape."),
-                       ("Fewer pieces, made with care", "A small range, so every product is checked before it reaches you."),
-                       ("Here after the sale", "Warranty, maintenance and advice are part of the product."),
-                       ("Delivered and installed", "Our own team delivers, installs and shows you how it works."),
-                       ("Clear prices up front", "Listed prices include tax and city delivery, with nothing added at checkout."),
-                       ("Changed your mind?", "Undamaged products can be exchanged or refunded within 30 days.")],
-    Domain.SAAS: [("Plan in minutes", "Create a project, split the work and set deadlines from one screen."),
+    Domain.ECOMMERCE: [("Real product photos", "Every item is photographed as it is, never a stock image."),
+                       ("Clear prices up front", "Price and delivery cost are shown before you order."),
+                       ("Packed with care", "Each order is padded so it arrives as it left."),
+                       ("Ask before you buy", "Message us for advice during opening hours."),
+                       ("Check on delivery", "Open the parcel before you pay."),
+                       ("Exchange if faulty", "Faulty items are exchanged within 7 days.")],
+    Domain.SAAS: [("Plan the cycle on one screen", "Create a project, split the work and set deadlines from one screen."),
                   ("Everything in one place", "Requests, bugs and ideas land in one queue instead of chat threads."),
                   ("Progress without meetings", "Status updates itself as work moves along."),
                   ("Automate the repetitive", "Rules assign, move and remind so nobody has to."),
@@ -152,14 +153,14 @@ FEATURES_EN: dict[Domain, list[tuple[str, str]]] = {
 
 QUOTE_NOTE_EN = "Sample testimonial — replace with a real review"
 QUOTES_EN: dict[Domain, list[str]] = {
-    Domain.ECOMMERCE: ["Arrived on time, installed neatly, still like new after months.",
+    Domain.ECOMMERCE: ["Looked just like the photos, packed carefully, arrived on time.",
                        "Honest advice, no pressure, and the price matched the website."],
     Domain.SAAS: ["We dropped two meetings a week because progress is already visible.",
                   "Set up in an afternoon; the whole team was using it the next day."],
     Domain.BOOKING: ["Quick to book and no waiting when I arrived.", "Gentle staff, spotless rooms, clear prices."],
     Domain.EDTECH: ["Exercises close to real work, and the reviews are thorough.",
                     "After the course I shipped my first project at work."],
-    Domain.PORTFOLIO: ["Clear, on time, and the result exceeded our expectations.",
+    Domain.PORTFOLIO: ["Clear, on time, and every file handed over with notes.",
                        "Understood the problem fast and proposed exactly what we needed."],
 }
 
@@ -173,6 +174,30 @@ CLONE_PLACEHOLDERS_EN = {
 }
 
 
+# Sample hero / closing lines per domain: plain statements, no formula (qa/ai_tells.py checks them).
+HEADLINE_EN = {
+    Domain.ECOMMERCE: "Real products, clear prices, delivered to your door", Domain.SAAS: "The whole team sees the same progress",
+    Domain.BOOKING: "Pick a free slot, walk in on time", Domain.EDTECH: "Learn on a clear path, with a teacher who reviews your work",
+    Domain.PORTFOLIO: "Websites and digital products, from first call to launch",
+}
+SUBHEAD_EN = {
+    Domain.ECOMMERCE: "See real photos, the price and the delivery cost before you order.",
+    Domain.SAAS: "Tasks, deadlines and owners on one board that updates as work moves.",
+    Domain.BOOKING: "See the open slots and book without a phone call.",
+    Domain.EDTECH: "Every lesson has a short video, an exercise and feedback from a teacher.",
+    Domain.PORTFOLIO: "I design and build for small teams, with a weekly update and a full handover.",
+}
+CLOSING_EN = {
+    Domain.ECOMMERCE: "Not sure what to pick? Message us and someone will help during opening hours.",
+    Domain.SAAS: "Try it for 14 days with your own team's work, no card needed.",
+    Domain.BOOKING: "There are open slots this week. Book ahead to keep yours.",
+    Domain.EDTECH: "Take the first lesson before you sign up.",
+    Domain.PORTFOLIO: "Taking on new projects. Send a few lines about what you need.",
+}
+HEADLINE_EN[Domain.OTHER], SUBHEAD_EN[Domain.OTHER], CLOSING_EN[Domain.OTHER] = (
+    HEADLINE_EN[Domain.ECOMMERCE], SUBHEAD_EN[Domain.ECOMMERCE], CLOSING_EN[Domain.ECOMMERCE])
+
+
 def copy_en(domain: Domain | None, brand: str) -> dict:
     """English values for every PageCopy pool."""
     d = domain or Domain.OTHER
@@ -180,13 +205,13 @@ def copy_en(domain: Domain | None, brand: str) -> dict:
     story = STORY_EN.get(d, STORY_EN[Domain.ECOMMERCE])
     cta = "Get in touch"
     return dict(
-        headline=f"{brand}, done right down to the details", subhead="Clear about what you get, what it costs and when.",
+        headline=HEADLINE_EN.get(d, HEADLINE_EN[Domain.ECOMMERCE]), subhead=SUBHEAD_EN.get(d, SUBHEAD_EN[Domain.ECOMMERCE]),
         cta=cta, cta_secondary="See how it works", nav=base["nav"], facts=base["facts"], story=story,
         quotes=[(q, QUOTE_NOTE_EN) for q in QUOTES_EN.get(d, QUOTES_EN[Domain.ECOMMERCE])],
         cards=(_items(*[(t, n, "", "") for t, n in FEATURES_EN[d]]) if d in FEATURES_EN else base["items"]),
         items=base["items"], categories=base["categories"], faqs=base["faqs"],
-        closing=f"Ready to start? {cta} — it takes a minute.", footer_line=f"© {brand}. All rights reserved.",
-        tabs=[("Overview", "What it is and how to use it."), ("Materials", "What it is made of and how to care for it."),
+        closing=CLOSING_EN.get(d, CLOSING_EN[Domain.ECOMMERCE]), footer_line=f"© {brand}. All rights reserved.",
+        tabs=[("Overview", "What it is and how to use it."), ("Details", "What it is made of, sizes and how to care for it."),
               ("Shipping", "Delivery times, costs and returns.")],
         rows=[(t, ROW_META_EN[i % len(ROW_META_EN)]) for i, (t, _) in enumerate(story)],
     )
@@ -204,6 +229,8 @@ UI_EN = {
     "Giá giảm dần": "Price: high to low", "Giá tăng dần": "Price: low to high",
     "Giỏ hàng có ${count} sản phẩm.": "Your cart has ${count} items.", "Giỏ hàng đang trống.": "Your cart is empty.",
     "Giỏ hàng, ${count} sản phẩm": "Cart, ${count} items", "Giỏ hàng: ${cart}": "Cart: ${cart}",
+    "Đã thêm ${added} vào giỏ": "Added ${added} to the cart", "Tạm tính": "Subtotal",
+    "Xem giỏ hàng": "View cart",
     "Gợi ý cho riêng bạn": "Picked for you", "Hiện": "Show", "Hiện thêm 8 sản phẩm": "Show 8 more",
     "Hình ${i + 1}": "Image ${i + 1}", "Hỏi đáp": "FAQ", "Hỗ trợ": "Support", "Khách hàng nói gì": "What clients say",
     "Khách mua lại nhiều nhất tháng này": "Most re-ordered this month", "Khám phá": "Explore", "Liên hệ": "Contact",
@@ -224,7 +251,7 @@ UI_EN = {
     "Đăng ký nhận tin": "Subscribe", "Đăng nhập": "Sign in", "Được nhắc đến trên": "Featured on",
     "Đối tác và báo chí": "Partners and press", "Đổi trả": "Returns", "Ảnh thương hiệu": "Brand image",
     "Xem nhanh": "Quick view", "Xem chi tiết": "View details", "Liên hệ ngay": "Get in touch", "Menu": "Menu",
-    "Chọn phân loại": "Choose an option", "sản phẩm": "products", "Hình": "Image",
+    "Chọn phân loại": "Choose an option", "sản phẩm": "products", "Tất cả sản phẩm": "All products", "Hình": "Image",
     "Ẩn": "Hide", "Ảnh ${i + 1}": "Image ${i + 1}", "Tài khoản": "Account",
 }
 
@@ -234,6 +261,8 @@ _LITERAL = re.compile(r'(?P<q>["`])(?P<s>[^"`\n]*?)(?P=q)|>(?P<t>[^<>{}\n]+)<')
 
 # Words inside mixed text ("Đang hiển thị {shown} sản phẩm", "4 sản phẩm", a label before a <select>).
 FRAGMENTS_EN = [(re.compile(r"Đang hiển thị "), "Showing "), (re.compile(r"(\d+|\}) sản phẩm"), r"\1 products"),
+                (re.compile(r"Danh mục “\{filter\}” đang cập nhật sản phẩm\."), "Nothing in “{filter}” yet."),
+                (re.compile(r">Xem tất cả sản phẩm<"), ">See all products<"),
                 (re.compile(r"Sắp xếp"), "Sort by"), (re.compile(r">Xem nhanh \{"), ">Quick view: {")]
 
 

@@ -38,7 +38,8 @@ from chromaswarm.agents.consultant import (
     surface_in_text,
     surface_question,
 )
-from chromaswarm.agents.planner import CLONE_PAGE, Section, design_inputs, page_sections, render_plan_md, render_product_md
+from chromaswarm.agents.planner import (CLONE_PAGE, Section, design_inputs, design_intent, page_sections, render_plan_md,
+                                        render_product_md)
 from urllib.parse import urlparse
 
 from chromaswarm.clone.reader import analyse as analyse_reference
@@ -50,6 +51,15 @@ from chromaswarm.build.runtime import SectionCheck
 from chromaswarm.agents.brief import Brief, mode_from_background
 from chromaswarm.developer.content import build_copy
 from chromaswarm.developer.copywriter import copy_key
+from chromaswarm.developer.industry import pack_for as industry_pack
+from chromaswarm.developer.real_content import fields as real_fields, parse as parse_real
+from chromaswarm.developer.photo_bot import photo_key
+from chromaswarm.developer.uploads import own_files, shared_photos
+from chromaswarm.developer.motion_js import js_effects
+from chromaswarm.developer.stylist import validate_css
+from chromaswarm.developer.variants import variants_for
+from chromaswarm.design.reference_vision import to_dna as shot_dna
+from chromaswarm.developer.uploads import resolve as resolve_upload
 from chromaswarm.clone.fidelity import render_markdown as render_fidelity
 from chromaswarm.clone.components import render_compare
 from chromaswarm.clone.motion_check import inspect_motion
@@ -67,7 +77,7 @@ from chromaswarm.engines.design_spec import (
     render_design_md,
     render_tokens_css,
 )
-from chromaswarm.engines.presets import SURFACES, Layout, Surface, Theme
+from chromaswarm.engines.presets import SURFACES, Surface, Theme
 from chromaswarm.engines.style_dna import StyleDNA
 from chromaswarm.state_machine.pipeline_state import (
     Asset,
@@ -105,6 +115,11 @@ class Deps(BaseModel):
     build: Any = None  # BuildRuntime for B8-B10; None stops after approval (B1-B7 only)
     brief_reader: Any = None  # (prompt) -> agents.brief.Brief | None; None = never read a brief
     copywriter: Any = None  # (state, base PageCopy) -> validated copy dict | None; None = rule-based copy
+    photo_bot: Any = None  # (state) -> checked photos list[dict] | None; None = curated topic photos
+    screenshot_reader: Any = None  # (path) -> validated design reading of a reference screenshot | None
+    stylist: Any = None  # developer/stylist.Stylist: composition (B10) and critic-driven refine (B11); None = templates only
+    section_eye: Any = None  # qa/section_eye.SectionEye: each section shot and judged right after it is built
+    compose: bool = False  # B10 blind composition layer (off: it broke QA in every live run; the eyes fix by sight)
 
 
 PILLAR_LABELS = {"theme": "Phong cách", "layout": "Bố cục", "color": "Màu sắc", "margins": "Khoảng cách",
@@ -179,6 +194,56 @@ _STATE_TYPES = ("PipelineState", "Step", "Domain", "Framework", "PageStatus", "P
 SERDE = JsonPlusSerializer(allowed_msgpack_modules=[
     ("chromaswarm.state_machine.pipeline_state", name) for name in _STATE_TYPES
 ] + [("chromaswarm.state_machine.graph", "GraphState")])
+
+
+REFINE_TARGET = 8.0  # design score the critic-driven refine aims for
+MAX_REFINES = 2
+MIN_GAIN = 0.2  # a refine round is kept only when the score rises at least this much
+
+
+EYE_MAX_FIXES = 3  # tries per section: the template's variants first, then a fix by sight
+
+
+def section_outline(outline: str, section_id: str) -> str:
+    """The part of the page outline for one section."""
+    for block in outline.split("## ")[1:]:
+        if block.startswith(f"{section_id} "):
+            return "## " + block
+    return outline[:1500]
+
+
+def kept_css(p: PipelineState, with_pending: bool = False) -> str:
+    """The art director's layer for this page: kept rounds (and the one being tried)."""
+    return "\n".join(r["css"] for r in p.style_rounds
+                     if r.get("kept") is True or (with_pending and r.get("kept") is None))
+
+
+def read_notice(p: PipelineState, reading: dict) -> str:
+    """What was learned from the reference screenshot; its accent becomes the brand colour when the
+    user named none (they can change it at B7)."""
+    parts = ["nền tối" if reading["is_dark"] else "nền sáng"]
+    if reading.get("density"):
+        parts.append({"airy": "bố cục thoáng", "balanced": "độ thoáng vừa", "dense": "bố cục gọn"}[reading["density"]])
+    if reading.get("radius_px") is not None:
+        parts.append(f"bo góc ~{reading['radius_px']:.0f}px")
+    accent = reading.get("accent")
+    if accent and p.pillars.theme:
+        mode, _, user_supplied = split_color(p.pillars.color or "light", Theme(p.pillars.theme))
+        if not user_supplied:
+            p.pillars.color = f"{mode} {accent}"
+            parts.append(f"màu nhấn {accent} (dùng làm màu thương hiệu, đổi được ở bước duyệt)")
+    return "Đã đọc ảnh trang tham khảo: " + ", ".join(parts) + ". Chỉ học đặc trưng thiết kế, không chép giao diện."
+
+
+def handover_options(p: PipelineState) -> list[dict]:
+    """B12 buttons shown in the handed-over browser window."""
+    pending = [pg for pg in p.sitemap if pg.slug not in p.page_routes]
+    options = [{"label": f"Dựng trang tiếp theo: {pending[0].title}", "value": {"action": "next", "page": pending[0].slug},
+                "primary": True, "sent": f"Đang lập kế hoạch cho “{pending[0].title}” — duyệt trong Studio."}] if pending else []
+    options.append({"label": "Tinh chỉnh trang này", "value": {"action": "refine"}, "feedback": True,
+                    "placeholder": "Ví dụ: tông tối hơn, khoảng cách gọn hơn, đổi màu nhấn sang xanh lá",
+                    "submit": "Gửi góp ý", "sent": "Đã nhận góp ý — duyệt lại kế hoạch trong Studio."})
+    return options
 
 
 def build_graph(deps: Deps | None = None, checkpointer=None):
@@ -608,13 +673,27 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
                     "Bạn đã nói về nguồn ảnh nên mình bỏ qua bước gửi tài nguyên."}
         answer = interrupt(Question(
             step="B4", kind="assets", key="assets", note=state.notice,
-            text=("Bạn gửi giúp mình các tài nguyên đang có: logo, ảnh sản phẩm thật, slogan/thông điệp chính, "
-                  "bảng giá hoặc danh sách sản phẩm. Nếu có trang web bạn thích, gửi ảnh chụp kèm link. "
-                  "Chưa có ảnh cũng không sao — bấm “Đã gửi đủ”."),
+            text=("Bạn gửi giúp mình nội dung thật và tài nguyên đang có: logo, ảnh sản phẩm thật, và những gì "
+                  "khách cần biết (bán gì, giá, điểm khác biệt, số liệu, lời khách). Mục nào điền, trang dùng đúng "
+                  "lời của bạn; mục nào bỏ trống, mình dùng chữ mẫu và ghi rõ trong PRODUCT.md để bạn thay sau. "
+                  "Chưa có gì cũng không sao — bấm “Đã gửi đủ”."),
+            # Real-content form for this kind of site (developer/real_content.py): value = field key
+            options=[Option(value=f.key, label=f.label, hint=f.placeholder) for f in real_fields(p.domain, industry_pack(p))],
         ).model_dump())
         data = answer if isinstance(answer, dict) else {}
+        real = parse_real(data.get("content"))
+        notice = None
+        if real.given():
+            p.real_content = real.model_dump()
+            notice = f"Đã nhận {', '.join(real.given())} của bạn" + \
+                (f"; còn dùng chữ mẫu cho {', '.join(real.missing())}." if real.missing() else ".")
         for a in data.get("assets", []):
             p.assets.append(Asset.model_validate(a))
+        have = {a.path_or_text for a in p.assets}
+        for it in real.items:  # a photo attached to one line of the list is copied into the app like any upload
+            if it.image and it.image not in have:
+                p.assets.append(Asset(kind="product-image", path_or_text=it.image, note=it.name))
+                have.add(it.image)
         for r in data.get("references", []):
             try:
                 p.references.append(Reference.model_validate(r))
@@ -624,7 +703,7 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             p.assets_confirmed = True
         if p.can_advance():
             p.advance()
-        return {"pipeline": p, "notice": None}
+        return {"pipeline": p, "notice": notice}
 
     # ---------------------------------------------------------------- B5
     async def b5(state: GraphState) -> dict:
@@ -636,6 +715,17 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
                 dna = await deps.scrape(url)
             except Exception as e:  # network / timeout: continue from B3 answers alone
                 log.warning("style DNA scrape failed for %s: %s", url, e)
+        notice = state.notice
+        shot = next((r.screenshot_path for r in p.references if r.screenshot_path), None)
+        if dna is None and shot and deps.screenshot_reader and p.mode is not BuildMode.CLONE:
+            path = resolve_upload(deps.artifacts_root, p.session_id, shot)
+            if path and p.reference_reading_key != shot:  # read once per screenshot (B7 changes come back here)
+                p.reference_reading = await asyncio.to_thread(deps.screenshot_reader, path)
+                p.reference_reading_key = shot
+                if p.reference_reading:
+                    notice = read_notice(p, p.reference_reading)
+            if path and p.reference_reading:
+                dna = shot_dna(p.reference_reading)
         project = project_title(p.raw_prompt or "")
         inputs = design_inputs(p, project, dna)
         spec = build_design_spec(inputs)
@@ -651,6 +741,8 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         write_artifact(p, "DESIGN.md", p.design_md)
         write_artifact(p, "tokens.css", p.tokens_css)
         p.advance()
+        if notice != state.notice:
+            return {"pipeline": p, "notice": notice}
         return {"pipeline": p}  # keep a B7 notice ("đã đổi ...") visible through B5/B6
 
     # ---------------------------------------------------------------- B6
@@ -705,6 +797,78 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         p.request_plan_changes()
         return {"pipeline": p, "notice": feedback_notice(changes)}
 
+    # ---------------------------------------------------------------- art director
+    def styling(p: PipelineState) -> bool:
+        return bool(deps.stylist and p.mode is not BuildMode.CLONE and hasattr(deps.build, "write_style_layer"))
+
+    async def look_at(p: PipelineState, sec: Section) -> str:
+        """Shoot the section just measured at 1440 and 375, have it judged, fix what CSS can fix by sight
+        (kept only if the verdict improves and the phone does not overflow), then move on."""
+        if not (deps.section_eye and p.mode is not BuildMode.CLONE and hasattr(deps.build, "section_shots")):
+            return ""
+        folder = deps.artifacts_root / p.session_id / "artifacts" / "shots"
+        page = p.selected_page or ""
+        shots = await deps.build.section_shots(p.session_id, sec.id, folder, "v0")
+        verdict = shots and await asyncio.to_thread(deps.section_eye.look, sec.name, sec.content, p.raw_prompt or "",
+                                                    shots["images"])
+        if not shots or not verdict:
+            return ""
+        first, tries, fixed, picked = verdict, 0, 0, None
+        options = [v for v in variants_for(sec.structure)]  # hand-written, QA-safe compositions first
+        while not verdict.ok and verdict.fixable and tries < EYE_MAX_FIXES and hasattr(deps.build, "write_style_layer"):
+            if options:
+                variant = options.pop(0)
+                css, _ = validate_css(variant.for_section(sec.id), [sec.id])
+                label, notes = variant.label, [f"{sec.id} → biến thể “{variant.label}”"]
+            elif styling(p):  # no variant left: the art director fixes the notes by sight
+                outline = section_outline(await deps.build.outline(p.session_id), sec.id)
+                patch = await asyncio.to_thread(deps.stylist.fix_section, sec.id, [i.line() for i in verdict.fixable],
+                                                outline, shots["images"])
+                if not patch:
+                    break
+                css, label, notes = patch.css, None, patch.notes
+            else:
+                break
+            tries += 1
+            # A variant replaces the section's earlier variant; a fix adds to what is kept.
+            if label:
+                for r in p.style_rounds:
+                    if r["kind"] == "section" and r.get("section") == sec.id and r.get("variant") and r.get("kept"):
+                        r.update(kept=False, why="replaced")
+            p.style_rounds.append({"kind": "section", "section": sec.id, "css": css, "notes": notes, "kept": None,
+                                   "variant": label})
+            await deps.build.write_style_layer(p.session_id, page, kept_css(p, with_pending=True), step=Step.B9_DEVELOP)
+            again = await deps.build.section_shots(p.session_id, sec.id, folder, f"v{tries}")
+            seen = again and not again["overflow"] and await asyncio.to_thread(
+                deps.section_eye.look, sec.name, sec.content, p.raw_prompt or "", again["images"])
+            if seen and seen.better_than(verdict):
+                p.style_rounds[-1]["kept"] = True
+                verdict, shots, fixed = seen, again, fixed + 1
+                picked = label or picked
+            else:
+                p.style_rounds[-1].update(kept=False, why="eye")
+                if label:  # the variant this one replaced comes back
+                    for r in reversed(p.style_rounds[:-1]):
+                        if r["kind"] == "section" and r.get("section") == sec.id and r.get("why") == "replaced":
+                            r.update(kept=True, why=None)
+                            break
+                await deps.build.write_style_layer(p.session_id, page, kept_css(p), step=Step.B9_DEVELOP)
+        p.section_reviews[sec.id] = {"name": sec.name, "files": shots["files"], "ok": verdict.ok, "score": verdict.score,
+                                     "issues": [i.line() for i in verdict.issues], "fixed": fixed, "tries": tries,
+                                     "first_score": first.score, "variant": picked}
+        state_word = "đạt" if verdict.ok else f"còn {len(verdict.issues)} góp ý"
+        fix_word = (f", chọn bố cục “{picked}”" if picked else "") + (f", thử {tries} lần" if tries else "")
+        return f"Mắt xem “{sec.name}” ở 1440 & 375: {state_word} ({verdict.score:.0f}/10{fix_word})"
+
+    async def style_context(p: PipelineState) -> str:
+        sections = page_sections(p)
+        outline = await deps.build.outline(p.session_id) if hasattr(deps.build, "outline") else ""
+        intent = "\n".join(design_intent(p, sections))
+        listing = "\n".join(f"- {s.id} · {s.structure} · {s.content[:120]}" for s in sections)
+        return (f"Brief: {p.raw_prompt or ''}\nTheme: {p.pillars.theme} · layout {p.pillars.layout} · "
+                f"density {p.pillars.margins} · surface {p.pillars.surface or 'flat'}\n\n{intent}\n\n"
+                f"Sections (id · template · purpose):\n{listing}\n\nDOM outline (tags and classes):\n{outline[:7000]}")
+
     # ---------------------------------------------------------------- B8-B10
     def build_context(p: PipelineState) -> tuple[str, Any, list[Section]]:
         project = project_title(p.raw_prompt or "")
@@ -745,7 +909,18 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
                     base = build_copy(p.model_copy(update={"page_copy": None}))
                     p.page_copy = await asyncio.to_thread(deps.copywriter, p, base)
                     p.page_copy_key = key
+            own_photos = bool(shared_photos(p))  # photos attached to single items leave the rest to the bot
+            if deps.photo_bot and p.mode is not BuildMode.CLONE and not own_photos and not p.preview_url:
+                key = photo_key(p)
+                if p.page_photos_key != key:  # once per project brief: the bot searches and looks at photos
+                    p.page_photos = await asyncio.to_thread(deps.photo_bot, p)
+                    p.page_photos_key = key
             if not p.preview_url:
+                generated = [x["url"] for x in p.page_photos or [] if str(x.get("url", "")).startswith("uploads/")]
+                files = [f for x in own_files(p, "product-image") + own_files(p, "logo") + generated
+                         if (f := resolve_upload(deps.artifacts_root, p.session_id, x))]
+                if files and hasattr(deps.build, "import_uploads"):
+                    await deps.build.import_uploads(p.session_id, files)
                 if p.mode is BuildMode.CLONE and not p.heal_history and hasattr(deps.build, "begin_wireframe"):
                     deps.build.begin_wireframe(p.session_id)  # designer passes: wireframe -> colour -> content
                 photos = build_copy(p).images
@@ -773,10 +948,14 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             if to_check:
                 jobs.append(deps.build.check_section(p.session_id, to_check, spec))
             results = await asyncio.gather(*jobs)
-            motion, motion_error = [], None
+            motion, motion_error, js = [], None, []
             if to_check and (by_id[to_check].effect or by_id[to_check].motion) and "mcp_motion" in tools_for(p.step):
                 try:
-                    motion = await deps.build.motion(p.session_id, by_id[to_check], spec, slug)
+                    sec = by_id[to_check]
+                    if p.mode is not BuildMode.CLONE and hasattr(deps.build, "motion_js"):  # GSAP / Three.js
+                        js = await deps.build.motion_js(p.session_id, slug, sec.id, js_effects(sec.effect, sec.structure))
+                    if not js:
+                        motion = await deps.build.motion(p.session_id, by_id[to_check], spec, slug)
                 except Exception as e:  # an optional effect must never stop the build
                     log.warning("B8.1 motion failed for %s: %s", to_check, e)
                     motion_error = str(e)
@@ -808,10 +987,20 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
                 if line not in p.motion_effects:  # a heal loop rebuilds the sections: list each effect once
                     p.motion_effects.append(line)
                 parts.append(f"Motion thêm {fx.effect} qua MCP")
+            if js and (line := f"{to_check}: {', '.join(js)} (GSAP / Three.js)") not in p.motion_effects:
+                p.motion_effects.append(line)
+                parts.append(f"Motion thêm {', '.join(js)} (GSAP / Three.js)")
             if motion_error:
                 p.motion_effects.append(f"{to_check}: bỏ qua hiệu ứng ({motion_error[:80]})")
+            try:
+                if seen := await look_at(p, by_id[to_check]):
+                    parts.append(seen)
+            except Exception as e:  # noqa: BLE001 — looking never stops a build
+                log.warning("section eye failed for %s: %s", to_check, e)
         if p.can_advance():
             p.advance()
+            if hasattr(deps.build, "release_checks"):
+                await deps.build.release_checks(p.session_id)  # every section looked at: close the hidden tabs
         done = f"{len(p.sections_checked)}/{len(p.sections_planned)}"
         return {"pipeline": p, "notice": f"B9 · {' · '.join(parts)} ({done})"}
 
@@ -859,9 +1048,17 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             return {"pipeline": p, "notice": f"Ghép trang chưa đạt: {'; '.join(problems)}"}
         p.open_findings = [f"{f.section}: {f.detail}" for f in report.open]
         p.integrated = True
+        composed = ""
+        if deps.compose and styling(p) and not p.style_rounds:  # once per build: the art director composes this page
+            patch = await asyncio.to_thread(deps.stylist.compose, await style_context(p), p.sections_planned)
+            # No patch: an empty layer, so a rebuilt page never keeps a composition made for an earlier plan.
+            await deps.build.write_style_layer(p.session_id, p.selected_page or "", patch.css if patch else "")
+            if patch:
+                p.style_rounds.append({"kind": "compose", "css": patch.css, "notes": patch.notes, "kept": None})
+                composed = f" Art director bố cục lại {len(patch.notes) or 'vài'} điểm cho riêng trang này."
         p.advance()
         left = f" Còn {len(report.open)} điểm chuyển cho B11." if report.open else " Không còn lỗi thiết kế."
-        return {"pipeline": p, "notice": f"B10 · Đã ghép {len(p.sections_planned)} section trên {p.preview_url}.{left}"}
+        return {"pipeline": p, "notice": f"B10 · Đã ghép {len(p.sections_planned)} section trên {p.preview_url}.{left}{composed}"}
 
     # ---------------------------------------------------------------- B11
     async def b11(state: GraphState) -> dict:
@@ -873,16 +1070,42 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         if p.qa_passed and p.mode == BuildMode.CLONE and p.clone and getattr(deps.build, "compare", None):
             return await b11_accept(p, spec, sections)
         try:
-            report = await deps.build.master_qa(p.session_id, spec)
+            report = await deps.build.master_qa(p.session_id, spec, creative=p.mode is not BuildMode.CLONE)
         except Exception as e:
             log.exception("B11 failed")
             p.build_error = f"B11: {e}"
             return {"pipeline": p, "notice": f"Lỗi khi chạy Master QA: {e}"}
+        unproven = [r for r in p.style_rounds if r["kind"] == "section" and r.get("kept") is True and not r.get("qa")]
+        if unproven and not report.passed:
+            # Fixes made by sight in B9 broke a QA rule: all of them go, QA runs again on the plain templates.
+            for r in unproven:
+                r.update(kept=False, why="qa")
+            await deps.build.write_style_layer(p.session_id, p.selected_page or "", kept_css(p), step=Step.B11_MASTER_QA)
+            return {"pipeline": p, "notice": f"B11 · {len(unproven)} chỉnh sửa theo mắt ở B9 làm hỏng kiểm tra nên đã bỏ; "
+                                              "kiểm tra lại trang…"}
+        if report.passed:
+            for r in unproven:
+                r["qa"] = True
+        pending = p.style_rounds[-1] if p.style_rounds and p.style_rounds[-1].get("kept") is None else None
+        if pending and not report.passed:
+            # The art director's layer broke a QA rule: it is dropped, never healed around.
+            pending.update(kept=False, why="qa", failures=[f.detail for f in report.failures][:5])
+            await deps.build.write_style_layer(p.session_id, p.selected_page or "", kept_css(p), step=Step.B11_MASTER_QA)
+            if pending["kind"] == "refine":  # the page before this round passed QA and was graded
+                p.design_score, p.design_critique = pending["before"], pending["critique"]
+                p.qa_summary, p.qa_failures, p.qa_passed = pending["qa_summary"], [], True
+                write_artifact(p, "CRITIQUE.md", pending["critique_md"])
+                p.advance()
+                return {"pipeline": p, "notice": f"B11 · Bản chỉnh theo nhận xét làm hỏng {len(report.failures)} bài kiểm tra "
+                                                  f"nên đã bỏ; giữ bản trước (thẩm mỹ {p.design_score:.1f}/10)."}
+            return {"pipeline": p, "notice": "B11 · Lớp bố cục của art director làm hỏng kiểm tra nên đã bỏ; kiểm tra lại trang…"}
         p.qa_summary = report.summary()
         p.qa_failures = [f"[Bài {f.test}] {f.detail}" + (f" ({f.viewport}px)" if f.viewport else "") for f in report.failures]
         if report.passed:
             p.qa_passed = True
             notice = "B11 · Master Cursor: 100% PASSED — cả 4 bài kiểm tra đều đạt."
+            if pending and pending["kind"] == "compose":
+                pending["kept"] = True
             accept = getattr(deps.build, "compare", None)
             if p.mode == BuildMode.CLONE and p.clone and accept:
                 # Next pass: the 1:1 acceptance against the reference link (b11_accept).
@@ -893,8 +1116,37 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
                 if c := await critic(p.session_id, context):
                     p.design_score = c.overall
                     p.design_critique = [f"{i.where}: {i.problem} → {i.fix}" for i in c.issues]
-                    write_artifact(p, "CRITIQUE.md", render_markdown(c))
+                    critique_md = render_markdown(c)
+                    write_artifact(p, "CRITIQUE.md", critique_md)
                     notice += f" Chấm thẩm mỹ: {c.overall:.1f}/10."
+                    if pending and pending["kind"] == "refine":
+                        pending["after"] = c.overall
+                        if c.overall < pending["before"] + MIN_GAIN:  # not better: back to the graded page before it
+                            pending["kept"] = False
+                            pending["why"] = "score"
+                            await deps.build.write_style_layer(p.session_id, p.selected_page or "", kept_css(p),
+                                                               step=Step.B11_MASTER_QA)
+                            p.design_score, p.design_critique = pending["before"], pending["critique"]
+                            write_artifact(p, "CRITIQUE.md", pending["critique_md"])
+                            notice += f" Không tốt hơn bản trước nên giữ bản trước ({p.design_score:.1f}/10)."
+                        else:
+                            pending["kept"] = True
+                            notice += f" Tăng từ {pending['before']:.1f} nhờ chỉnh theo nhận xét."
+                    rounds = sum(1 for r in p.style_rounds if r["kind"] == "refine")
+                    if (styling(p) and p.design_score < REFINE_TARGET and rounds < MAX_REFINES
+                            and not (pending and pending.get("kept") is False)):
+                        patch = await asyncio.to_thread(deps.stylist.refine, p.design_critique, await style_context(p),
+                                                        p.sections_planned)
+                        if patch:
+                            p.style_rounds.append({"kind": "refine", "css": patch.css, "notes": patch.notes, "kept": None,
+                                                   "before": p.design_score, "critique": p.design_critique,
+                                                   "critique_md": critique_md, "qa_summary": p.qa_summary})
+                            await deps.build.write_style_layer(p.session_id, p.selected_page or "",
+                                                               kept_css(p, with_pending=True), step=Step.B11_MASTER_QA)
+                            p.qa_passed = False
+                            return {"pipeline": p, "notice": notice + f" Dưới {REFINE_TARGET:.0f}: art director sửa "
+                                                             f"{len(patch.notes) or 'các'} điểm theo nhận xét (vòng {rounds + 1}), "
+                                                             "rồi kiểm tra và chấm lại."}
             # Clone mode: how close the rebuild is to the reference (same reader on both pages).
             measure = getattr(deps.build, "fidelity", None)
             if p.mode == BuildMode.CLONE and p.clone and measure:
@@ -982,12 +1234,7 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         pending = [pg for pg in p.sitemap if pg.slug not in p.page_routes]
         verdict = ("Master QA đạt 100% cả 4 bài." if p.qa_passed
                    else f"Master QA còn {len(p.qa_failures)} lỗi hệ thống chưa tự sửa được, bạn xem danh sách bên dưới.")
-        options = [{"label": f"Dựng trang tiếp theo: {pending[0].title}", "value": {"action": "next", "page": pending[0].slug},
-                    "primary": True, "sent": f"Đang lập kế hoạch cho “{pending[0].title}” — duyệt trong Studio."}] if pending else []
-        options.append({"label": "Tinh chỉnh trang này", "value": {"action": "refine"}, "feedback": True,
-                        "placeholder": "Ví dụ: tông tối hơn, khoảng cách gọn hơn, đổi màu nhấn sang xanh lá",
-                        "submit": "Gửi góp ý", "sent": "Đã nhận góp ý — duyệt lại kế hoạch trong Studio."})
-        await deps.build.handover(p.session_id, options)
+        await deps.build.handover(p.session_id, handover_options(p))
         answer = interrupt(Question(
             step="B12", kind="handover", key="handover", allow_free_text=True,
             recommended=pending[0].slug if pending else None,
@@ -1053,17 +1300,45 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
 
 
 class PipelineRunner:
-    """Session-facing API used by the WebSocket server."""
+    """Session-facing API used by the WebSocket server.
 
-    def __init__(self, deps: Deps | None = None):
-        self.graph = build_graph(deps)
+    With `db_path`, every checkpoint is written to SQLite, so a session survives a backend restart
+    (the Studio keeps its session id): the graph is compiled on first use, inside the running loop.
+    Without it, sessions live in memory (tests, one-off scripts)."""
+
+    def __init__(self, deps: Deps | None = None, db_path: Path | None = None, checkpointer=None):
+        self.deps = deps
+        self.db_path = None if checkpointer is not None else db_path
+        # `checkpointer`: a ready saver (Clone sessions mirrored to Supabase, clone/checkpoints.py)
+        self._graph = None if self.db_path else build_graph(deps, checkpointer=checkpointer)
+        self._conn = None
+        self._lock = asyncio.Lock()
+        self._recovered: set[str] = set()
+
+    async def graph(self):
+        if self._graph is None:
+            async with self._lock:
+                if self._graph is None:
+                    import aiosqlite
+                    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+                    self.db_path.parent.mkdir(parents=True, exist_ok=True)
+                    self._conn = await aiosqlite.connect(str(self.db_path))
+                    saver = AsyncSqliteSaver(self._conn, serde=SERDE)
+                    await saver.setup()
+                    self._graph = build_graph(self.deps, checkpointer=saver)
+        return self._graph
+
+    async def close(self) -> None:
+        if self._conn is not None:
+            await self._conn.close()
+            self._conn = None
 
     @staticmethod
     def _config(session_id: str) -> dict:
         return {"configurable": {"thread_id": session_id}, "recursion_limit": 200}
 
     async def snapshot(self, session_id: str) -> dict:
-        snap = await self.graph.aget_state(self._config(session_id))
+        snap = await (await self.graph()).aget_state(self._config(session_id))
         values = snap.values or {}
         pipeline = values.get("pipeline") if isinstance(values, dict) else None
         if isinstance(pipeline, dict):
@@ -1074,17 +1349,45 @@ class PipelineRunner:
                 "finished": not snap.next and pipeline is not None}
 
     async def start(self, session_id: str) -> dict:
-        snap = await self.graph.aget_state(self._config(session_id))
+        graph = await self.graph()
+        snap = await graph.aget_state(self._config(session_id))
         if not snap.values:
-            await self.graph.ainvoke({"pipeline": PipelineState(session_id=session_id)}, self._config(session_id))
+            self._recovered.add(session_id)  # new in this process: nothing to recover
+            await graph.ainvoke({"pipeline": PipelineState(session_id=session_id)}, self._config(session_id))
         return await self.snapshot(session_id)
+
+    async def interrupted(self, session_id: str) -> bool:
+        """True once per process for a saved session whose run stopped between two steps (the backend
+        was restarted mid-build): it has no question for the user and is not finished."""
+        if session_id in self._recovered:
+            return False
+        self._recovered.add(session_id)
+        snap = await self.snapshot(session_id)
+        return snap["pipeline"] is not None and snap["question"] is None and not snap["finished"]
+
+    async def continue_run(self, session_id: str, on_progress: Any = None) -> dict:
+        """Carry on an interrupted run. A build is restarted from B8 (the dev server and browser died
+        with the old process); the documents, approval and earlier pages are kept."""
+        graph = await self.graph()
+        snap = await self.snapshot(session_id)
+        p: PipelineState = snap["pipeline"]
+        if p.step in (Step.B8_DESIGN, Step.B9_DEVELOP, Step.B10_INTEGRATE, Step.B11_MASTER_QA):
+            p = p.model_copy(deep=True)
+            p._reset_build()
+            p.step = Step.B8_DESIGN
+            await graph.aupdate_state(self._config(session_id), {
+                "pipeline": p, "notice": "Máy chủ vừa khởi động lại: dựng lại trang từ bước B8, kế hoạch đã duyệt giữ nguyên."})
+        return await self._run(session_id, None, on_progress)
 
     async def answer(self, session_id: str, value: Any, on_progress: Any = None) -> dict:
         """Resume with the user's answer. `on_progress(snapshot)` is awaited after every node,
         so long B8-B10 runs stream section-by-section progress to the Studio."""
         # LangGraph cannot resume with None; nodes treat "" as "skipped".
-        async for _ in self.graph.astream(Command(resume="" if value is None else value),
-                                          self._config(session_id), stream_mode="updates"):
+        return await self._run(session_id, Command(resume="" if value is None else value), on_progress)
+
+    async def _run(self, session_id: str, command: Any, on_progress: Any) -> dict:
+        graph = await self.graph()
+        async for _ in graph.astream(command, self._config(session_id), stream_mode="updates"):
             if on_progress:
                 snap = await self.snapshot(session_id)
                 if snap["question"] is None and not snap["finished"]:

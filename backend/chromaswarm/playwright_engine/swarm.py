@@ -134,7 +134,17 @@ class SwarmOverlay:
                 await res
 
     async def _call(self, method: str, *args: Any) -> Any:
-        return await self.page.evaluate(f"(args) => window.__chromaSwarm.{method}(...args)", list(args))
+        script = f"(args) => window.__chromaSwarm.{method}(...args)"
+        try:
+            return await self.page.evaluate(script, list(args))
+        except Exception as e:  # noqa: BLE001
+            # A file written by the Developer can make the dev server reload the page mid-call: wait for the
+            # new page (the overlay re-installs itself on load) and try once more.
+            if "context was destroyed" not in str(e) and "navigat" not in str(e):
+                raise
+            await self.page.wait_for_load_state("load", timeout=15000)
+            await self.page.wait_for_function("() => !!window.__chromaSwarm", timeout=15000)
+            return await self.page.evaluate(script, list(args))
 
     # ---------------------------------------------------------------- cursors
     async def move(self, agent: Agent, selector: str) -> Rect | None:
@@ -260,7 +270,9 @@ def type_findings(section: str, selector: str, t: TypeReading, scale: TypeScale 
     # Too long is always wrong. Too short only matters for running text (3+ lines) on screens
     # wide enough to reach 45ch: a 375px phone fits ~40ch of 16px text by construction.
     too_short = t.line_ch < 45 and lines >= 3 and viewport_w > MOBILE_MAX
-    if body and (t.line_ch > 72 or too_short):
+    # A one-line label in a wide box is not a long line: the measure only matters once text wraps.
+    too_long = t.line_ch > 72 and lines >= 2
+    if body and (too_long or too_short):
         out.append(Finding(agent=Agent.TYPOGRAPHY, section=section, selector=selector, rule="line-length",
                            detail=f"dòng chữ dài {t.line_ch}ch (chuẩn 45–72ch)"))
     if scale:

@@ -86,9 +86,22 @@ class StyleDNA(BaseModel):
     motion_median_ms: float | None
     motion_easing: str | None
     backdrop_blur: bool
+    # Read by a vision model from a screenshot (design/reference_vision.py), not measured in a browser:
+    # shares and 8pt adherence are not known, and the model's own observations come as `notes`.
+    from_screenshot: bool = False
+    notes: list[str] = []
 
     def learned_rules(self) -> list[str]:
         """Plain statements of the Style DNA, safe to put in DESIGN.md."""
+        if self.from_screenshot:
+            rules = [f"Surfaces are {'dark' if self.is_dark else 'light'} with {self.neutral_temperature} neutrals.",
+                     f"Accent use is {self.accent_usage}" + (f" ({self.accents[0].css})." if self.accents else "."),
+                     f"Surfaces are separated mainly by {self.separation}.", f"Spacing feels {self.density}."]
+            if self.radius_median is not None:
+                rules.append(f"Typical corner radius ~{self.radius_median:.0f}px.")
+            if self.uppercase_labels:
+                rules.append("Small labels use uppercase with wide tracking.")
+            return rules + self.notes
         rules = [
             f"Surfaces are {'dark' if self.is_dark else 'light'} with {self.neutral_temperature} neutrals"
             + (f" (hue ~{self.neutral_hue:.0f}°)." if self.neutral_hue is not None else "."),

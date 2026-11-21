@@ -32,8 +32,7 @@ def backend(rows: dict, tmp_path):
     store = CloneHistory("https://p.supabase.co", "k", fake_supabase(rows))
     saver = SupabaseCloneSaver(serde=SERDE, store=store)
     deps = Deps(artifacts_root=tmp_path, clone_reader=fake_reader())
-    runner = PipelineRunner(deps)
-    runner.graph = build_graph(deps, checkpointer=saver)
+    runner = PipelineRunner(deps, checkpointer=saver)
     return runner, saver
 
 

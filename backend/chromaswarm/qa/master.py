@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from chromaswarm.engines.color import apca_lc, parse_css_color, wcag_contrast
 from chromaswarm.engines.typography import TypeScale
+from chromaswarm.qa.ai_tells import find as ai_tells
 from chromaswarm.playwright_engine.swarm import Agent, ColorReading, Rect, SwarmOverlay, contrast_finding
 
 PROBE_JS = Path(__file__).with_name("qa_probe.js").read_text(encoding="utf-8")
@@ -45,10 +46,15 @@ ACCENT_AREA_MAX = 0.10    # 9/10 modern references keep saturated colour under 5
 GENERIC_LABELS = {"xem thêm", "tìm hiểu thêm", "đọc thêm", "bấm vào đây", "nhấn vào đây", "click here",
                   "learn more", "read more", "more", "ok", "here"}
 # §7.1: 5+ digit numbers without a thousands separator (4 digits are skipped: years)
-BARE_NUMBER = re.compile(r"(?<![\d.,:/@#\-])[1-9]\d{4,}(?![\d.,:/@\-])")
+# Standard and code names ("ISO 27001", "TCVN 12345") are identifiers, not quantities.
+BARE_NUMBER = re.compile(r"(?<![\d.,:/@#\-])(?<!iso )(?<!iec )(?<!tcvn )(?<!en )(?<!soc )[1-9]\d{4,}(?![\d.,:/@\-])", re.I)
 CLICKABLE_ROLES = {"button", "tab", "filter-tab", "modal-trigger"}
-GENERIC_COPY = ["lorem ipsum", "john doe", "nâng tầm trải nghiệm", "khám phá tiềm năng vô hạn",
-                "giải pháp đột phá hàng đầu", "trải nghiệm đẳng cấp", "elevate your", "unlock the power"]
+# frontend-ui skill (user's own): reading measure, radius / type scales
+MEASURE_MAX_CH = 85       # ~70ch target; flagged only past 85 (the 0.5em/char estimate is rough)
+RADIUS_STEPS_MAX = 4      # sm / md / lg (+ one extra); pills and circles are not counted
+# DESIGN.md §1: overused default fonts never set the display / headings of a Creative page
+DEFAULT_DISPLAY_FONTS = {"inter", "roboto", "open sans", "arial", "helvetica", "system-ui", "sans-serif"}
+TYPE_SIZES_MAX = 9        # caption .. display; more means sizes chosen one-off
 TEST_NAMES = {1: "Thao tác từng nút", 2: "Cuộn trang", 3: "Đa màn hình", 4: "DESIGN.md & chống AI-slop"}
 
 
@@ -99,6 +105,16 @@ def _sel(selector: str) -> str:
 
 # ------------------------------------------------------------------ test 1
 
+MAIN_ACTION = re.compile(r"cta-(primary|closing)[\"']")
+DEAD_LINKS_JS = """() => [...document.querySelectorAll('a[href]')].flatMap((a) => {
+  const href = a.getAttribute('href') || '';
+  const here = href.startsWith('#') || (href.startsWith('/#') && location.pathname === '/');
+  const id = href.slice(href.indexOf('#') + 1);
+  const dead = href === '#' || href === '' || (here && id && id !== 'dat-hang' && !document.getElementById(decodeURIComponent(id)));
+  return dead ? [[(a.textContent || a.getAttribute('aria-label') || '').trim(), href]] : [];
+})"""
+
+
 async def test_interactions(page: Page, swarm: SwarmOverlay, errors: list[str], instant: bool) -> QaTest:
     items = await _probe(page, "interactives")
     fails: list[QaFailure] = []
@@ -131,6 +147,7 @@ async def test_interactions(page: Page, swarm: SwarmOverlay, errors: list[str], 
                 "(s) => { const e = document.querySelector(s); return !!e && ['aria-selected', 'aria-checked', "
                 "'aria-pressed'].some((a) => e.getAttribute(a) === 'true'); }", sel)
             before = await _probe(page, "domSig")
+            url_before = page.url
             errors_before = len(errors)
             await swarm.pulse()
             await page.mouse.click(pos["x"], pos["y"])
@@ -141,10 +158,22 @@ async def test_interactions(page: Page, swarm: SwarmOverlay, errors: list[str], 
                                        detail=f"bấm “{it['label']}” nhưng giao diện không phản hồi"))
             if len(errors) > errors_before:
                 fails.append(QaFailure(test=1, rule="console-error", selector=sel, detail=errors[-1][:160]))
+            if MAIN_ACTION.search(sel) and page.url == url_before and not await page.evaluate(
+                    "() => !!document.querySelector('[role=dialog] input, [role=dialog] select, [role=dialog] textarea')"):
+                # The page's main action must do the job (open a form / go somewhere), not only change its label
+                fails.append(QaFailure(test=1, rule="fake-main-action", selector=sel,
+                                       detail=f"bấm “{it['label']}” chỉ đổi chữ, không mở form hay trang nào"))
             if await page.evaluate("() => !!document.querySelector('[role=dialog]') || location.hash.length > 1"):
                 await page.reload()  # restore the baseline for the next element
                 await page.wait_for_load_state("networkidle")
                 await swarm.master(True)
+
+    # Every link leads somewhere: no bare "#", no in-page link to a part the page does not have.
+    # ("#dat-hang" opens the order form; "/#x" from another page is checked on the page that has x.)
+    dead = await page.evaluate(DEAD_LINKS_JS)
+    for label, href in dead[:5]:
+        fails.append(QaFailure(test=1, rule="dead-link", selector=f'a[href="{href}"]',
+                               detail=f"link “{label[:40]}” trỏ tới “{href}”, không dẫn đi đâu"))
 
     # keyboard focus-visible on the first tabbable elements
     await page.evaluate("() => { document.activeElement?.blur(); scrollTo(0, 0); }")
@@ -245,7 +274,8 @@ def _purple_pink(stops: list[str]) -> bool:
     return hits >= 2
 
 
-async def test_design_compliance(page: Page, swarm: SwarmOverlay, scale: TypeScale | None) -> QaTest:
+async def test_design_compliance(page: Page, swarm: SwarmOverlay, scale: TypeScale | None,
+                                 creative: bool = False) -> QaTest:
     await swarm.hud("Master Cursor · Bài 4: đối chiếu DESIGN.md, 10 điều cấm & chuẩn thành phần")
     await page.mouse.move(0, 0)
     fails: list[QaFailure] = []
@@ -291,9 +321,8 @@ async def test_design_compliance(page: Page, swarm: SwarmOverlay, scale: TypeSca
             fails.append(QaFailure(test=4, rule="slop-5-shadow", selector=s["selector"],
                                    detail=f"bóng đổ nặng (alpha {s['alpha']}, blur {s['blur']:g}px)",
                                    heal=f"{s['selector']} {{ box-shadow: 0 1px 2px oklch(0 0 0 / 0.04), 0 8px 24px oklch(0 0 0 / 0.05); }}"))
-    for phrase in GENERIC_COPY:
-        if phrase in slop["text"]:
-            fails.append(QaFailure(test=4, rule="slop-6-copy", selector="body", detail=f"nội dung sáo rỗng: “{phrase}”"))
+    for tell in ai_tells(slop["text"]):  # qa/ai_tells.py: stock phrases, formula sentences, emoji
+        fails.append(QaFailure(test=4, rule="slop-6-copy", selector="body", detail=f"chữ kiểu AI: {tell}"))
     for c in slop["ctas"]:
         if len(c["filled"]) > 1:
             fails.append(QaFailure(test=4, rule="slop-7-cta", selector=f'[data-swarm-section="{c["section"]}"]',
@@ -303,6 +332,12 @@ async def test_design_compliance(page: Page, swarm: SwarmOverlay, scale: TypeSca
                                detail=f"ảnh bị méo {d['drift'] * 100:.0f}%", heal=f"{d['selector']} {{ object-fit: cover; }}"))
     comp = await _probe(page, "components", LONG_TEXT_CHARS)
     fails += component_failures(comp, slop["text"])
+    if creative:  # the reference's own look wins in Clone mode
+        fails += skill_failures(await _probe(page, "skill"))
+        if (fonts.get("heading") or "").lower() in DEFAULT_DISPLAY_FONTS:
+            fails.append(QaFailure(test=4, rule="design-md-display-font", selector="h1, h2, h3",
+                                   detail=f"tiêu đề dùng phông mặc định “{fonts['heading']}” (DESIGN.md: cấm Inter/Roboto/"
+                                          "Open Sans/Arial cho tiêu đề)"))
     checked = len(texts) + len(slop["gradients"]) + slop["headings"] + len(comp["controls"]) + len(comp["labels"])
     return QaTest(test=4, name=TEST_NAMES[4], checked=checked, failures=fails)
 
@@ -315,6 +350,36 @@ def _contrast(a: str, b: str) -> float:
 def _is_red(color: str) -> bool:
     c = parse_css_color(color)
     return bool(c) and c[0].c > 0.08 and (c[0].h >= 345 or c[0].h <= 40)
+
+
+def skill_failures(sk: dict) -> list[QaFailure]:
+    """The user's frontend-ui skill: Step 3 build rules, Step 4 self-check, anti-slop table."""
+    fails: list[QaFailure] = []
+    for m in sk["measure"]:
+        fails.append(QaFailure(test=4, rule="skill-measure", selector=m["selector"],
+                               detail=f"đoạn văn dài ~{m['chars']} ký tự mỗi dòng (skill: tối đa ~70)",
+                               heal=f"{m['selector']} {{ max-width: 65ch; }}"))
+    radii = {int(k): v for k, v in sk["radii"].items()}
+    if len(radii) > RADIUS_STEPS_MAX:
+        fails.append(QaFailure(test=4, rule="skill-radius-scale", selector=radii[min(radii)][0],
+                               detail=f"{len(radii)} độ bo góc khác nhau {sorted(radii)}px (skill: chỉ lấy từ thang)"))
+    sizes = sorted(int(k) for k in sk["sizes"])
+    if len(sizes) > TYPE_SIZES_MAX:
+        fails.append(QaFailure(test=4, rule="skill-type-scale", selector="body",
+                               detail=f"{len(sizes)} cỡ chữ khác nhau {sizes}px (skill: các bậc cỡ chữ rõ ràng)"))
+    for m in sk["mixed"]:
+        fails.append(QaFailure(test=4, rule="skill-mixed-surface", selector=m["selector"],
+                               detail="thẻ vừa đổ bóng, vừa có viền, vừa gradient (skill: chọn một cách tách bề mặt)",
+                               heal=f"{m['selector']} {{ background-image: none; }}"))
+    for d in sk["click_divs"]:
+        fails.append(QaFailure(test=4, rule="skill-clickable-div", selector=d["selector"],
+                               detail=f"<{d['tag']}> có con trỏ bấm nhưng không phải <button>/<a> (skill: phím Tab không tới được)"))
+    for u in sk["unnamed"]:
+        fails.append(QaFailure(test=4, rule="skill-no-name", selector=u["selector"],
+                               detail="nút/link không có tên cho trình đọc màn hình (thiếu chữ hoặc aria-label)"))
+    for i in sk["no_alt"]:
+        fails.append(QaFailure(test=4, rule="skill-img-alt", selector=i["selector"], detail="ảnh thiếu thuộc tính alt"))
+    return fails
 
 
 def component_failures(comp: dict, page_text: str) -> list[QaFailure]:
@@ -387,7 +452,8 @@ def component_failures(comp: dict, page_text: str) -> list[QaFailure]:
 # ------------------------------------------------------------------ runner
 
 async def run_master_qa(page: Page, swarm: SwarmOverlay, scale: TypeScale | None = None, *,
-                        errors: list[str] | None = None, instant: bool = False, clone: bool = False) -> QaReport:
+                        errors: list[str] | None = None, instant: bool = False, creative: bool = False,
+                        clone: bool = False) -> QaReport:
     errors = errors if errors is not None else []
     await page.set_viewport_size({"width": 1440, "height": 900})
     await page.evaluate("() => scrollTo(0, 0)")
@@ -396,7 +462,7 @@ async def run_master_qa(page: Page, swarm: SwarmOverlay, scale: TypeScale | None
     tests = [await test_interactions(page, swarm, errors, instant),
              await test_scroll(page, swarm),
              await test_breakpoints(page, swarm),
-             await test_design_compliance(page, swarm, scale)]
+             await test_design_compliance(page, swarm, scale, creative)]
     if clone:
         tests = [t.model_copy(update={"failures": [f for f in t.failures if f.rule not in CLONE_WAIVED]}) for t in tests]
     report = QaReport(tests=tests)

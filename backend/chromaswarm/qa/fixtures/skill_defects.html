@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><title>skill defects</title>
+<style>
+  body { font: 16px/1.6 system-ui; margin: 0; padding: 32px; }
+  .wide { font-size: 16px; width: 1200px; }
+  .r1 { border-radius: 3px; background: #eee; padding: 8px; }
+  .r2 { border-radius: 7px; background: #eee; padding: 8px; }
+  .r3 { border-radius: 13px; background: #eee; padding: 8px; }
+  .r4 { border-radius: 19px; background: #eee; padding: 24px; }
+  .r5 { border-radius: 22px; background: #eee; padding: 24px; }
+  .card { padding: 24px; border: 1px solid #ccc; box-shadow: 0 4px 12px rgba(0,0,0,.08);
+          background-image: linear-gradient(#fff, #f3f3f3); }
+  .clicky { cursor: pointer; padding: 12px; }
+  .s1 { font-size: 11px } .s2 { font-size: 13px } .s3 { font-size: 15px } .s4 { font-size: 17px }
+  .s5 { font-size: 19px } .s6 { font-size: 23px } .s7 { font-size: 29px } .s8 { font-size: 35px } .s9 { font-size: 43px }
+  .s10 { font-size: 53px }
+</style></head>
+<body>
+  <h1 style="font-family: Arial">Tiêu đề dùng phông mặc định</h1>
+  <p class="wide" id="measure">Đoạn văn này quá rộng để đọc thoải mái: mắt phải đi một quãng rất dài từ đầu dòng đến cuối dòng rồi quay lại,
+    nên người đọc dễ lạc dòng. Skill yêu cầu khoảng bảy mươi ký tự mỗi dòng cho nội dung cần đọc, và đoạn này vượt xa mức đó.</p>
+  <div class="r1">a</div><div class="r2">b</div><div class="r3">c</div><div class="r4">d</div><div class="r5">e</div>
+  <div class="card" id="mixed">Thẻ vừa bóng, vừa viền, vừa gradient</div>
+  <div class="clicky" id="clicky" onclick="void 0">Bấm vào ô này</div>
+  <button id="unnamed" type="button"><svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6"/></svg></button>
+  <img id="noalt" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'/%3E" width="40" height="40">
+  <span class="s1">1</span><span class="s2">2</span><span class="s3">3</span><span class="s4">4</span><span class="s5">5</span>
+  <span class="s6">6</span><span class="s7">7</span><span class="s8">8</span><span class="s9">9</span><span class="s10">10</span>
+</body></html>

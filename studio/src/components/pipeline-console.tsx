@@ -88,6 +88,7 @@ export type PipelineState = {
   heal_history: { iteration: number; failures: string[] }[];
   heal_rules: string[];
   escalated_to_user: boolean;
+  section_reviews?: Record<string, { name: string; files: string[]; ok: boolean; score: number; issues: string[]; fixed: number; tries: number; first_score: number }>;
   page_routes: Record<string, string>;
   motion_effects: string[];
   handover_closed: boolean;
