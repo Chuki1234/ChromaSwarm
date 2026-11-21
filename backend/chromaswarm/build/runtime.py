@@ -114,6 +114,7 @@ class _Session:
     shot_pages: dict[int, Page] = field(default_factory=dict)  # clean tabs for the section eye, by width
     checker: Browser | None = None  # hidden browser for checks; closed when the checks of a step pass
     fluid: bool = False  # the window's tab follows the window size (handover) instead of the fixed build size
+    page_bg: str | None = None
 
 
 CREATE_ONLY = {"app/heal.css", "app/motion.css", "app/match.css", "app/style.css", "content/motion.ts"}  # accumulate across pages and heal loops
@@ -340,6 +341,11 @@ class LocalBuildRuntime:
                             page: str = "", route: str = "/") -> None:
         s = self._s(session)
         section_copy = copy_for(written[-1].structure, [w.structure for w in written[:-1]], copy)
+        # Words earlier sections of this page already show: a measured section picks other lines (no repeats).
+        earlier = s.content.get(page, {})
+        taken = [t for w in written[:-1] if w.id in earlier for t in _strings(earlier[w.id][1])]
+        if taken:
+            section_copy = section_copy.model_copy(update={"taken": taken})
         self._write_component(s, written[-1], section_copy, page, keep=[w.id for w in written])
         s.workspace.write(Step.B9_DEVELOP, page_file(written, page, route))
         if copy.order:  # the form the page's main button opens (developer/order.py)
@@ -438,13 +444,60 @@ class LocalBuildRuntime:
         """What the factory tunes to: the reference's smallest pieces per section (read at B2)."""
         s = self._s(session)
         s.ref_components, s.ref_boxes, s.ref_names, s.ref_page = components or {}, boxes or {}, names or {}, page
+        page_bg = next((b.get("page") for b in (boxes or {}).values() if b.get("page")), None)
+        if page_bg and page_bg != s.page_bg:  # the reference's own page colour behind every section
+            s.page_bg = page_bg
+            self._write_match(s)
 
     def _write_match(self, s: _Session) -> None:
-        s.workspace.write(Step.B9_DEVELOP, match_file(cmp.render_rules(s.match)))
+        page = f"body {{ background: {s.page_bg}; }}\n" if s.page_bg else ""
+        s.workspace.write(Step.B9_DEVELOP, match_file(page + cmp.render_rules(s.match)))
+
+    async def sketch_check(self, session: str, ref_boxes: dict[str, dict], ref_comps: dict[str, list[dict]],
+                           out_dir: Path) -> dict | None:
+        """B10, before the colour pass: the rebuild's wireframe measured and drawn the way the reference was
+        sketched at B2; reference sketch | rebuild sketch per screen, and how much of each reference section's
+        sketched area the rebuild covers."""
+        from chromaswarm.clone import sketch
+        s = self._s(session)
+        if not (s.page and s.browser):
+            return None
+        with contextlib.suppress(Exception):
+            await s.page.reload(wait_until="load", timeout=30000)
+        built, boxes = await self._built_components(s)
+        built_raw = {k: [c.model_dump() for c in v] for k, v in built.items()}
+        result = sketch.compare_sketches(ref_boxes, ref_comps, boxes, built_raw)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ref_h = int(max((b.get("top", 0) + b.get("height", 0) for b in ref_boxes.values()), default=900))
+        built_h = int(await s.page.evaluate("document.documentElement.scrollHeight"))
+        ref_svg = sketch.draw(ref_boxes, ref_comps, ref_h)
+        built_svg = sketch.draw(boxes, built_raw, built_h, title=f"Khớp sketch {result['score']:g}%")
+        (out_dir / "built.svg").write_text(built_svg, encoding="utf-8")
+        # What the eye sees too: the wireframe's screenshot against the reference's (B2), cell by cell.
+        built_shot = await s.page.screenshot(full_page=True, type="jpeg", quality=70)
+        (out_dir / "built.jpg").write_bytes(built_shot)
+        ref_shot_path = out_dir / "reference.jpg"
+        ctx = await s.browser.new_context(viewport={"width": 1440, "height": 900})
+        try:
+            page = await ctx.new_page()
+            result["pairs"] = await sketch.sketch_pairs_built(page, ref_svg, built_svg, max(ref_h, built_h), out_dir)
+            if ref_shot_path.is_file():
+                ref_shot = ref_shot_path.read_bytes()
+                work = await ctx.new_page()
+                ref_cells, ref_px_h = await sketch.content_cells(work, ref_shot)
+                built_cells, built_px_h = await sketch.content_cells(work, built_shot)
+                px = sketch.compare_pixels(ref_cells, built_cells, ref_boxes, boxes)
+                result["pixel_score"], result["pixel_sections"], result["missing"] = px["score"], px["sections"], px["missing"]
+                framed = sketch.shot_with_frames(sketch._data_url(built_shot, "image/jpeg"), 1440, built_px_h, px["missing"],
+                                                 f"Giống ảnh chụp {px['score']:g}%")
+                result["shot_pairs"] = await sketch.shot_pairs(page, ref_shot, framed, max(ref_px_h, built_px_h), out_dir)
+        finally:
+            await ctx.close()
+        return result
 
     async def _built_components(self, s: _Session) -> tuple[dict[str, list[cmp.Comp]], dict[str, dict]]:
         assert s.page
-        raw = await s.page.evaluate(cmp.COMPONENTS_JS, {"boxes": [], "built": True, "limit": 60})
+        raw = await s.page.evaluate(cmp.COMPONENTS_JS, {"boxes": [], "built": True, "limit": 260})
         return {k: cmp.comps(v) for k, v in raw["comps"].items()}, raw["boxes"]
 
     async def _factory(self, s: _Session, section_id: str, index: int) -> SectionCheck | None:
@@ -684,7 +737,8 @@ class LocalBuildRuntime:
         await self._wait_for_heal_css(s)
         s.console_errors.clear()
         report = await run_master_qa(s.page, s.overlay, spec.typography, errors=s.console_errors,
-                                     instant=not self.headed, creative=creative)
+                                     instant=not self.headed, creative=creative,
+                                     clone=bool(s.ref_components))
         return report
 
     async def critique(self, session: str, context: str = "") -> Critique | None:
@@ -904,3 +958,14 @@ class LocalBuildRuntime:
     async def close_all(self) -> None:
         for sid in list(self._sessions):
             await self.close(sid)
+
+
+def _strings(value: Any) -> list[str]:
+    """Every text in a section's content entry (nested lists / dicts)."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [t for v in value.values() for t in _strings(v)]
+    if isinstance(value, (list, tuple)):
+        return [t for v in value for t in _strings(v)]
+    return []

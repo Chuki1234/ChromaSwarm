@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 import statistics
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from pydantic import BaseModel
 
@@ -31,7 +31,9 @@ COMPONENTS_JS = r"""(args) => {
   const pixel = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
   const rgba = c => { pixel.clearRect(0,0,1,1); pixel.fillStyle = "#000"; pixel.fillStyle = c; pixel.fillRect(0,0,1,1);
                       const d = pixel.getImageData(0,0,1,1).data; return [d[0], d[1], d[2], d[3] / 255]; };
-  const hex = c => "#" + c.slice(0, 3).map(v => v.toString(16).padStart(2, "0")).join("");
+  // Colours keep their transparency (#rrggbbaa) — a 62% grey text is not the same as solid black.
+  const hex = c => "#" + c.slice(0, 3).map(v => v.toString(16).padStart(2, "0")).join("")
+    + (c[3] < 0.98 ? Math.round(c[3] * 255).toString(16).padStart(2, "0") : "");
   const px = v => parseFloat(v) || 0;
   const sy = scrollY;
   const out = {};
@@ -61,7 +63,8 @@ COMPONENTS_JS = r"""(args) => {
     const t = el.tagName;
     if (/^H[1-6]$/.test(t)) return ["heading", +t[1]];
     if (t === "IMG" || t === "VIDEO" || t === "CANVAS" || t === "PICTURE") return r.width >= 24 && r.height >= 24 ? ["image", 0] : null;
-    if (t === "svg" || t === "SVG") return r.width >= 64 && r.height >= 64 ? ["image", 0] : null;
+    // SVG: illustrations, and wordmark logos (wide and short, ~100×24) — not inline icons.
+    if (t === "svg" || t === "SVG") return (r.width >= 64 && r.height >= 64) || (r.width >= 40 && r.height >= 12 && r.width * r.height >= 900) ? ["image", 0] : null;
     if (t === "INPUT" || t === "TEXTAREA" || t === "SELECT") return cs.type === "hidden" ? null : ["input", 0];
     const bg = rgba(cs.backgroundColor), bw = px(cs.borderTopWidth) + px(cs.borderBottomWidth);
     // A control drawn as plain text (no fill, no border) reads as a link, whatever its tag.
@@ -81,6 +84,24 @@ COMPONENTS_JS = r"""(args) => {
   };
   const scope = built ? document.querySelectorAll("[data-swarm-section] *") : document.body.querySelectorAll("*");
   const taken = new Set();
+  // Reference only: product mockups drawn in HTML (an app screen made of many tiny labels) are one picture,
+  // not dozens of text pieces — the outermost frame that holds 8+ small texts and no large one.
+  const mockups = new Set();
+  if (!built) {
+    const texts = [...document.body.querySelectorAll("*")].filter(e => ownText(e) && e.getBoundingClientRect().width > 0)
+      .map(e => ({ e, fs: px(getComputedStyle(e).fontSize) }));
+    const cands = [...document.body.querySelectorAll("div, figure, section, article, li")].filter(e => {
+      const q = e.getBoundingClientRect();
+      return q.width >= 200 && q.height >= 120 && q.width < innerWidth * 0.98;
+    }).sort((a, b) => { const qa = a.getBoundingClientRect(), qb = b.getBoundingClientRect(); return qb.width * qb.height - qa.width * qa.height; });
+    for (const c of cands) {
+      if ([...mockups].some(m => m.contains(c))) continue;
+      const inside = texts.filter(t => c.contains(t.e));
+      const small = inside.filter(t => t.fs <= 14).length;
+      // Mostly small labels / code lines (a window title may be a little larger), never a section heading.
+      if (small >= 8 && small >= 0.8 * inside.length && !inside.some(t => t.fs >= 20)) mockups.add(c);
+    }
+  }
   const glCanvas = built ? [] : [...document.querySelectorAll("canvas")].map(c => c.getBoundingClientRect()).filter(c => c.width > 80 && c.height > 40);
   const add = (el, cs, r, k, owner) => {
     const key = rootOf(owner || el);
@@ -116,6 +137,7 @@ COMPONENTS_JS = r"""(args) => {
       color: hex(fg), bg: opaque(bg) ? hex(bg) : null, radius: Math.round(px(cs.borderTopLeftRadius)),
       pad: [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].map(v => Math.round(px(v))),
       border: Math.round(px(cs.borderTopWidth)), shadow: cs.boxShadow !== "none",
+      media: k[0] === "image" ? (mockups.has(el) ? "mockup" : el.tagName.toLowerCase()) : "",
     };
     if (built) {
       const i = out[key].length;
@@ -155,7 +177,7 @@ COMPONENTS_JS = r"""(args) => {
   };
   let n = 0;
   for (const el of scope) {
-    if (++n > 12000) break;
+    if (++n > 30000) break;
     // The rebuild's decorative copies (aria-hidden) are not components; on the reference, aria-hidden only
     // hides from screen readers — a huge decorative wordmark is still part of what people see.
     if (el.closest(built ? "chromaswarm-overlay, chromaswarm-handover, [aria-hidden=true]" : "chromaswarm-overlay, chromaswarm-handover")) continue;
@@ -192,7 +214,8 @@ COMPONENTS_JS = r"""(args) => {
       }
       if (shown <= 0.3) continue;
     }
-    const k = kindOf(el, cs, r);
+    if (mockups.size && !mockups.has(el) && [...mockups].some(m => m.contains(el))) continue;
+    const k = mockups.has(el) ? ["image", 0] : kindOf(el, cs, r);
     if (!k) continue;
     // Decorative media (wave canvases, background art) stays out; a decorative wordmark is kept above.
     if (!built && (k[0] === "image" || k[0] === "card") && el.closest("[aria-hidden=true]")) continue;
@@ -221,7 +244,39 @@ COMPONENTS_JS = r"""(args) => {
   return { comps: out, boxes: boxOf };
 }"""
 
-async def measure_reference(page, boxes: list[dict], limit: int = 60) -> dict:
+BAND_JS = r"""(b) => {
+  // Is this block painted the other way round from the page (a dark band on a light page, or the reverse)?
+  const pixel = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+  const rgba = c => { pixel.clearRect(0,0,1,1); pixel.fillStyle = "#000"; pixel.fillStyle = c; pixel.fillRect(0,0,1,1);
+                      return [...pixel.getImageData(0,0,1,1).data]; };
+  const lum = ([r, g, bl]) => { const f = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+                               return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(bl); };
+  const bgAt = (x, y) => {
+    for (const el of document.elementsFromPoint(x, y)) {
+      if (el.closest("chromaswarm-overlay")) continue;
+      const q = el.getBoundingClientRect(), c = rgba(getComputedStyle(el).backgroundColor);
+      if (c[3] > 200 && q.width >= b.width * 0.8) return c;
+    }
+    return null;
+  };
+  // Several points down the block's left edge (a rounded top corner or a thin rule must not decide it).
+  const top = b.top - scrollY, bottom = Math.min(innerHeight - 4, top + b.height - 4);
+  const samples = [0.15, 0.35, 0.55, 0.75].map(f => top + Math.max(24, (bottom - top) * f))
+    .filter(y => y > 4 && y < innerHeight - 4).map(y => bgAt(Math.min(innerWidth - 4, b.left + 12), y)).filter(Boolean);
+  let page = null;
+  for (const el of [document.body, document.documentElement]) { const c = rgba(getComputedStyle(el).backgroundColor); if (c[3] > 200) { page = c; break; } }
+  page = page || [255, 255, 255, 255];
+  const flipped = samples.filter(c => Math.abs(lum(c) - lum(page)) > 0.45).length;
+  // The block's own paint: the colour most samples agree on (the page's colour when it is transparent).
+  const hex = c => "#" + c.slice(0, 3).map(v => v.toString(16).padStart(2, "0")).join("");
+  const counts = {};
+  for (const c of samples) counts[hex(c)] = (counts[hex(c)] || 0) + 1;
+  const bg = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0] || hex(page);
+  return { band: samples.length > 0 && flipped > samples.length / 2, bg, page: hex(page) };
+}"""
+
+
+async def measure_reference(page, boxes: list[dict], limit: int = 260) -> dict:
     """Reference components, one block at a time with that block scrolled into view: pages that hide their
     text again once it leaves the screen (scroll-linked reveals) only show it while it is on screen."""
     import asyncio
@@ -233,7 +288,8 @@ async def measure_reference(page, boxes: list[dict], limit: int = 60) -> dict:
         # Elements are assigned among all boxes (so a neighbour's pieces never leak in), kept for this one.
         found = await page.evaluate(COMPONENTS_JS, {"boxes": boxes, "built": False, "limit": limit})
         comps_out[b["key"]] = found["comps"].get(b["key"], [])
-        boxes_out[b["key"]] = found["boxes"].get(b["key"], b)
+        paint = await page.evaluate(BAND_JS, b)
+        boxes_out[b["key"]] = {**found["boxes"].get(b["key"], b), **paint}
     await page.evaluate("() => scrollTo(0, 0)")
     return {"comps": comps_out, "boxes": boxes_out}
 
@@ -273,6 +329,7 @@ class Comp(BaseModel):
     chars: int = 0  # text pieces: how many characters (never the text itself)
     tw: int = 0  # text pieces: how wide the words actually run (px), often narrower than the box
     tx: int = 0  # text pieces: where the words start inside the box (px from its left edge)
+    media: str = ""  # images: img / svg / video / canvas (3D, WebGL) / picture / mockup (an app screen in HTML) / div
     sel: str | None = None  # rebuilt page only: a stable selector inside its section
     i: int | None = None  # index within its section (data-cs-comp / data-cs-ref attribute)
 
@@ -308,7 +365,7 @@ def merge_blocks(per_block: dict[str, list[dict]], blocks: list[dict], sources: 
     """Components of a section made of several reader blocks, positioned relative to the section box.
     `widened`: block boxes as COMPONENTS_JS returned them (grown sideways to cover their pieces)."""
     picked = [{**blocks[i]["features"], **{k: v for k, v in ((widened or {}).get(str(blocks[i]["features"].get("index"))) or {}).items()
-                                         if k in ("left", "width")}}
+                                         if k in ("left", "width", "band", "bg", "page")}}
               for i in sources if 0 <= i < len(blocks)]
     if not picked:
         return [], None
@@ -320,7 +377,12 @@ def merge_blocks(per_block: dict[str, list[dict]], blocks: list[dict], sources: 
     for f in picked:
         for c in per_block.get(str(f.get("index")), []):
             out.append({**c, "x": c["x"] + f.get("left", 0) - left, "y": c["y"] + f.get("top", 0) - top})
-    return out, {"top": top, "left": left, "width": right - left, "height": bottom - top}
+    band = sum(bool(f.get("band")) for f in picked) > len(picked) / 2
+    paints = [f["bg"] for f in picked if f.get("bg")]
+    bg = max(set(paints), key=paints.count) if paints else None
+    page = next((f["page"] for f in picked if f.get("page")), None)
+    return out, {"top": top, "left": left, "width": right - left, "height": bottom - top, "band": band,
+                 "bg": bg, "page": page}
 
 
 # ------------------------------------------------------------------ matching
@@ -436,10 +498,10 @@ def section_score(sid: str, ref: list[Comp], built: list[Comp], ref_box: dict, b
             out[c.kind] += 1
         return dict(out)
 
-    diffs = []
-    for p in pairs:
-        if p.diffs:
-            diffs.append(f"{KIND_LABEL[p.ref.kind]}{' h' + str(p.ref.level) if p.ref.level else ''}: " + ", ".join(p.diffs))
+    # The same difference on several pieces reads once, with how many (and stays a unique line).
+    same = Counter(f"{KIND_LABEL[p.ref.kind]}{' h' + str(p.ref.level) if p.ref.level else ''}: " + ", ".join(p.diffs)
+                   for p in pairs if p.diffs)
+    diffs = [line + (f" (×{n})" if n > 1 else "") for line, n in same.items()]
     for kind, n in count(missing).items():
         diffs.append(f"thiếu {n} {KIND_LABEL[kind].lower()} so với trang mẫu")
     for kind, n in count(extra).items():

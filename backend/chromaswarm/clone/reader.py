@@ -20,6 +20,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright
+
+from chromaswarm.playwright_engine.style_dna_scraper import goto_ready
 from pydantic import BaseModel
 
 from chromaswarm.agents.planner import Interactive, Section
@@ -57,6 +59,11 @@ class CloneAnalysis(BaseModel):
     # computed style only) — what the factory cursors tune to and the 1:1 acceptance compares against.
     boxes: dict[str, dict] = {}
     components: dict[str, list[dict]] = {}
+    signals: str = ""  # what the page says it is for (classification only, never stored in the plan or rebuilt)
+    # CLONE_BRIEF.md inputs (measurements only, no URLs or words): painted backgrounds (gradients, blur,
+    # glows) and every picture / icon with its shown and file size.
+    backgrounds: list[dict] = []
+    media: list[dict] = []
 
 
 # ------------------------------------------------------------------ classification
@@ -217,6 +224,10 @@ def sections_from_blocks(blocks: list[dict]) -> list[Section]:
         i, block = idx[0], blocks[idx[0]]
         structure = forced or classify(block, i, len(blocks))
         sid = SECTION_IDS.get(structure) or ("hero" if structure in HERO_STRUCTURES else structure)
+        # Rows that open and close are an FAQ only when they ask questions; otherwise a list of features.
+        feature_rows = structure == "accordion" and block["features"].get("questions", 3) < 2
+        if feature_rows:
+            sid = "feature-accordion"
         if sid in used:
             n = 2
             while f"{sid}-{n}" in used:
@@ -228,7 +239,7 @@ def sections_from_blocks(blocks: list[dict]) -> list[Section]:
             images = max(images, block["features"].get("logos", 0))
         where = (f"section #{i + 1}" if len(idx) == 1 else f"section #{i + 1}–#{idx[-1] + 1} (gộp {len(idx)} khối ảnh liên tiếp)")
         sections.append(Section(
-            id=sid, name=NAMES[structure], structure=structure, count=images, sources=idx,
+            id=sid, name="Tính năng mở/đóng" if feature_rows else NAMES[structure], structure=structure, count=images, sources=idx,
             motion=list(dict.fromkeys(m for j in idx for m in blocks[j]["features"].get("motion", []))),
             content=(f"Dựng lại từ {where} của trang mẫu ({sum(blocks[j]['features']['height'] for j in idx)}px cao)"
                      + (" — chưa có mẫu đúng kiểu, dựng bằng khối nội dung gần nhất (§2.5 quy tắc 4)"
@@ -244,7 +255,7 @@ def sections_from_blocks(blocks: list[dict]) -> list[Section]:
 
 # ------------------------------------------------------------------ style -> pillars
 
-SERIF_HINTS = ("serif", "playfair", "garamond", "times", "georgia", "lora", "fraunces", "cormorant", "merriweather")
+from chromaswarm.clone.fonts import SERIF_HINTS  # noqa: E402  (one list: fonts.py also picks the stand-ins)
 
 
 def derive_pillars(dna: StyleDNA, sections: list[Section], heading_font: str | None) -> dict[str, str]:
@@ -306,13 +317,19 @@ async def analyse(url: str, owned: bool, width: int = 1440, height: int = 900) -
         browser = await pw.chromium.launch()
         try:
             page = await browser.new_page(viewport={"width": width, "height": height})
-            await page.goto(url, wait_until="load", timeout=45_000)
+            await goto_ready(page, url)
             with contextlib.suppress(Exception):
                 await page.wait_for_load_state("networkidle", timeout=8_000)
             # Motion is read by its own step afterwards (clone/motion_check.py), on a fresh page.
             with contextlib.suppress(Exception):
                 await page.evaluate(SETTLE_JS)
             raw = await page.evaluate(READER_JS, owned)
+            with contextlib.suppress(Exception):
+                raw["signals"] = (await page.evaluate(SIGNALS_JS))[:4000]
+            with contextlib.suppress(Exception):
+                raw["backgrounds"] = await page.evaluate(BACKGROUNDS_JS)
+            with contextlib.suppress(Exception):
+                raw["media"] = await page.evaluate(MEDIA_JS)
             dna = analyze(await collect(page, url))
             raw["components"] = {}
             with contextlib.suppress(Exception):
@@ -322,9 +339,10 @@ async def analyse(url: str, owned: bool, width: int = 1440, height: int = 900) -
                 raw["components"], raw["component_boxes"] = found["comps"], found["boxes"]
         finally:
             await browser.close()
-    families = {f for f in (raw.get("heading_font"), raw.get("body_font")) if f}
+    families = list(dict.fromkeys(f for f in (raw.get("heading_font"), raw.get("body_font")) if f))
     found = await asyncio.gather(*(asyncio.to_thread(resolve_font_cached, f) for f in families))
-    return build_analysis(raw, dna, owned, fonts={src.family: src for src in found})
+    # Keyed by the family the page asked for (a licensed one resolves to a free stand-in of another name).
+    return build_analysis(raw, dna, owned, fonts=dict(zip(families, found)))
 
 
 def prepare_blocks(raw: dict) -> tuple[list[dict], list[str]]:
@@ -352,8 +370,8 @@ def build_analysis(raw: dict, dna: StyleDNA, owned: bool, fonts: dict[str, FontS
             css_url=google_css_url([family]) if family in VIETNAMESE_FONTS else None,
             vietnamese=family in VIETNAMESE_FONTS, fallback=fallback_for(family))
         if src.provider:
-            kept[key] = family
-            if all(s["family"] != family for s in sources):
+            kept[key] = src.family  # the font itself, or the free stand-in for a licensed one
+            if all(s["family"] != src.family for s in sources):
                 sources.append(src.model_dump())
         if (note := font_note(src)) and note not in notes:
             notes.append(note)
@@ -371,13 +389,24 @@ def build_analysis(raw: dict, dna: StyleDNA, owned: bool, fonts: dict[str, FontS
             if box:
                 boxes[sec.id] = box
                 pieces[sec.id] = found
+    # A header that floats over the section below it (fixed / absolute, the hero starting under it): the rebuild
+    # keeps it floating, or everything in that section moves down by the header's height.
+    header = next((s for s in sections if s.structure == "sticky-bar" and s.id in boxes), None)
+    if header:
+        hb = boxes[header.id]
+        below = [b for k, b in boxes.items() if k != header.id and b.get("top", 0) < hb.get("top", 0) + hb.get("height", 0)
+                 and b.get("top", 0) + b.get("height", 0) > hb.get("top", 0) + hb.get("height", 0)]
+        if below:
+            hb["overlay"] = True
     if not owned:  # structure clones are rebuilt from the reference's own layout (owned ones map their copy by kind)
         from chromaswarm.agents.planner import Interactive
         from chromaswarm.clone.components import comps as as_comps
         from chromaswarm.clone.layout import usable
         from chromaswarm.developer.measured import TEMPLATE_ONLY, measured_interactive
         for sec in sections:
-            if sec.id in pieces and sec.structure not in TEMPLATE_ONLY and usable(as_comps(pieces[sec.id])):
+            pictured = any(c.get("kind") == "image" for c in pieces.get(sec.id, []))
+            allowed = sec.structure not in TEMPLATE_ONLY or sec.structure == "accordion" or pictured
+            if sec.id in pieces and allowed and usable(as_comps(pieces[sec.id])):
                 sec.layout, sec.layout_box = pieces[sec.id], boxes[sec.id]
                 sec.content += " — dựng theo đúng bố cục component đo được"
                 sec.interactive = [Interactive(id=a, role=b, behavior=c) for a, b, c in measured_interactive(sec)]
@@ -385,7 +414,8 @@ def build_analysis(raw: dict, dna: StyleDNA, owned: bool, fonts: dict[str, FontS
                          content=page_content(raw, sections) if owned else None, notes=notes, dna=dna,
                          content_width=content_width, fonts=sources, lang=raw.get("lang"),
                          motion=raw.get("motion") or {}, media_share=float(raw.get("media_share") or 0),
-                         boxes=boxes, components=pieces, **kept)
+                         boxes=boxes, components=pieces, signals=raw.get("signals", ""),
+                         backgrounds=raw.get("backgrounds") or [], media=raw.get("media") or [], **kept)
 
 
 # ------------------------------------------------------------------ what the user is told
@@ -437,21 +467,87 @@ def clone_limits(a: CloneAnalysis) -> list[str]:
 
 
 _KIND_WORDS = [
-    (Domain.PORTFOLIO, r"portfolio|designer|developer|photograph|illustrat|freelanc|resume|\bcv\b|nhà thiết kế|nhiếp ảnh"),
-    (Domain.BOOKING, r"booking|book now|reserv|appointment|spa|salon|clinic|hotel|đặt lịch|đặt phòng|đặt bàn"),
+    (Domain.SAAS, r"\bapi\b|\bsdk\b|\bdocs\b|documentation|for developers|developer platform|pricing|sign up|get started|"
+                  r"start for free|free trial|dashboard|integrat|software|platform|\bapp\b|cloud|\bai\b|changelog|"
+                  r"enterprise|deploy|infrastructure|workflow|automat|phần mềm"),
+    (Domain.PORTFOLIO, r"portfolio|my work|selected work|about me|hire me|resume|\bcv\b|freelanc|photograph|illustrat|"
+                       r"i'm a|i am a|designer\b|nhà thiết kế|nhiếp ảnh"),
+    (Domain.BOOKING, r"booking|book now|reserv|appointment|spa\b|salon|clinic|hotel|đặt lịch|đặt phòng|đặt bàn"),
     (Domain.EDTECH, r"course|academy|learn|class|school|khóa học|học online|đào tạo"),
-    (Domain.ECOMMERCE, r"shop|store|cart|buy|theme|template|cửa hàng|mua"),
-    (Domain.SAAS, r"software|platform|app\b|api|cloud|ai\b|developer platform|sign up|dashboard|phần mềm"),
+    (Domain.ECOMMERCE, r"shop|store|cart|add to bag|checkout|free shipping|cửa hàng|giỏ hàng|mua ngay"),
 ]
+
+BACKGROUNDS_JS = r"""() => {
+  // Backgrounds the page paints itself (no picture file): gradients, glows, blurred glass, giant faint type.
+  const out = [], seen = new Set();
+  for (const el of document.querySelectorAll("body *")) {
+    if (out.length >= 40) break;
+    const r = el.getBoundingClientRect();
+    if (r.width < 12 || r.height < 12) continue;
+    const cs = getComputedStyle(el);
+    const grad = /gradient\(/.test(cs.backgroundImage) ? cs.backgroundImage : "";
+    const glass = cs.backdropFilter && cs.backdropFilter !== "none" ? cs.backdropFilter : "";
+    const blur = /blur\(/.test(cs.filter) ? cs.filter : "";
+    const faint = parseFloat(cs.fontSize) >= 120 && (el.innerText || "").trim() && /rgba\([^)]*,\s*0?\.0\d\)/.test(cs.color);
+    if (!grad && !glass && !(blur && grad) && !faint) continue;
+    const kind = faint ? "faint-type" : glass && !grad ? "glass" : /radial-gradient/.test(grad) ? "glow" : "gradient";
+    const key = kind + (grad || glass).replace(/[\d.]+px/g, "") + Math.round(r.width / 50);
+    if (seen.has(key) && kind !== "faint-type") continue;
+    seen.add(key);
+    out.push({ kind, top: Math.round(r.top + scrollY), left: Math.round(r.left), w: Math.round(r.width), h: Math.round(r.height),
+               css: (grad || "").slice(0, 220), glass: glass.slice(0, 60), blur: blur.slice(0, 40),
+               skew: /matrix\(1, 0, -?0\.\d+/.test(cs.transform), tf: cs.transform === "none" ? "" : cs.transform.slice(0, 120),
+               opacity: +cs.opacity,
+               font_px: faint ? Math.round(parseFloat(cs.fontSize)) : 0 });
+  }
+  return out;
+}"""
+
+MEDIA_JS = r"""() => {
+  // Every picture and icon: kind, shown box, file size, and which file it repeats (an index, never the URL).
+  const files = new Map(), out = [];
+  for (const m of document.querySelectorAll("img, svg, video, canvas, picture > source + img, [style*='background-image']")) {
+    if (out.length >= 160) break;
+    if (m.tagName !== "svg" && m.closest("svg")) continue;
+    if (m.tagName === "svg" && m.parentElement && m.parentElement.closest("svg")) continue;
+    const r = m.getBoundingClientRect();
+    if (r.width < 8 || r.height < 8 || !m.checkVisibility({ opacityProperty: true })) continue;
+    const src = m.currentSrc || m.src || (m.tagName === "DIV" ? getComputedStyle(m).backgroundImage : "") || "";
+    let file = null;
+    if (src) { if (!files.has(src)) files.set(src, files.size); file = files.get(src); }
+    const kind = m.tagName === "IMG" ? "img" : m.tagName === "svg" ? "svg" : m.tagName === "VIDEO" ? "video"
+      : m.tagName === "CANVAS" ? "canvas" : "background";
+    out.push({ kind, top: Math.round(r.top + scrollY), left: Math.round(r.left), w: Math.round(r.width), h: Math.round(r.height),
+               nw: m.naturalWidth || null, nh: m.naturalHeight || null, file,
+               icon: r.width <= 48 && r.height <= 48, logo: !!m.closest("header, nav, footer, a[href='/']") && r.width <= 200 && r.height <= 80,
+               decorative: m.getAttribute("aria-hidden") === "true" || m.getAttribute("alt") === "" });
+  }
+  return out;
+}"""
+
+SIGNALS_JS = r"""() => {
+  // Words that say what the site is for — meta description, menu labels, the main headline, calls to action.
+  // Read only to classify the page; never stored or rebuilt.
+  const t = s => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const meta = t(document.querySelector('meta[name="description"], meta[property="og:description"]')?.content);
+  const nav = [...document.querySelectorAll("header a, nav a")].slice(0, 30).map(a => t(a.textContent)).join(" | ");
+  const h1 = t(document.querySelector("h1")?.textContent);
+  const ctas = [...document.querySelectorAll("a, button")].filter(e => e.getBoundingClientRect().top < innerHeight * 1.2)
+    .slice(0, 40).map(e => t(e.textContent)).join(" | ");
+  return [document.title, meta, nav, h1, ctas].map(t).join(" || ");
+}"""
 
 
 def guess_domain(a: CloneAnalysis) -> Domain:
-    """The kind of site, from the reference's layout (a priced product grid) and its page title.
+    """The kind of site, scored from what the page says it is for (title, meta description, menu, headline,
+    calls to action — `a.signals`) plus its layout. Each domain's keywords are counted; the title counts double.
     Used only to pick sample copy and suggested pages; the user can change everything at B7."""
-    if any(s.structure in ("grid-4", "sidebar-grid-4") for s in a.sections):
-        return Domain.ECOMMERCE
     title = (a.title or "").lower()
+    text = (a.signals or "").lower()
+    scores: dict[Domain, float] = {}
     for domain, words in _KIND_WORDS:
-        if re.search(words, title):
-            return domain
-    return Domain.OTHER
+        scores[domain] = 2 * len(re.findall(words, title)) + len(re.findall(words, text))
+    if any(s.structure in ("grid-4", "sidebar-grid-4") for s in a.sections):
+        scores[Domain.ECOMMERCE] = scores.get(Domain.ECOMMERCE, 0) + 1.5  # a priced grid, unless software says louder
+    best = max(scores, key=lambda d: scores[d])
+    return best if scores[best] > 0 else Domain.OTHER

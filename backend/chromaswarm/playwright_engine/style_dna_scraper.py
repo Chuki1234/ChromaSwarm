@@ -87,12 +87,22 @@ SETTLE_JS = """async () => {
 }"""
 
 
-async def open_settled(page: Page, url: str, timeout_ms: int = 45_000) -> None:
-    """Open a page robustly: wait for `load`, give the network a short chance to go idle (pages with
-    analytics, video or live connections never do), then scroll through it once."""
+async def goto_ready(page: Page, url: str, timeout_ms: int = 45_000, load_ms: int = 20_000) -> None:
+    """Open a page as soon as its HTML is in, then give `load` up to `load_ms`: some sites keep a resource
+    loading forever (a video, a long poll) and never fire it, although the page is long on screen."""
     import contextlib
 
-    await page.goto(url, wait_until="load", timeout=timeout_ms)
+    await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+    with contextlib.suppress(Exception):
+        await page.wait_for_load_state("load", timeout=load_ms)
+
+
+async def open_settled(page: Page, url: str, timeout_ms: int = 45_000) -> None:
+    """Open a page robustly: wait for `load` (≤20s after the HTML), give the network a short chance to go idle
+    (pages with analytics, video or live connections never do), then scroll through it once."""
+    import contextlib
+
+    await goto_ready(page, url, timeout_ms)
     with contextlib.suppress(Exception):
         await page.wait_for_load_state("networkidle", timeout=8_000)
     with contextlib.suppress(Exception):

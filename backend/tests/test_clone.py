@@ -386,13 +386,16 @@ def test_reference_fonts_are_kept_with_a_vietnamese_fallback():
     share = resolve_font("Switzer", fake({"api.fontshare.com": "@font-face {}"}))
     assert share.provider == "fontshare" and "fontshare.com" in share.css_url
     gone = resolve_font("Brand Sans", fake({}))
-    assert gone.provider is None and "font riêng" in font_note(gone) and font_note(resolve_font("Inter", google_vi)) is None
+    # A licensed font no free host serves: the closest free font of its kind stands in, and the user is told.
+    assert (gone.family, gone.original) == ("Be Vietnam Pro", "Brand Sans") and "font riêng" in font_note(gone)
+    assert font_note(resolve_font("Inter", google_vi)) is None
+    assert resolve_font("Inter Website", google_vi).family == "Inter"  # a site-renamed copy of a free font
 
     raw = {"url": "https://x.vn", "title": "X", "heading_font": "Instrument Serif", "body_font": "Brand Sans",
            "blocks": [feat(tag="header", nav=True, height=80, index=0), feat(h1=True, index=1), feat(tag="footer", links=6, index=2)]}
     a = build_analysis(raw, StyleDNA_stub(), owned=False, fonts={"Instrument Serif": latin, "Brand Sans": gone})
-    assert a.heading_font == "Instrument Serif" and a.body_font is None  # unloadable body font: preset stands in
-    assert [f["family"] for f in a.fonts] == ["Instrument Serif"]
+    assert a.heading_font == "Instrument Serif" and a.body_font == "Be Vietnam Pro"  # licensed body font: free stand-in
+    assert [f["family"] for f in a.fonts] == ["Instrument Serif", "Be Vietnam Pro"]
     assert any("Playfair Display" in n for n in a.notes) and any("Brand Sans" in n for n in a.notes)
 
 
@@ -412,7 +415,8 @@ def test_picture_led_reference_warns_and_takes_the_users_photos_and_words(tmp_pa
     assert [s.count for s in image_slots(secs)] == [1, 1, 4]
     assert needs_content(secs, 0.4, portfolio=False) and needs_content(secs[:2], 0.0, portfolio=True)
     assert not needs_content(secs[:2], 0.1, portfolio=False)
-    assert not needs_content(secs, 0.11, portfolio=False) and needs_content(secs, 0.16, portfolio=False)  # 6 slots
+    # Many picture slots alone never ask (a software page's screenshots stay exact-size skeletons).
+    assert not needs_content(secs, 0.24, portfolio=False) and needs_content(secs, 0.36, portfolio=False)
 
     png = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * 64).decode()
     names = save_images([{"slot": "hero", "data": png}, {"slot": "x", "data": "data:text/html;base64,PGI+"},
@@ -451,3 +455,16 @@ def test_skipping_the_content_step_keeps_the_template_samples(tmp_path):
     p = asyncio.run(runner.answer("pc2", {"images": [], "texts": {}}))["pipeline"]
     assert p.step.value == "B7" and p.clone.content_asked and not p.clone.user_images
     assert build_copy(p).brand.startswith("[")
+
+
+def test_clone_spec_is_built_at_b2_and_a_section_skipped_at_b7_leaves_the_plan(tmp_path):
+    runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=fake_reader()))
+    snap = asyncio.run(drive(runner, "cs1", ["clone", {"url": "gom-moc.vn", "prompt": PROMPT, "owned": False}]))
+    p = snap["pipeline"]
+    assert p.clone.spec and any(i["id"] == "section:grid-4" for i in p.clone.spec["items"])
+    assert "CloneSpec" in p.clone.brief and (tmp_path / "cs1" / "artifacts" / "CLONE_BRIEF.md").exists()
+    snap = asyncio.run(runner.answer("cs1", {"spec": {"section:grid-4": "skip"}}))
+    p = snap["pipeline"]
+    assert p.step is Step.B7_APPROVAL and "Lưới sản phẩm: không dựng" in snap["notice"]
+    assert [s.id for s in page_sections(p)] == ["site-header", "hero", "site-footer"]
+    assert "grid-4" not in p.plan_md and "⛔" in p.clone.brief

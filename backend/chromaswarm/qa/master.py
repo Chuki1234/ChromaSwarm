@@ -33,6 +33,10 @@ from chromaswarm.playwright_engine.swarm import Agent, ColorReading, Rect, Swarm
 PROBE_JS = Path(__file__).with_name("qa_probe.js").read_text(encoding="utf-8")
 BREAKPOINTS = [(1440, 900, "Desktop"), (1024, 768, "Laptop"), (768, 1024, "Tablet"), (375, 812, "Mobile")]
 MIN_TAP = 48  # §5 test 1: 48px (8pt grid), above WCAG's 44px recommendation
+# Clone mode rebuilds someone's look on purpose (decision 11, standards §2.5): the house-style rules of
+# chapter 2/6 that a reference may break by design are not failures there. Accessibility rules stay
+# (contrast, control borders, focus, hover, overflow, collisions, tap targets on phones, broken images).
+CLONE_WAIVED = {"font-weights", "slop-2-triple-cards", "slop-3-centered", "slop-7-cta", "long-text", "number-format"}
 MIN_TAP_GAP = 8
 MOBILE_MARGIN = 16
 CONTROL_BORDER_MIN = 3.0  # §2.1 --border-strong
@@ -389,7 +393,9 @@ def component_failures(comp: dict, page_text: str) -> list[QaFailure]:
         if max(edge, fill) < CONTROL_BORDER_MIN:
             fails.append(QaFailure(test=4, rule="control-border", selector=c["selector"],
                                    detail=f"viền ô nhập chỉ đạt {max(edge, fill):.2f}:1 (cần ≥ 3:1, §2.1 --border-strong)",
-                                   heal=f"{c['selector']} {{ border: 1px solid var(--border-strong, currentColor); }}"))
+                                   # The control's own text colour already passes against
+                                   # this background; the token may not (a dark band, a tinted card).
+                                   heal=f"{c['selector']} {{ border: 1px solid currentColor; }}"))
         if c["placeholder"] and not c["visible_label"] and not (c["type"] == "search" and c["aria_label"]):
             fails.append(QaFailure(test=4, rule="placeholder-as-label", selector=c["selector"],
                                    detail=f"ô nhập chỉ có placeholder “{c['placeholder'][:30]}”, không có nhãn hiển thị (§6.1)"))
@@ -446,7 +452,8 @@ def component_failures(comp: dict, page_text: str) -> list[QaFailure]:
 # ------------------------------------------------------------------ runner
 
 async def run_master_qa(page: Page, swarm: SwarmOverlay, scale: TypeScale | None = None, *,
-                        errors: list[str] | None = None, instant: bool = False, creative: bool = False) -> QaReport:
+                        errors: list[str] | None = None, instant: bool = False, creative: bool = False,
+                        clone: bool = False) -> QaReport:
     errors = errors if errors is not None else []
     await page.set_viewport_size({"width": 1440, "height": 900})
     await page.evaluate("() => scrollTo(0, 0)")
@@ -456,6 +463,8 @@ async def run_master_qa(page: Page, swarm: SwarmOverlay, scale: TypeScale | None
              await test_scroll(page, swarm),
              await test_breakpoints(page, swarm),
              await test_design_compliance(page, swarm, scale, creative)]
+    if clone:
+        tests = [t.model_copy(update={"failures": [f for f in t.failures if f.rule not in CLONE_WAIVED]}) for t in tests]
     report = QaReport(tests=tests)
     for f in report.failures[:30]:
         await swarm.flag(f.selector, f"B11 · {f.detail}"[:90])

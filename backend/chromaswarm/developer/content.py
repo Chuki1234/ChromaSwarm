@@ -70,6 +70,7 @@ class PageCopy(BaseModel):
     learn_href: str = ""  # the feature showcase's "Tìm hiểu thêm": the page's FAQ, else no link
     footer_links: list[tuple[str, str]] = []  # shop footer help links that lead somewhere (content.footer_links)
     order: OrderSpec | None = None  # the form the main button opens (developer/order.py)
+    taken: list[str] = []  # Clone measured sections: lines earlier sections of the page already show
 
 
 DEFAULTS: dict[Domain, dict] = {
@@ -487,6 +488,9 @@ def _build_copy(state: PipelineState) -> PageCopy:
     clone = state.clone
     if state.selected_page == "clone" and clone and clone.owned and clone.content:
         return owned_clone_copy(copy, clone.content)
+    # A Clone never adds pictures the reference did not have: its picture slots stay exact-size skeletons
+    # (the Art placeholder) until the user brings their own (B4 uploads).
+    is_clone = state.selected_page == "clone" and clone is not None
     own = [public_path(f) for f in shared_photos(state)]
     if state.domain is Domain.SAAS and not own_files(state, "product-image") and state.selected_page != "clone":
         copy = copy.model_copy(update={"product_ui": True})
@@ -500,7 +504,7 @@ def _build_copy(state: PipelineState) -> PageCopy:
         copy = copy.model_copy(update={"images": [public_path(x["url"]) if x["url"].startswith("uploads/") else x["url"]
                                                   for x in state.page_photos],
                                        "footer_line": f"{copy.footer_line} {credit}".strip() if credit else copy.footer_line})
-    elif photos := stock_photos(f"{state.raw_prompt or ''} {brand} {state.pillars.scope or ''}", state.domain):
+    elif not is_clone and (photos := stock_photos(f"{state.raw_prompt or ''} {brand} {state.pillars.scope or ''}", state.domain)):
         copy = copy.model_copy(update={"images": photos})
     if state.page_copy and lang == "vi":  # written (in Vietnamese) by the LLM copywriter and validated there
         copy = apply_written_copy(copy, state.page_copy)

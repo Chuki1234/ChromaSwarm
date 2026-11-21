@@ -11,6 +11,8 @@ import contextlib
 from collections import OrderedDict
 
 from playwright.async_api import async_playwright
+
+from chromaswarm.playwright_engine.style_dna_scraper import goto_ready
 from pydantic import BaseModel
 
 CACHE_SIZE = 24
@@ -31,7 +33,7 @@ async def page_preview(url: str, width: int = 1280, height: int = 800) -> PagePr
         browser = await pw.chromium.launch()
         try:
             page = await browser.new_page(viewport={"width": width, "height": height})
-            await page.goto(url, wait_until="load", timeout=25_000)
+            await goto_ready(page, url, 25_000, 10_000)
             with contextlib.suppress(Exception):  # fonts / hero images: a short wait, never the full settle
                 await page.wait_for_load_state("networkidle", timeout=3_000)
             shot = await page.screenshot(type="jpeg", quality=70)

@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from chromaswarm.agents.planner import Section
 
-MEDIA_SHARE_HIGH = 0.25  # a quarter of the page area is pictures
+MEDIA_SHARE_HIGH = 0.35  # over a third of the page area is pictures
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_IMAGES = 24
 _IMAGE_EXT = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/avif": ".avif", "image/gif": ".gif"}
@@ -63,7 +63,9 @@ def needs_content(sections: list[Section], media_share: float, portfolio: bool) 
     pictures = sum(sl.count for sl in image_slots(sections))
     # Many picture slots alone is not enough (feature cards with small illustrations): pictures must also
     # take a real share of the page.
-    return portfolio or media_share >= MEDIA_SHARE_HIGH or (pictures >= 6 and media_share >= 0.15)
+    # Only pages whose look IS their photos (portfolios, galleries): elsewhere the rebuild keeps exact-size
+    # skeletons where the owner's pictures were, and nobody is asked for product screenshots.
+    return portfolio or media_share >= MEDIA_SHARE_HIGH
 
 
 def warning(sections: list[Section], media_share: float) -> str:

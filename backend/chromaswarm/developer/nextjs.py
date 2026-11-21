@@ -281,17 +281,18 @@ def wireframe_file(spec: DesignSpec | None) -> WorkspaceFile:
 _HREF = re.compile(r"^(/|#|https?:|mailto:|tel:)")
 
 
-def skeleton(value):
+def skeleton(value, salt: int = 0):
     """Content for the wireframe pass: each word becomes a grey bar of about its length (links keep
-    their targets), so the layout is judged before any copy is in."""
+    their targets), so the layout is judged before any copy is in. Items of a list get a different
+    number of invisible zero-width spaces, so bars that look alike stay distinct (React keys)."""
     if isinstance(value, str):
         if not value or _HREF.match(value):
             return value
-        return " ".join("▬" * max(2, min(len(w) // 2 + 1, 6)) for w in value.split())
+        return " ".join("▬" * max(2, min(len(w) // 2 + 1, 6)) for w in value.split()) + "\u200b" * salt
     if isinstance(value, list):
-        return [skeleton(v) for v in value]
+        return [skeleton(v, i) for i, v in enumerate(value)]
     if isinstance(value, dict):
-        return {k: skeleton(v) for k, v in value.items()}
+        return {k: skeleton(v, salt) for k, v in value.items()}
     return value
 
 
@@ -1164,7 +1165,8 @@ def _measured_or(template):
             return template(s, c)
         jsx, css = built
         inner = f"{jsx}\n        <style>{{{json.dumps(css)}}}</style>"
-        return _component(s, _root(s, "s-measured", inner))
+        band = " s-band" if (s.layout_box or {}).get("band") else ""  # the reference painted it the other way round
+        return _component(s, _root(s, "s-measured" + band, inner))
     return render
 
 

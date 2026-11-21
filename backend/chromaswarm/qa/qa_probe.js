@@ -384,7 +384,10 @@
                            control: /^(BUTTON|A)$/.test(el.tagName) || !!el.closest("button") });
         }
         if (cs.textAlign === "center" && ownText(el)) {
-          const lines = Math.round(el.getBoundingClientRect().height / (px(cs.lineHeight) || px(cs.fontSize) * 1.5));
+          // Count the real line boxes of the text: a one-line link padded to a 48px tap target is not 3 lines.
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          const lines = new Set([...range.getClientRects()].filter(q => q.width > 1).map(q => Math.round(q.top / 4))).size;
           if (lines >= 3) centered.push({ selector: cssPath(el), lines });
         }
         if (cs.boxShadow !== "none") {

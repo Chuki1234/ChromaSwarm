@@ -13,6 +13,7 @@ works on a copy of the state and performs at most one interrupt.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,10 @@ from chromaswarm.developer.uploads import resolve as resolve_upload
 from chromaswarm.clone.fidelity import render_markdown as render_fidelity
 from chromaswarm.clone.components import render_compare
 from chromaswarm.clone.motion_check import inspect_motion
+from chromaswarm.clone.analysis import build as top_down
+from chromaswarm.clone.brief_doc import build_brief
+from chromaswarm.clone.sketch import check_reading
+from chromaswarm.clone.spec import CloneSpec, apply_overrides, build_spec
 from chromaswarm.clone.motion_check import summary as motion_check_summary
 from chromaswarm.qa.critic import render_markdown
 from chromaswarm.qa.master import heal_css
@@ -106,6 +111,7 @@ class Deps(BaseModel):
     clone_reader: Any = None  # async (url, owned) -> CloneAnalysis; None = real Playwright reader
     # async (url, boxes) -> MotionReport; None = real Playwright check, skipped when a fake reader is injected
     motion_check: Any = None
+    sketch_check: Any = None  # async (url, boxes, components, out_dir) -> dict; None = real check with the real reader
     build: Any = None  # BuildRuntime for B8-B10; None stops after approval (B1-B7 only)
     brief_reader: Any = None  # (prompt) -> agents.brief.Brief | None; None = never read a brief
     copywriter: Any = None  # (state, base PageCopy) -> validated copy dict | None; None = rule-based copy
@@ -322,6 +328,8 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         operate it with Playwright to find and time its effects."""
         if p.clone and p.clone.analysed and not p.clone.motion_checked:
             return await b2_motion(p)
+        if p.clone and p.clone.analysed and not p.clone.sketched:
+            return await b2_sketch(p)
         reader = deps.clone_reader or analyse_reference
         try:
             a = await reader(p.clone.url, p.clone.owned)
@@ -334,7 +342,8 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             "pillars": a.pillars, "heading_font": a.heading_font, "body_font": a.body_font,
             "content": a.content, "notes": a.notes,
             "content_width": a.content_width, "fonts": a.fonts, "lang": a.lang, "media_share": a.media_share,
-            "boxes": a.boxes, "components": a.components})
+            "boxes": a.boxes, "components": a.components,
+            "style": a.dna.model_dump(mode="json") if a.dna else None, "backgrounds": a.backgrounds, "media": a.media})
         if not p.clone.described:
             p.domain = guess_domain(a)  # sample copy and suggested pages follow the kind of site read
         pages, _ = agent.sitemap_for(p.domain)
@@ -347,6 +356,7 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             p.clone.motion_checked = False  # next pass: the effect check (b2_motion), then B3
         else:
             p.clone.motion_checked = True
+            analyse_top_down(p)
             p.advance()
         kind = "cấu trúc, chữ và ảnh (trang của bạn)" if p.clone.owned else "cấu trúc và phong cách (chữ, ảnh là của bạn)"
         names = ", ".join(sec.name for sec in a.sections)
@@ -389,8 +399,91 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         p.clone.sections = sections
         p.clone.motion_checked = True
         p.clone.motion_report = report.model_dump()
+        if sketch_check():
+            p.clone.sketched = False  # next pass: the sketch (draw what was read, check it, measure the gaps)
+            return {"pipeline": p, "notice": motion_check_summary(report) + " Tiếp theo: vẽ sketch từ những gì đã đọc và đối chiếu với trang thật."}
+        analyse_top_down(p)
         p.advance()
         return {"pipeline": p, "notice": motion_check_summary(report)}
+
+    def sketch_check():
+        if deps.sketch_check:
+            return deps.sketch_check
+        if deps.clone_reader is not None:
+            return None
+
+        async def real(url, boxes, comps, out):  # the vision model names what the reader could not measure
+            from chromaswarm.qa.critic import vision_chat
+            return await check_reading(url, boxes, comps, out, vision=vision_chat())
+        return real
+
+    async def b2_sketch(p: PipelineState) -> dict:
+        """B2 · sketch: the page drawn from what was read, against a screenshot of it; gaps measured again."""
+        check = sketch_check()
+        notice = ""
+        try:
+            out = deps.artifacts_root / p.session_id / "artifacts" / "sketch"
+            res = await check(p.clone.url, p.clone.boxes, p.clone.components, out)
+            p.clone.components = res.pop("components")
+            sections = []
+            for raw in p.clone.sections:  # measured sections are rebuilt from the completed reading
+                sec = dict(raw)
+                if sec.get("layout") and sec["id"] in p.clone.components:
+                    sec["layout"] = p.clone.components[sec["id"]]
+                sections.append(sec)
+            p.clone.sections = sections
+            p.clone.sketch = res
+            named = [d["seen"]["note"] or d["seen"]["kind"] for d in res.get("described", []) if d.get("seen")]
+            notice = (f"Sketch: Chroma đọc được {res['coverage']:g}% trang"
+                      + (f" (trước khi đo lại {res['coverage_before']:g}%; thêm {res['remeasured']} phần ở {res['gaps']} chỗ đọc thiếu)"
+                         if res.get("gaps") else "")
+                      + (f"; mô hình thị giác nhận ra: {'; '.join(named[:4])}" if named else "")
+                      + ". Xem sketch cạnh ảnh chụp trang thật ở dưới.")
+        except Exception as e:  # never blocks the clone
+            log.warning("sketch failed for %s: %s", p.clone.url, e)
+            p.clone.sketch = {"error": str(e)[:160]}
+            notice = f"Sketch không chạy được ({str(e)[:100]}); dựng theo phần đã đọc."
+        p.clone.sketched = True
+        analyse_top_down(p)
+        p.advance()
+        return {"pipeline": p, "notice": notice}
+
+    def analyse_top_down(p: PipelineState) -> None:
+        """The preparation step's write-up: overview, then the page top-down (clone/analysis.py)."""
+        try:
+            p.clone.analysis = top_down(p.clone, p.domain.value if p.domain else "other", p.clone.sections)
+            write_artifact(p, "ANALYSIS.md", p.clone.analysis)
+        except Exception as e:  # a report never blocks the clone
+            log.warning("analysis failed: %s", e)
+        try:  # what the rebuild copies / replaces / skips (clone/spec.py) — the build steps read it
+            spec = build_spec(p.clone)
+            p.clone.spec = spec.model_dump()
+            apply_spec(p, spec)
+        except Exception as e:
+            log.warning("clone spec failed: %s", e)
+        write_brief(p)
+
+    def apply_spec(p: PipelineState, spec: CloneSpec) -> None:
+        """What the build reads per section: effects to build (an intro on load becomes `reveal`), where each
+        control leads, the painted background layers."""
+        sections = []
+        for raw in p.clone.sections:
+            sec = dict(raw)
+            for effect, params in spec.effects(sec["id"]).items():
+                if effect not in sec.get("motion", []):
+                    sec["motion"] = [*sec.get("motion", []), effect]
+                sec["motion_params"] = {**(sec.get("motion_params") or {}), effect: params}
+            sec["links"] = spec.controls(sec["id"])
+            sec["paint"] = spec.layers(sec["id"])
+            sections.append(sec)
+        p.clone.sections = sections
+
+    def write_brief(p: PipelineState) -> None:
+        try:  # the build team's preparation sheet: concept, sections, spacing, pictures, controls, effects, clone or not
+            p.clone.brief = build_brief(p.clone, p.domain.value if p.domain else "other")
+            write_artifact(p, "CLONE_BRIEF.md", p.clone.brief)
+        except Exception as e:
+            log.warning("clone brief failed: %s", e)
 
     def b2_creative(p: PipelineState) -> dict:
         if not p.brief_read and deps.brief_reader:
@@ -677,9 +770,23 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             text="Đây là bộ 3 tài liệu cho trang này. Bạn duyệt để bắt đầu dựng, hoặc ghi rõ điều muốn đổi.",
         ).model_dump())
         data = answer if isinstance(answer, dict) else {"approve": False, "feedback": str(answer)}
+        changed: list[str] = []
+        if isinstance(data.get("spec"), dict) and p.mode is BuildMode.CLONE and p.clone and p.clone.spec:
+            # The user's decisions on the CloneSpec (e.g. skip a section): the plan and the brief follow.
+            spec = CloneSpec.model_validate(p.clone.spec)
+            changed = apply_overrides(spec, data["spec"])
+            if changed:
+                p.clone.spec = spec.model_dump()
+                apply_spec(p, spec)
+                write_brief(p)
+                project = project_title(p.raw_prompt or "")
+                p.plan_md = render_plan_md(p, build_design_spec(design_inputs(p, project)))
+                write_artifact(p, "PLAN.md", p.plan_md)
         if data.get("approve") is True:
             p.approve_plan()
             return {"pipeline": p, "notice": None}
+        if changed and not (data.get("feedback") or "").strip():
+            return {"pipeline": p, "notice": "Đã cập nhật kế hoạch: " + "; ".join(changed) + "."}
         fb = (data.get("feedback") or "").strip()
         if not fb:
             return {"pipeline": p, "notice": "Bạn ghi rõ điều muốn đổi giúp mình nhé (ví dụ: đổi sang tông tối)."}
@@ -825,7 +932,8 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
                 p.heal_contrast = []
             if p.mode is BuildMode.CLONE and p.clone and p.clone.components and hasattr(deps.build, "set_reference"):
                 # The factory cursors tune each section's components to the reference's (B2 reading).
-                deps.build.set_reference(p.session_id, p.clone.components, p.clone.boxes,
+                built = {s.id for s in sections}  # sections the CloneSpec skips are not compared
+                deps.build.set_reference(p.session_id, {k: v for k, v in p.clone.components.items() if k in built}, p.clone.boxes,
                                          {s.id: s.name for s in sections}, slug)
             to_write = next((s for s in sections if s.id not in p.sections_done), None)
             to_check = next((x for x in p.sections_done if x not in p.sections_checked), None)
@@ -903,9 +1011,24 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             # Designer passes, one per graph pass so the Studio sees each: colour first, then the content.
             try:
                 if "colour" not in p.build_passes:
+                    sketch_note = ""
+                    if p.mode is BuildMode.CLONE and p.clone and p.clone.components and hasattr(deps.build, "sketch_check"):
+                        # The wireframe, sketched like the reference was at B2: does the layout match before colour?
+                        with contextlib.suppress(Exception):
+                            built = {s.id for s in build_context(p)[2]}
+                            res = await deps.build.sketch_check(
+                                p.session_id, {k: v for k, v in p.clone.boxes.items() if k in built},
+                                {k: v for k, v in p.clone.components.items() if k in built},
+                                deps.artifacts_root / p.session_id / "artifacts" / "sketch")
+                            if res:
+                                p.clone.sketch_built = res
+                                low = sorted(res["sections"].items(), key=lambda kv: kv[1])[:3]
+                                sketch_note = (f" Sketch bản dựng khớp {res['score']:g}% sketch trang mẫu"
+                                               + (f", ảnh chụp giống {res['pixel_score']:g}%" if res.get("pixel_score") is not None else "")
+                                               + (" (thấp nhất: " + ", ".join(f"{k} {v:g}%" for k, v in low) + ")" if low else "") + ".")
                     await deps.build.colour(p.session_id)
                     p.build_passes.append("colour")
-                    return {"pipeline": p, "notice": "B10 · Tô màu: hệ màu của DESIGN.md thay cho khung xám của wireframe."}
+                    return {"pipeline": p, "notice": "B10 · Tô màu: hệ màu của DESIGN.md thay cho khung xám của wireframe." + sketch_note}
                 await deps.build.fill_content(p.session_id)
                 p.build_passes.append("content")
                 return {"pipeline": p, "notice": "B10 · Điền nội dung: chữ và ảnh vào từng phần, rồi ghép trang."}
@@ -1036,14 +1159,21 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             return {"pipeline": p, "notice": notice}
         new_rules = [r for r in heal_css(report.failures) if r not in p.heal_rules]
         contrast = [f.reading.model_dump() for f in report.failures if f.reading]
+        clone_accept = p.mode == BuildMode.CLONE and p.clone and getattr(deps.build, "compare", None)
         if not new_rules and not contrast:
             p.escalate_qa(p.qa_failures)
+            if clone_accept:  # still compare with the reference, so the user sees how close it is
+                p.compare_rounds = 2
+                return await b11_accept(p, spec, sections)
             p.advance()
             return {"pipeline": p, "notice": f"B11 · Còn {len(report.failures)} lỗi hệ thống không tự sửa được, "
                                               "chuyển cho bạn xem xét ở bước bàn giao."}
         iteration = len(p.heal_history) + 1
         p.record_qa_failure(p.qa_failures)
         if p.escalated_to_user:  # MAX_HEAL_ITERATIONS reached
+            if clone_accept:
+                p.compare_rounds = 2
+                return await b11_accept(p, spec, sections)
             p.advance()
             return {"pipeline": p, "notice": f"B11 · Đã tự sửa {iteration} vòng, còn {len(report.failures)} lỗi. "
                                               "Chuyển cho bạn quyết định."}
@@ -1176,10 +1306,11 @@ class PipelineRunner:
     (the Studio keeps its session id): the graph is compiled on first use, inside the running loop.
     Without it, sessions live in memory (tests, one-off scripts)."""
 
-    def __init__(self, deps: Deps | None = None, db_path: Path | None = None):
+    def __init__(self, deps: Deps | None = None, db_path: Path | None = None, checkpointer=None):
         self.deps = deps
-        self.db_path = db_path
-        self._graph = None if db_path else build_graph(deps)
+        self.db_path = None if checkpointer is not None else db_path
+        # `checkpointer`: a ready saver (Clone sessions mirrored to Supabase, clone/checkpoints.py)
+        self._graph = None if self.db_path else build_graph(deps, checkpointer=checkpointer)
         self._conn = None
         self._lock = asyncio.Lock()
         self._recovered: set[str] = set()

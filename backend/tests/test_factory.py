@@ -254,8 +254,8 @@ def test_measured_section_places_pieces_at_their_measured_spot_on_desktop_only()
     assert "m-rows" in code and "m-cols" in code and 'data-swarm-id="feature-showcase-btn-' in code
     assert "@media (min-width: 1200px)" in code and "font-size: 64px" in code and "letter-spacing: -2px" in code
     assert "padding-top: 96px" in code and "padding-bottom: 80px" in code  # the reference's own space
-    assert 'ratio="1200 / 520"' in code and "border-radius: 999px" in code
-    assert set(words["feature-showcase"]) >= {"heading", "text", "button", "image_alt"}  # words in content/, editable
+    assert 'width={1200} height={360}' in code and "border-radius: 999px" in code  # skeleton: measured width, height capped (SKEL_MAX), no photo
+    assert set(words["feature-showcase"]) >= {"heading", "text", "button"}  # words in content/, editable
     assert "<h2" in code  # only a hero gets the page's h1
 
 
@@ -263,7 +263,7 @@ def test_interactive_structures_keep_their_template():
     from chromaswarm.agents.planner import Section
     from chromaswarm.developer.measured import measurable
     layout = [comp("heading", 0, 0, 100, 40).model_dump(), comp("text", 0, 60, 100, 40).model_dump()]
-    assert not measurable(Section(id="faq", name="FAQ", structure="accordion", content="x", layout=layout))
+    assert measurable(Section(id="faq", name="FAQ", structure="accordion", content="x", layout=layout))  # rows open/close
     assert measurable(Section(id="site-header", name="H", structure="sticky-bar", content="x", layout=layout))
     assert measurable(Section(id="hero", name="H", structure="split-7-5", content="x", layout=layout))
 
@@ -334,7 +334,238 @@ def test_one_line_and_centred_pieces_stay_one_line_and_centred():
     sec = Section(id="site-footer", name="Footer", structure="footer-columns", content="x", layout=layout,
                   layout_box={"top": 0, "left": 0, "width": 1440, "height": 800})
     code = render_section(sec, build_copy(PipelineState(session_id="s", raw_prompt="x")), "clone", content={}).content
-    head_rule = next(line for line in code.split("\\n") if ".n1 {" in line)
+    head_rule = next(line for line in code.split("\\n") if ".n1 {" in line and "margin" in line)
     assert "white-space: nowrap" in head_rule and "margin-left: auto" in head_rule and "text-align: center" in head_rule
-    body_rule = next(line for line in code.split("\\n") if ".n2 {" in line)
+    body_rule = next(line for line in code.split("\\n") if ".n2 {" in line and "margin" in line)
     assert "nowrap" not in body_rule and "%" in body_rule
+
+
+def test_a_row_that_outgrows_the_page_wraps_instead_of_pushing_controls_off_screen():
+    from chromaswarm.agents.planner import Section
+    from chromaswarm.developer.content import build_copy
+    from chromaswarm.developer.nextjs import render_section
+    from chromaswarm.state_machine.pipeline_state import PipelineState
+    layout = [comp("text", 48, 40, 300, 24, fs=16, chars=20).model_dump(),
+              comp("button", 1240, 30, 150, 48, radius=8, bg="#111111", chars=12).model_dump()]
+    sec = Section(id="cta", name="CTA", structure="full-bleed-band", content="x", layout=layout,
+                  layout_box={"top": 0, "left": 0, "width": 1440, "height": 120})
+    code = render_section(sec, build_copy(PipelineState(session_id="s", raw_prompt="x")), "clone", content={}).content
+    desktop = code.split("@media (min-width: 1200px)")[1]
+    assert ".m-cols { flex-wrap: wrap; }" in desktop and "nowrap" not in desktop  # pieces in a row never run on
+
+
+def test_control_border_heal_uses_the_controls_own_text_colour():
+    import inspect
+    from chromaswarm.qa import master
+    assert "border: 1px solid currentColor;" in inspect.getsource(master)
+
+
+def test_error_colour_reads_on_the_page_in_every_mode():
+    """An invalid field turns its border --danger: it must stand out on the page (QA caught 2.1:1 on cal.com)."""
+    from chromaswarm.engines.color import wcag_contrast
+    from chromaswarm.engines.palette import Mode, generate_palette
+    for seed in ("#e85d4a", "#2238c7", "#f5b400"):
+        for mode in (Mode.LIGHT, Mode.DARK, Mode.WARM_PAPER):
+            p = generate_palette(seed, mode)
+            for bg in ("bg-primary", "bg-surface"):
+                assert wcag_contrast(p.get("danger").color, p.get(bg).color) >= 4.5
+
+
+def test_html_mockups_become_one_picture_and_dark_sections_are_bands():
+    from playwright.async_api import async_playwright
+    from chromaswarm.clone.components import measure_reference
+    labels = "".join(f'<span style="display:block;font-size:11px">Row {i}</span>' for i in range(10))
+    html = f"""<body style="margin:0;background:#fff;font:16px sans-serif">
+    <section style="height:600px;padding:40px">
+      <h2 style="font-size:40px;margin:0">Feature</h2>
+      <div style="width:600px;height:300px;background:#f3f3f3;margin-top:24px">{labels}</div></section>
+    <footer style="height:400px;background:#111;color:#fff;padding:40px"><p>Dark footer</p></footer></body>"""
+
+    async def run():
+        async with async_playwright() as pw:
+            b = await pw.chromium.launch()
+            p = await b.new_page(viewport={"width": 1440, "height": 900})
+            await p.set_content(html)
+            r = await measure_reference(p, [{"key": "a", "top": 0, "left": 0, "width": 1440, "height": 680},
+                                            {"key": "f", "top": 680, "left": 0, "width": 1440, "height": 480}])
+            await b.close()
+            return r
+    r = asyncio.run(run())
+    kinds = [c["kind"] for c in r["comps"]["a"]]
+    assert kinds.count("image") == 1 and kinds.count("text") == 0 and "heading" in kinds
+    assert r["boxes"]["f"]["band"] and not r["boxes"]["a"]["band"]
+
+
+def test_centred_text_lines_are_counted_from_the_text_not_the_box():
+    """QA's 'centred paragraph ≥3 lines' rule: a one-line centred link padded to 48px is one line."""
+    from playwright.async_api import async_playwright
+    from chromaswarm.qa.master import PROBE_JS
+    html = """<body><a href="#" style="display:inline-flex;align-items:center;min-height:48px;font-size:12px;text-align:center">One line</a>
+      <p style="width:200px;text-align:center;font-size:16px">A centred paragraph long enough to wrap onto several lines of text here.</p></body>"""
+
+    async def run():
+        async with async_playwright() as pw:
+            b = await pw.chromium.launch()
+            p = await b.new_page()
+            await p.set_content(html)
+            await p.evaluate(PROBE_JS)
+            out = await p.evaluate("() => window.__chromaQA.slop().centered")
+            await b.close()
+            return out
+    centred = asyncio.run(run())
+    assert len(centred) == 1 and centred[0]["selector"].startswith("p") and centred[0]["lines"] >= 3
+
+
+def test_a_measured_accordion_keeps_its_rows_and_they_open():
+    from chromaswarm.agents.planner import Section
+    from chromaswarm.developer.content import build_copy
+    from chromaswarm.developer.nextjs import render_section
+    from chromaswarm.state_machine.pipeline_state import PipelineState
+    layout = []
+    for n in range(3):
+        y = 100 + n * 80
+        layout += [comp("card", 600, y, 600, 64, radius=12, bg="#f3f3f3").model_dump(),
+                   comp("text", 620, y + 20, 400, 24, fs=16, chars=40).model_dump()]
+    layout.append(comp("heading", 100, 100, 400, 80, fs=40, chars=26).model_dump())
+    sec = Section(id="faq", name="FAQ", structure="accordion", content="x", layout=layout,
+                  layout_box={"top": 0, "left": 0, "width": 1440, "height": 420})
+    words: dict = {}
+    code = render_section(sec, build_copy(PipelineState(session_id="s", raw_prompt="x")), "clone", content=words).content
+    assert code.count("<details") == 3 and code.count('data-swarm-role="button"') == 3
+    assert "answer" in words["faq"]
+
+
+def test_measured_colours_are_used_only_where_they_still_read():
+    """White words that sat on a photo must not land on our light section; readable ones keep their colour."""
+    from chromaswarm.agents.planner import Section
+    from chromaswarm.developer.content import build_copy
+    from chromaswarm.developer.nextjs import render_section
+    from chromaswarm.state_machine.pipeline_state import PipelineState
+    layout = [comp("heading", 100, 100, 600, 80, fs=48, chars=20, color="#ffffff").model_dump(),
+              comp("text", 100, 220, 600, 48, fs=16, chars=60, color="#0a0a0a9e").model_dump(),
+              comp("button", 100, 300, 160, 40, fs=14, chars=10, color="#ffffff", bg="#111111", radius=99).model_dump()]
+    sec = Section(id="hero", name="Hero", structure="split-7-5", content="x", layout=layout,
+                  layout_box={"top": 0, "left": 0, "width": 1440, "height": 400, "bg": "#f5f5f7"})
+    code = render_section(sec, build_copy(PipelineState(session_id="s", raw_prompt="x")), "clone", content={}).content
+    assert ".n1 { color: #ffffff" not in code  # white on #f5f5f7: dropped
+    assert "color: #0a0a0a9e" in code and "background: #111111; color: #ffffff" in code
+    assert 'background: #f5f5f7' in code
+
+
+def test_phone_tap_targets_win_over_the_desktop_minimum():
+    from chromaswarm.agents.planner import Section
+    from chromaswarm.developer.content import build_copy
+    from chromaswarm.developer.nextjs import render_section
+    from chromaswarm.state_machine.pipeline_state import PipelineState
+    layout = [comp("link", 100, 20, 60, 20, fs=14, chars=5).model_dump(), comp("link", 200, 20, 60, 20, fs=14, chars=5).model_dump()]
+    sec = Section(id="nav", name="Nav", structure="footer-columns", content="x", layout=layout,
+                  layout_box={"top": 0, "left": 0, "width": 1440, "height": 60})
+    code = render_section(sec, build_copy(PipelineState(session_id="s", raw_prompt="x")), "clone", content={}).content
+    assert code.index("min-height: 24px") < code.index("{ min-height: 48px; }")  # later rule wins on phones
+
+
+def test_canvas_and_logos_keep_measured_skeletons_and_clone_adds_no_stock_photos():
+    from chromaswarm.agents.planner import Section
+    from chromaswarm.developer.content import build_copy
+    from chromaswarm.developer.nextjs import render_section
+    from chromaswarm.state_machine.pipeline_state import CloneSource, PipelineState
+    layout = [comp("image", 800, 100, 560, 520, media="canvas").model_dump(),
+              comp("image", 40, 20, 96, 28, media="svg").model_dump(),
+              comp("heading", 100, 200, 500, 120, fs=72, chars=20).model_dump()]
+    sec = Section(id="hero", name="Hero", structure="split-7-5", content="x", layout=layout,
+                  layout_box={"top": 0, "left": 0, "width": 1440, "height": 700})
+    p = PipelineState(session_id="s", raw_prompt="Email for developers", selected_page="clone",
+                      clone=CloneSource(url="https://example.com"))
+    copy = build_copy(p)
+    assert copy.images == []  # no stand-in photos in a Clone
+    code = render_section(sec, copy, "clone", content={}).content
+    assert 'width={560} height={360}' in code and "3D" in code  # the 3D scene's width, height capped (SKEL_MAX)
+    assert 'width={96} height={28}' in code and "m-skel" in code  # the logo's exact frame
+
+
+def test_top_down_analysis_covers_overview_then_each_section_in_order():
+    from chromaswarm.clone.analysis import build
+    from chromaswarm.state_machine.pipeline_state import CloneSource
+    clone = CloneSource(url="https://resend.com", heading_font="Inter", body_font="Inter",
+                        pillars={"theme": "tech-minimal", "layout": "landing", "margins": "airy"},
+                        boxes={"site-header": {"top": 0, "left": 0, "width": 1440, "height": 72, "bg": "#000000", "page": "#000000"},
+                               "hero": {"top": 72, "left": 0, "width": 1440, "height": 828, "bg": "#000000", "page": "#000000"}},
+                        components={"site-header": [comp("link", 600, 24, 60, 24, fs=14, chars=8, color="#ffffffb3").model_dump(),
+                                                    comp("button", 1300, 18, 100, 36, fs=14, bg="#ffffff", color="#000000", radius=99).model_dump()],
+                                    "hero": [comp("heading", 100, 200, 600, 200, fs=96, fw=400, level=1, chars=20).model_dump(),
+                                             comp("image", 800, 100, 560, 560, media="canvas").model_dump()]},
+                        motion_report={"items": [{"label": "Header dính, nền mờ"}],
+                                       "models": [{"section": "hero", "how": "Mô hình 3D (WebGL) 560×560px, tự chuyển động liên tục"}],
+                                       "controls": [{"section": "site-header", "kind": "button", "w": 100, "h": 36,
+                                                     "changes": ["đổi màu nền"], "duration_ms": 200}]})
+    sections = [{"id": "site-header", "name": "Header / Navbar", "structure": "sticky-bar", "motion": ["sticky-blur"]},
+                {"id": "hero", "name": "Hero", "structure": "split-7-5", "motion": []}]
+    md = build(clone, "saas", sections)
+    assert "dịch vụ / phần mềm (SaaS)" in md and "2 section" in md and "nền tối" in md
+    assert md.index("### 1. Header / Navbar") < md.index("### 2. Hero")
+    assert "Nút: nền #ffffff, chữ #000000 14px" in md and "#ffffffb3".upper() not in md and "(70%)" in md
+    assert "Canvas / 3D: 560×560px" in md and "tự chuyển động liên tục" in md
+    assert "nút 100×36px → đổi màu nền (200ms)" in md
+
+
+def _measured_page(sections):
+    """Render measured sections in page order the way the build does (earlier words passed as `taken`)."""
+    from chromaswarm.build.runtime import _strings
+    from chromaswarm.developer.content import build_copy, copy_for
+    from chromaswarm.developer.nextjs import render_section
+    from chromaswarm.state_machine.pipeline_state import CloneSource, PipelineState
+    p = PipelineState(session_id="s", raw_prompt="Project management for software teams", selected_page="clone",
+                      clone=CloneSource(url="https://example.com"))
+    copy, words, codes = build_copy(p), {}, {}
+    for k, sec in enumerate(sections):
+        c = copy_for(sec.structure, [x.structure for x in sections[:k]], copy)
+        c = c.model_copy(update={"taken": [t for x in sections[:k] for t in _strings(words[x.id])]})
+        codes[sec.id] = render_section(sec, c, "clone", content=words).content
+    return copy, words, codes
+
+
+def test_measured_copy_follows_the_section_role_and_never_repeats_across_the_page():
+    from chromaswarm.agents.planner import Section
+    from chromaswarm.build.runtime import _strings
+
+    def showcase(sid):
+        return Section(id=sid, name="F", structure="feature-showcase", content="x",
+                       layout=[comp("heading", 100, 40, 600, 60, fs=48, chars=22).model_dump(),
+                               comp("text", 100, 140, 600, 60, fs=18, chars=120).model_dump()],
+                       layout_box={"top": 0, "left": 0, "width": 1440, "height": 300})
+    hero = Section(id="hero", name="Hero", structure="split-7-5", content="x",
+                   layout=[comp("heading", 100, 40, 700, 140, fs=64, chars=50).model_dump(),
+                           comp("text", 100, 220, 600, 60, fs=18, chars=90).model_dump()],
+                   layout_box={"top": 0, "left": 0, "width": 1440, "height": 400})
+    closing = Section(id="closing-cta", name="CTA", structure="closing-cta", content="x",
+                      layout=[comp("heading", 300, 40, 800, 80, fs=48, chars=40).model_dump()],
+                      layout_box={"top": 0, "left": 0, "width": 1440, "height": 200})
+    secs = [hero, showcase("feature-showcase"), showcase("feature-showcase-2"), showcase("feature-showcase-3"), closing]
+    copy, words, _ = _measured_page(secs)
+    assert words["hero"]["heading"] == copy.headline and words["hero"]["text"] == copy.subhead
+    assert words["closing-cta"]["heading"] == copy.closing
+    heads = [words[s.id]["heading"] for s in secs[1:4]]
+    assert len(set(heads)) == 3  # three showcases, three different titles
+    faqs = {q for q, _ in copy.faqs}
+    assert not set(heads) & (faqs | {copy.closing, copy.headline})  # no FAQ question / contact line as a feature title
+    every = [t for s in secs for t in _strings(words[s.id])]
+    assert len(every) == len(set(every))  # nothing shown twice on the page
+    fill_ins = [t for s in secs[1:4] for t in _strings(words[s.id]) if t.startswith("[")]
+    assert fill_ins == []  # "[…]" marks stay in their own place (hero), never as filler
+
+
+def test_labels_inside_a_missing_screenshot_go_with_it_and_its_skeleton_is_capped():
+    from chromaswarm.agents.planner import Section
+    layout = [comp("heading", 100, 40, 700, 80, fs=56, chars=30).model_dump(),
+              comp("image", 100, 200, 1240, 800, media="img", radius=12).model_dump(),
+              comp("text", 160, 260, 80, 16, fs=12, chars=8).model_dump(),   # the app screenshot's own labels
+              comp("text", 160, 300, 80, 16, fs=12, chars=8).model_dump(),
+              comp("link", 600, 500, 120, 16, fs=13, chars=10).model_dump(),
+              comp("card", 140, 240, 1160, 700, bg="#111111").model_dump(),     # the app window drawn in it
+              comp("heading", 180, 330, 300, 24, fs=18, chars=16).model_dump()]  # a panel title of the app
+    sec = Section(id="feature-showcase", name="F", structure="feature-showcase", content="x", layout=layout,
+                  layout_box={"top": 0, "left": 0, "width": 1440, "height": 1100})
+    _, words, codes = _measured_page([sec])
+    code = codes["feature-showcase"]
+    assert set(words["feature-showcase"]) == {"heading"}  # the floating labels are gone, the title stays
+    assert "height={360}" in code and "height={800}" not in code
