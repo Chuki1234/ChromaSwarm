@@ -148,7 +148,9 @@ type Item =
   | { kind: "motion"; report: MotionReport }
   | { kind: "analysis"; text: string }
   | { kind: "brief"; text: string }
-  | { kind: "sketch"; stage: "read" | "built"; result: SketchResult };
+  | { kind: "sketch"; stage: "read" | "built"; result: SketchResult }
+  // Clone: the finished page's permanent link (backend /sessions/<id>/page), sent once per finished build.
+  | { kind: "page"; text: string; url: string; status?: string | null };
 
 function sessionId(): string {
   try {
@@ -255,7 +257,9 @@ export function PipelineConsole() {
             } else {
               savedThread(sid).then((rows) => {
                 const restored: Item[] = rows.length
-                  ? rows.map((r) => (r.role === "user" ? { kind: "user", text: r.text } : { kind: "assistant", text: r.text, step: r.step ?? undefined, live: true }))
+                  ? rows.map((r): Item => (r.role === "user" ? { kind: "user", text: r.text }
+                      : r.kind === "page_link" && r.payload?.url ? { kind: "page", text: r.text, url: r.payload.url, status: r.payload.status }
+                      : { kind: "assistant", text: r.text, step: r.step ?? undefined, live: true }))
                   : s.state.clone?.url ? [{ kind: "user", text: s.state.clone.url }] : [];  // at least the link sent
                 if (restored.length) setItems((it) => [...restored, ...it]);
               });
@@ -313,6 +317,9 @@ export function PipelineConsole() {
           setBusy(true);
           send({ type: "chat", text });
         }
+      } else if (msg.type === "page_link") {
+        setItems((it) => it.some((x) => x.kind === "page" && x.text === msg.text) ? it
+          : [...it, { kind: "page", text: msg.text, url: msg.url, status: msg.status }]);
       } else if (msg.type === "chat") {
         setItems((it) => [...it, { kind: msg.role === "user" ? "user" : "assistant", text: msg.text }]);
         // user echo: the reply is on its way. Chroma's reply: done — an answer to a question ("Bento là gì?")
@@ -569,6 +576,8 @@ export function PipelineConsole() {
                         <pre className="mt-3 max-h-[480px] overflow-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-fg-2">{it.text}</pre>
                       </details>
                     </Assistant>
+                  ) : it.kind === "page" ? (
+                    <Assistant key={i}><PageLink text={it.text} url={it.url} /></Assistant>
                   ) : it.kind === "sketch" ? (
                     <Assistant key={i}><SketchCard stage={it.stage} result={it.result} session={snap?.state.session_id ?? ""} /></Assistant>
                   ) : it.kind === "brief" ? (
@@ -821,6 +830,22 @@ const PARAM_LABEL: Record<string, string> = {
   cycle_s: "một vòng", blur_px: "blur",
 };
 const PARAM_UNIT: Record<string, string> = { duration_ms: "ms", distance_px: "px", stagger_ms: "ms", cycle_s: "s", blur_px: "px", scale: "×" };
+
+/** Clone: the finished page, reachable any time later (the backend starts its app again when needed). */
+function PageLink({ text, url }: { text: string; url: string }) {
+  const lines = text.split("\n").filter((l) => !l.includes(url));
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border border-line p-4" data-swarm-section="page-link">
+      {lines.map((l, k) => <p key={k} className="leading-relaxed text-fg">{l}</p>)}
+      <a href={url} target="_blank" rel="noreferrer" data-swarm-id="open-clone-page" data-swarm-role="link"
+        className="inline-flex min-h-12 items-center gap-2 self-start rounded-xl bg-accent px-5 text-sm font-medium text-accent-fg transition-[filter,transform] duration-200 hover:brightness-95 active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+        Mở trang clone ↗
+      </a>
+      <p className="break-all font-mono text-xs text-fg-2">{url}</p>
+      <p className="text-xs text-fg-2">Lần mở đầu sau khi khởi động lại có thể mất vài giây để chạy lại trang.</p>
+    </div>
+  );
+}
 
 function Assistant({ children }: { children: React.ReactNode }) {
   return (

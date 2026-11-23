@@ -903,6 +903,9 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             return {"pipeline": p, "notice": f"Lỗi khi chạy Master QA: {e}"}
         p.qa_summary = report.summary()
         p.qa_failures = [f"[Bài {f.test}] {f.detail}" + (f" ({f.viewport}px)" if f.viewport else "") for f in report.failures]
+        for f in report.failures:  # the selector is not shown in the Studio; the log keeps it for debugging
+            log.warning("Master QA %s: %s — %s%s", p.session_id, f.selector, f.detail,
+                        f" fg={f.reading.fg} bg={f.reading.bg}" if f.reading else "")
         if report.passed:
             p.qa_passed = True
             notice = "B11 · Master Cursor: 100% PASSED — cả 4 bài kiểm tra đều đạt."

@@ -179,7 +179,7 @@ class CloneHistory:
         return rows[0]["state"] if rows else None
 
     async def messages(self, session_id: str) -> list[dict]:
-        return await self._get("clone_messages", f"select=role,kind,step,text,created_at&session_id=eq.{_q(session_id)}"
+        return await self._get("clone_messages", f"select=role,kind,step,text,payload,created_at&session_id=eq.{_q(session_id)}"
                                                  f"&order=id.asc&limit=500")
 
 
