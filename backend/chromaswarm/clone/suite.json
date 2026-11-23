@@ -43,6 +43,7 @@
     "domain": "ecommerce",
     "prompt": "Shop bán theme website cao cấp cho người làm sáng tạo, khách 25-40 tuổi, muốn họ bấm Mua ngay",
     "expect": [
+      "announcement-bar",
       "sticky-bar",
       "split-7-5",
       "gallery",
@@ -79,6 +80,7 @@
     "domain": "saas",
     "prompt": "Trang giới thiệu nền tảng thanh toán trực tuyến cho doanh nghiệp, khách là chủ doanh nghiệp và kỹ sư, muốn họ bấm Bắt đầu ngay",
     "expect": [
+      "announcement-bar",
       "sticky-bar",
       "full-bleed-image",
       "split-5-7",
@@ -188,6 +190,7 @@
     "prompt": "Trang giới thiệu thư viện CSS cho lập trình viên frontend, muốn họ bấm Bắt đầu",
     "expect": [
       "sticky-bar",
+      "announcement-bar",
       "split-5-7",
       "split-7-5",
       "bento",

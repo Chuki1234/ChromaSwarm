@@ -46,6 +46,11 @@ class Section(BaseModel):
     # box + href) and the backgrounds the reference paints itself, redrawn as decorative layers.
     links: list[dict] = []
     paint: list[dict] = []
+    # Clone mode: the section's spec from the reference's DESIGN.md (design.json: box, padding, components with
+    # their tokens + the page's type / colour / component tokens) and, on the user's own site, its real words and
+    # pictures by place (reader `texts` / `pics`). developer/clone_templates.py builds the section from them.
+    design: dict = {}
+    owned: dict = {}
 
 
 def _i(id_: str, role: str, behavior: str) -> Interactive:

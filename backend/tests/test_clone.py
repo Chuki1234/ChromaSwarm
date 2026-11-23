@@ -257,7 +257,8 @@ def test_two_column_page_and_loose_headings():
             "<footer><a>a</a><a>b</a><a>c</a><a>d</a></footer>")
     a = asyncio.run(analyse("data:text/html;charset=utf-8," + urllib.parse.quote(html), owned=True))
     ids = [s.id for s in a.sections]
-    assert ids[0] == "site-header" and ids[1] == "hero"  # nav kept, side-column h1 moved up as hero
+    # the promo strip is kept as the announcement bar, nav kept, side-column h1 moved up as hero
+    assert ids[:3] == ["announcement", "site-header", "hero"]
     headings = [a.content["sections"][i].get("heading") for i in ids]
     assert "Mẫu trang" in headings and "Hỗ trợ" in headings  # loose headings kept, not glued to the buy box
     assert a.content["sections"]["hero"]["heading"] == "Kyoto"

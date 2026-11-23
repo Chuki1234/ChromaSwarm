@@ -73,6 +73,8 @@ def classify(block: dict, index: int, total: int) -> str:
     is_header = f["tag"] in ("header", "nav") or f["role"] == "banner"
     if index <= 1 and (f["nav"] or is_header) and (f["height"] < 200 or (is_header and f["height"] < 360)):
         return "sticky-bar"  # index 1: a promo strip may sit above the navigation; tall headers (logo + avatar) too
+    if index == 0 and f["height"] < 60 and f["text_len"] > 0 and not f["h1"]:
+        return "announcement-bar"  # a one-line offer above the navigation (often dismissible)
     if f["tag"] == "footer" or f["role"] == "contentinfo" or (index == total - 1 and f["links"] >= 4 and not f["h1"]):
         return "footer-columns"
     if f["password"]:
@@ -127,9 +129,9 @@ HERO_SIGNUP = [("hero-email", "input", "email validation"), ("hero-signup", "but
 NARROW_MAX = 1100  # content narrower than this is a deliberate single column, kept in the rebuild
 
 
-SECTION_IDS = {"sticky-bar": "site-header", "footer-columns": "site-footer", "accordion": "faq",
+SECTION_IDS = {"sticky-bar": "site-header", "footer-columns": "site-footer", "accordion": "faq", "announcement-bar": "announcement",
                "full-bleed-band": "closing-cta", "auth": "auth"}
-NAMES = {"sticky-bar": "Header / Navbar", "split-7-5": "Hero", "full-bleed-image": "Hero banner", "hero-text": "Hero chữ",
+NAMES = {"announcement-bar": "Thanh thông báo", "sticky-bar": "Header / Navbar", "split-7-5": "Hero", "full-bleed-image": "Hero banner", "hero-text": "Hero chữ",
          
          "inline-metrics": "Dải số liệu", "alternating-z": "Câu chuyện xen kẽ", "bento": "Lưới nổi bật",
          "grid-4": "Lưới sản phẩm", "horizontal-scroller": "Dải danh mục", "accordion": "Hỏi đáp",
@@ -138,6 +140,7 @@ NAMES = {"sticky-bar": "Header / Navbar", "split-7-5": "Hero", "full-bleed-image
          "text-cards": "Hàng thẻ chữ", "gallery": "Thư viện hình ảnh", "logo-strip": "Dải logo",
          "list-rows": "Danh sách dòng"}
 INTERACTIVE = {
+    "announcement-bar": [("announcement-close", "button", "dismiss the bar (stays closed)")],
     "sticky-bar": [("nav-logo", "link", "go to home"), ("nav-menu-toggle", "button", "open mobile menu ≤768px")],
     "split-7-5": [("cta-primary", "button", "primary conversion"), ("cta-secondary", "link", "scroll to details")],
     "full-bleed-image": [("cta-primary", "button", "primary conversion")],
@@ -347,8 +350,8 @@ async def analyse(url: str, owned: bool, width: int = 1440, height: int = 900) -
 
 def prepare_blocks(raw: dict) -> tuple[list[dict], list[str]]:
     """The blocks sections are built from (Section.sources index into this list)."""
-    blocks = [b for b in raw["blocks"] if not (b["features"]["height"] < 60 and not b["features"]["nav"]
-                                                and b["features"]["index"] == 0)]  # a thin promo strip on top
+    # A thin strip on top is kept: it is the announcement bar (rebuilt with its dismiss button), not noise.
+    blocks = [b for b in raw["blocks"] if not (b["features"]["height"] < 12 and not b["features"]["nav"])]
     return reading_order(blocks)
 
 

@@ -163,6 +163,8 @@ class CloneSource(BaseModel):
     sketched: bool = True
     sketch: dict | None = None  # coverage (before / after re-measuring), gaps, screen pairs (artifacts/sketch/)
     sketch_built: dict | None = None  # B10: the rebuild's wireframe sketch vs the reference's, per section
+    sketch_final: dict | None = None  # B11: the same checks on the finished page (Master QA's verdict uses them)
+    design: dict | None = None  # design.json: the reference's design system + section specs, extracted backwards
     spec: dict | None = None  # CloneSpec dump (clone/spec.py): copy / replace / skip / todo per item, used by the build
 
 
@@ -250,7 +252,8 @@ class PipelineState(BaseModel):
     clone_fidelity_notes: list[str] = Field(default_factory=list)
     # Clone B11 1:1 acceptance (Master cursor, section by section against the reference link).
     clone_compare: dict | None = None  # {"total", "rounds", "sections": [SectionCompare dumps], "tuned"}
-    compare_rounds: int = 0  # acceptance rounds that changed match.css (max 2, then hand over)
+    compare_rounds: int = 0
+    clone_verdict: dict | None = None  # B11 Clone: Master QA's verdict (clone/verdict.py, CLONE_RESULT.md)  # acceptance rounds that changed match.css (max 2, then hand over)
     factory_log: list[str] = Field(default_factory=list)  # B9 factory: what each section's crews tuned
 
     # B12

@@ -159,7 +159,7 @@ def compare_shot(session_id: str, name: str) -> Response:
     return Response(path.read_bytes(), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
-_SAFE_SKETCH = re.compile(r"^(ref|built|shot)-\d{2}\.jpg$")
+_SAFE_SKETCH = re.compile(r"^(ref|built|shot|fbuilt|fshot)-\d{2}\.jpg$")
 
 
 @app.get("/sessions/{session_id}/sketch/{name}")

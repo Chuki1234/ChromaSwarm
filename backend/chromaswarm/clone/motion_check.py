@@ -306,7 +306,8 @@ async def inspect_motion(url: str, boxes: dict[str, dict], headed: bool | None =
     """Open the reference, operate it and measure every effect (module docstring)."""
     headed = _headed() if headed is None else headed
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=not headed)
+        browser = await pw.chromium.launch(headless=not headed,
+                                           args=["--window-size=1440,1000", "--window-position=0,0"] if headed else [])
         try:
             page = await browser.new_page(viewport={"width": width, "height": height})
             await goto_ready(page, url)

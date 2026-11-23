@@ -23,7 +23,8 @@ from chromaswarm.agents.planner import Section
 from chromaswarm.clone.components import Comp, comps
 from chromaswarm.clone.layout import Node, build_tree
 from chromaswarm.developer.content import PageCopy
-from chromaswarm.engines.color import OKLCH, apca_lc, oklch_to_srgb, parse_css_color, srgb_to_oklch, wcag_contrast, wcag_luminance
+from chromaswarm.engines.color import (OKLCH, apca_lc, gamut_map, oklch_to_srgb, parse_css_color, srgb_to_oklch, to_hex,
+                                       wcag_contrast, wcag_luminance)
 
 # Structures whose behaviour a static layout cannot carry keep their template.
 TEMPLATE_ONLY = {"accordion", "horizontal-scroller", "list-rows", "logo-strip",
@@ -213,6 +214,30 @@ def _over(fg: tuple, bg: OKLCH) -> OKLCH:
     return srgb_to_oklch(tuple(x * alpha + y * (1 - alpha) for x, y in zip(a, b)))
 
 
+def readable_variant(fg: str | None, bg: str | None, large: bool) -> str | None:
+    """The reference's colour made readable on `bg` with the least change: same hue and chroma, lightness moved
+    (darker on a light background, lighter on a dark one) until it passes WCAG + APCA like QA checks. The page
+    keeps its green label green instead of turning it black. None when no lightness of that hue passes."""
+    f, b = parse_css_color(fg or ""), parse_css_color(bg or "")
+    if not f or not b:
+        return None
+    col, back = _over(f, b[0]), b[0]
+    def ok(c) -> bool:
+        return wcag_contrast(c, back) >= (3.0 if large else 4.5) and abs(apca_lc(c, back)) >= (45 if large else 60)
+    if ok(col):
+        return fg
+    step = -0.01 if wcag_luminance(back) > 0.18 else 0.01
+    l = col.l
+    for _ in range(100):
+        l += step
+        if not 0.0 <= l <= 1.0:
+            break
+        cand = gamut_map(OKLCH(l=l, c=col.c, h=col.h))
+        if ok(cand):
+            return to_hex(cand)
+    return None
+
+
 def _type_class(c: Comp) -> str:
     if c.kind == "heading":
         return "t-display" if c.fs >= 56 else "t-h1" if c.fs >= 40 else "t-h2" if c.fs >= 28 else "t-h3" if c.fs >= 21 else "t-h4"
@@ -232,6 +257,7 @@ class _Render:
         self.bgs: list[str | None] = [box.get("bg") or box.get("page")]  # what is painted beneath, innermost last
         self.nav = list(copy.nav_links) if section.structure == "sticky-bar" else []
         self.links = [dict(x) for x in section.links]  # CloneSpec: where each reference control leads
+        self._summary = False  # inside an accordion row's question line
         self.brand = copy.brand or ""
         self.has_photos = bool(copy.images)  # the user's own (B4 uploads / owned site): otherwise skeletons
         self.buttons = 0
@@ -333,6 +359,11 @@ class _Render:
             return f'<div className="n{i} m-layer" data-n="{i}">\n{body}\n</div>'
         if node.kind in ("rows", "cols", "card"):
             inner_axis = "cols" if node.kind == "cols" else "rows"
+            # An accordion row: what is inside its question line is words, never a link of its own (a link inside
+            # <summary> swallows the click: the row would neither open nor go anywhere).
+            row = self.s.structure == "accordion" and node.kind == "card" and bool(node.children) and not getattr(self, "_summary", False)
+            if row:
+                self._summary = True
             card_bg = node.comp.bg if node.kind == "card" and node.comp and node.comp.bg else None
             if card_bg:
                 self.bgs.append(card_bg)
@@ -346,6 +377,8 @@ class _Render:
                 kids.append(self.node(child, node, last, inner_axis))
                 last = child
             body = "\n".join(kids)
+            if row:
+                self._summary = False
             if card_bg:
                 self.bgs.pop()
             if node.kind == "card":
@@ -361,7 +394,7 @@ class _Render:
                     desk["min-height"] = f"{round(node.h)}px"
                 self.rule(i, desk)
                 self.paint(i, {"background": c.bg or "transparent"})
-                if self.s.structure == "accordion" and node.children:
+                if row:
                     # A question row of the reference, closed like it; the answer (sample) opens below it.
                     answer = self.js(self.words.take("body", 140), "answer")
                     return (f'<details className="n{i} card m-card m-acc" data-n="{i}">\n'
@@ -455,7 +488,11 @@ class _Render:
                 desk["text-transform"] = c.tt
             if c.kind != "button":
                 large = c.fs >= 24 or (c.fs >= 18.6 and c.fw >= 700)
-                self.paint(i, {"color": c.color if self.readable(c.color, self.bgs[-1], large) else self.ink_for(self.bgs[-1])})
+                # Readable on what we paint beneath: the reference's colour, else the same hue moved just enough.
+                ink = c.color if self.readable(c.color, self.bgs[-1], large) else (
+                    readable_variant(c.color, self.bgs[-1], large) if (parse_css_color(c.color or "") or (None, 0))[1] >= 0.35
+                    else None) or self.ink_for(self.bgs[-1])
+                self.paint(i, {"color": ink})
         if c.kind == "heading":
             level = c.level or (1 if c.fs >= 40 else 2 if c.fs >= 24 else 3)
             if level == 1:
@@ -473,6 +510,9 @@ class _Render:
             return f'<p className="n{i} {_type_class(c)}{muted}" data-n="{i}">{{{self.js(text, "text")}}}</p>'
         if c.kind == "link":
             self.rule(i, desk)
+            if getattr(self, "_summary", False):
+                text = self.words.take("short", _chars(c))
+                return f'<span className="n{i} t-body" data-n="{i}">{{{self.js(text, "text")}}}</span>'
             if self.nav:  # header: the site's real navigation (built pages first, then in-page anchors)
                 label, href = self.nav.pop(0)
                 return (f'<a href={{{self.js(href, "href")}}} className="n{i} m-link m-nav" data-n="{i}" '
@@ -496,6 +536,11 @@ class _Render:
             if self.readable(c.color, fill, c.fs >= 24):
                 self.paint(i, {"background": c.bg or "transparent", "color": c.color,
                                "border-color": f"color-mix(in oklch, {c.color} 35%, transparent)" if c.border and not c.bg else ""})
+            elif c.bg and (shade := readable_variant(c.bg, c.color, c.fs >= 24)):
+                # White on a bright green fill does not read: the fill keeps its hue, a shade deeper.
+                self.paint(i, {"background": shade, "color": c.color})
+            elif c.bg and (ink := readable_variant(c.color, c.bg, c.fs >= 24)):
+                self.paint(i, {"background": c.bg, "color": ink})
             self.buttons += 1  # the page's two actions first, then short labels: never the same label twice
             text = self.words.take("cta" if self.buttons <= 2 else "short", _chars(c))
             return (f'<a href={self.href(c)} className="n{i} btn {cls}" data-n="{i}" data-swarm-id="{sid}-btn-{i}" data-swarm-role="button">'

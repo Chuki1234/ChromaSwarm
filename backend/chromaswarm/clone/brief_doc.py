@@ -64,11 +64,13 @@ def _role(sec: dict) -> str:
 
 def _spacing(pieces: list[dict], box: dict) -> dict:
     """Space above / below the content, side margins, and the vertical gaps between stacked pieces."""
-    cs = sorted((c for c in comps(pieces) if c.kind in ("heading", "text", "button", "link", "image", "card", "input")),
+    width, height = float(box.get("width") or 1440), float(box.get("height") or 0)
+    # A picture filling half the section or more is its background, not content: it sets no padding.
+    cs = sorted((c for c in comps(pieces) if c.kind in ("heading", "text", "button", "link", "image", "card", "input")
+                 and not (c.kind in ("image", "card") and height and c.w * c.h >= 0.5 * width * height)),
                 key=lambda c: (c.y, c.x))
     if not cs:
         return {}
-    width, height = float(box.get("width") or 1440), float(box.get("height") or 0)
     top = min(c.y for c in cs)
     bottom = max(c.y + c.h for c in cs)
     gaps = []

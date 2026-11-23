@@ -135,3 +135,28 @@ def test_contrast_thresholds(size, weight, fg, expect_fail):
     r = ColorReading(fg=fg, bg="#ffffff", font_size=size, font_weight=weight, rect=Rect(x=0, y=0, w=1, h=1),
                      wcag=round(wcag_contrast(f, b), 2), apca=round(apca_lc(f, b), 1))
     assert (contrast_finding("s", "p", r) is not None) is expect_fail
+
+
+TALL = """<!doctype html><html><body style="margin:0;font:16px/1.5 sans-serif">
+<section data-swarm-section="s" style="padding:24px">
+  <p id="p1" style="margin:0 0 1600px">Một</p><p id="p2">Hai</p>
+</section></body></html>"""
+
+
+def test_workers_follow_their_component_when_the_page_scrolls():
+    async def go(page):
+        swarm = await SwarmOverlay.attach(page, instant=True)
+        await swarm.spawn("crew", "Tổ chữ", "#8B5CF6", None, 20)
+        await swarm.crew([{"id": "w1", "label": "Chữ", "color": "#8B5CF6", "from": "crew", "sel": "#p1", "note": "Chữ ✓", "ok": True},
+                          {"id": "w2", "label": "Chữ", "color": "#8B5CF6", "from": "crew", "sel": "#p2", "note": "Chữ ✓", "ok": True}])
+        await page.evaluate("scrollTo(0, 0)")
+        await page.wait_for_timeout(150)
+        top = await page.evaluate("[window.__chromaSwarm.pos('w1'), window.__chromaSwarm.pos('w2'), document.querySelector('#p1').getBoundingClientRect().top]")
+        await page.evaluate("scrollTo(0, document.documentElement.scrollHeight)")
+        await page.wait_for_timeout(150)
+        bottom = await page.evaluate("[window.__chromaSwarm.pos('w1'), window.__chromaSwarm.pos('w2'), document.querySelector('#p2').getBoundingClientRect().top]")
+        return top, bottom
+    (w1, w2, p1_top), (w1b, w2b, p2_top) = run(with_page(go, html=TALL))
+    assert w1["visible"] and abs(w1["y"] - (p1_top + 8)) <= 2  # on its paragraph
+    assert not w2["visible"]  # its paragraph is below the fold: hidden, not parked at the bottom edge
+    assert not w1b["visible"] and w2b["visible"] and abs(w2b["y"] - (p2_top + 8)) <= 2  # followed the scroll

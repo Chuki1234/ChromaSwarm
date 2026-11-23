@@ -221,7 +221,10 @@ class LocalBuildRuntime:
         url = s.base_url.rstrip("/") + (route if route != "/" else "")
         if s.page is None:
             s.pw = await async_playwright().start()
-            s.browser = await s.pw.chromium.launch(headless=not self.headed)
+            # A visible window sized to the page (1440×900 viewport + the browser frame): never a cut-off page or
+            # a blank strip beside it, whatever the screen.
+            s.browser = await s.pw.chromium.launch(headless=not self.headed,
+                                                   args=["--window-size=1440,1000", "--window-position=0,0"] if self.headed else [])
             s.page = await s.browser.new_page(viewport={"width": 1440, "height": 900})
             s.page.on("console", lambda m: s.console_errors.append(m.text) if m.type == "error" else None)
             s.page.on("pageerror", lambda e: s.console_errors.append(str(e)))
@@ -354,7 +357,7 @@ class LocalBuildRuntime:
         s.workspace.write(Step.B9_DEVELOP, match_file(page + cmp.render_rules(s.match)))
 
     async def sketch_check(self, session: str, ref_boxes: dict[str, dict], ref_comps: dict[str, list[dict]],
-                           out_dir: Path) -> dict | None:
+                           out_dir: Path, final: bool = False) -> dict | None:
         """B10, before the colour pass: the rebuild's wireframe measured and drawn the way the reference was
         sketched at B2; reference sketch | rebuild sketch per screen, and how much of each reference section's
         sketched area the rebuild covers."""
@@ -364,6 +367,7 @@ class LocalBuildRuntime:
             return None
         with contextlib.suppress(Exception):
             await s.page.reload(wait_until="load", timeout=30000)
+        await self._at_top(s)
         built, boxes = await self._built_components(s)
         built_raw = {k: [c.model_dump() for c in v] for k, v in built.items()}
         result = sketch.compare_sketches(ref_boxes, ref_comps, boxes, built_raw)
@@ -380,7 +384,8 @@ class LocalBuildRuntime:
         ctx = await s.browser.new_context(viewport={"width": 1440, "height": 900})
         try:
             page = await ctx.new_page()
-            result["pairs"] = await sketch.sketch_pairs_built(page, ref_svg, built_svg, max(ref_h, built_h), out_dir)
+            result["pairs"] = await sketch.sketch_pairs_built(page, ref_svg, built_svg, max(ref_h, built_h), out_dir,
+                                                              "fbuilt" if final else "built")
             if ref_shot_path.is_file():
                 ref_shot = ref_shot_path.read_bytes()
                 work = await ctx.new_page()
@@ -390,10 +395,57 @@ class LocalBuildRuntime:
                 result["pixel_score"], result["pixel_sections"], result["missing"] = px["score"], px["sections"], px["missing"]
                 framed = sketch.shot_with_frames(sketch._data_url(built_shot, "image/jpeg"), 1440, built_px_h, px["missing"],
                                                  f"Giống ảnh chụp {px['score']:g}%")
-                result["shot_pairs"] = await sketch.shot_pairs(page, ref_shot, framed, max(ref_px_h, built_px_h), out_dir)
+                result["shot_pairs"] = await sketch.shot_pairs(page, ref_shot, framed, max(ref_px_h, built_px_h), out_dir,
+                                                               "fshot" if final else "shot")
         finally:
             await ctx.close()
         return result
+
+    async def apply_design_fixes(self, session: str, fixes: dict[str, dict[str, dict[str, str]]]) -> int:
+        """Master QA's self-heal from the DESIGN.md check: each differing component's measured style (size, weight,
+        colour, fill, radius) written into match.css for its own selector. Colours are made readable with the least
+        change (same hue, lightness moved) so the accessibility rules keep holding. Returns properties changed."""
+        from chromaswarm.developer.measured import readable_variant
+        s = self._s(session)
+        changed = 0
+        for sid, by_sel in fixes.items():
+            scope = (f'[data-swarm-page="{s.ref_page}"] ' if s.ref_page else "") + f'[data-swarm-section="{sid}"]'
+            rules: dict[str, dict[str, str]] = {}
+            for sel, props in by_sel.items():
+                if not cmp._SAFE_SEL.match(sel):
+                    continue
+                bg, large = props.get("_bg") or "#ffffff", bool(props.get("_large"))
+                out = {k: v for k, v in props.items() if not k.startswith("_")}
+                if "color" in out:
+                    out["color"] = readable_variant(out["color"], out.get("background-color") or bg, large) or out.pop("color")
+                if "background-color" in out and "color" not in out:
+                    out.pop("background-color")  # a fill without knowing its label's colour could hide the label
+                rules[f"{scope} {sel}"] = {k: v for k, v in out.items() if v}
+            key = f"{s.ref_page}:{sid}"
+            s.match[key], n = cmp.merge_rules(s.match.get(key, {}), rules)
+            changed += n
+        if changed:
+            self._write_match(s)
+            await asyncio.sleep(1.5)  # HMR applies match.css
+        return changed
+
+    async def measure_built(self, session: str) -> tuple[dict[str, list[dict]], dict[str, dict]] | None:
+        """The rebuild's components per section (section-relative) and section boxes, as Master QA checks them."""
+        s = self._s(session)
+        if not s.page:
+            return None
+        with contextlib.suppress(Exception):
+            await s.page.reload(wait_until="load", timeout=30000)
+        await self._at_top(s)
+        built, boxes = await self._built_components(s)
+        return {k: [c.model_dump() for c in v] for k, v in built.items()}, boxes
+
+    async def _at_top(self, s: _Session) -> None:
+        """Measure from the top, standing still: a reload restores the old scroll, and a smooth-scrolling page
+        would still be moving while its pieces are measured (every place off by the distance travelled)."""
+        with contextlib.suppress(Exception):
+            await s.page.evaluate("() => { document.documentElement.style.scrollBehavior = 'auto'; scrollTo({top: 0, behavior: 'instant'}); }")
+            await s.page.wait_for_timeout(400)
 
     async def _built_components(self, s: _Session) -> tuple[dict[str, list[cmp.Comp]], dict[str, dict]]:
         assert s.page
