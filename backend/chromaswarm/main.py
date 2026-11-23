@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 from chromaswarm.clone.checkpoints import SupabaseCloneSaver
 from chromaswarm.clone.history import CloneHistory, resumable
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from chromaswarm.agents.chat import LLMChat, RuleChat
@@ -36,6 +36,7 @@ from chromaswarm.agents.brief import build_brief_reader
 from chromaswarm.developer.copywriter import build_copywriter
 from chromaswarm.developer.template import app_dir_for, template_zip
 from chromaswarm.clone.preview import page_preview
+from chromaswarm.clone.viewer import PageViewer, app_dir, page_link
 from chromaswarm.playwright_engine.style_dna_scraper import scrape_url
 from chromaswarm.state_machine.graph import SERDE, Deps, PipelineRunner, build_graph
 from chromaswarm.state_machine.pipeline_state import BuildMode, GateError, Step, tools_for
@@ -59,11 +60,13 @@ def build_runtime(env: dict[str, str] | None = None) -> LocalBuildRuntime | None
 
 
 build = build_runtime()
+viewer = PageViewer(WORKSPACES, build)  # the permanent link to each Clone session's page (clone/viewer.py)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     yield
+    await viewer.stop_all()
     if build:
         await build.close_all()  # never leave `next dev` processes behind
 
@@ -174,6 +177,48 @@ def sketch_shot(session_id: str, name: str) -> Response:
     return Response(path.read_bytes(), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
+@app.get("/sessions/{session_id}/page")
+async def session_page(session_id: str):
+    """The Clone page of a session, any time later: the link Chroma sent in the chat. Redirects to a dev server for
+    that session's app (the build's own while it runs, otherwise one started now — the first open takes a moment)."""
+    url = await viewer.url(session_id) if _SAFE_SESSION.match(session_id) else None
+    if url is None:
+        return HTMLResponse(
+            "<!doctype html><meta charset=utf-8><title>Không còn trang</title><body style=\"font:16px/1.6 system-ui;"
+            "max-width:560px;margin:15vh auto;padding:0 16px\"><h1 style=\"font-size:24px\">Không tìm thấy trang của phiên này</h1>"
+            "<p>Mã nguồn của phiên không còn trong thư mục workspaces trên máy này (đã xoá, hoặc phiên chạy ở máy khác).</p>",
+            status_code=404)
+    return RedirectResponse(url, status_code=307)
+
+
+LINKS_SENT: dict[str, str] = {}  # session -> the build already announced (one message per finished build)
+
+
+async def announce_page(session_id: str, snap: dict) -> None:
+    """Clone: once a build is over — whatever the verdict — Chroma sends the page's permanent link as a chat
+    message (also saved with the conversation, so a reopened session still has it)."""
+    p, q = snap.get("pipeline"), snap.get("question") or {}
+    if p is None or p.mode is not BuildMode.CLONE or not p.preview_url:
+        return
+    over = q.get("kind") == "handover" or bool(p.build_error) or snap.get("finished")
+    if not over or app_dir(WORKSPACES, session_id) is None:
+        return
+    v = p.clone_verdict or {}
+    key = f"{len(p.page_routes)}|{p.compare_rounds}|{v.get('title')}|{p.qa_summary}|{p.build_error}"
+    if LINKS_SENT.get(session_id) == key:
+        return
+    LINKS_SENT[session_id] = key
+    link = page_link(session_id)
+    mark = {"success": "✅", "close": "🟡", "failed": "❌"}.get(v.get("status", ""), "")
+    result = f"{mark} {v['title']}." if v.get("title") else ("Master QA đạt." if p.qa_passed else "Master QA chưa đạt hết.")
+    if p.build_error:
+        result = f"Bản dựng dừng giữa chừng ({p.build_error[:120]}) — trang xem được tới phần đã dựng."
+    text = f"Trang clone đã dựng xong. {result}\nXem lại trang bất cứ lúc nào: {link}"
+    payload = {"url": link, "status": v.get("status") or ("error" if p.build_error else None)}
+    await broadcast(session_id, {"type": "page_link", "text": text, **payload})
+    await history.add_message(session_id, "assistant", "page_link", text, p.step.value, payload=payload)
+
+
 @app.get("/health")
 def health() -> dict:
     return {"ok": True, "consultant": getattr(consultant, "name", "rule-based"),
@@ -213,6 +258,7 @@ async def resume(session_id: str, value) -> dict:
             RUNNING.discard(session_id)
     await history.record_snapshot(snap)
     await broadcast(session_id, to_message(snap))
+    await announce_page(session_id, snap)
     return snap
 
 

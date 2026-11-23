@@ -27,12 +27,15 @@ export function useCloneSessions(): Saved[] | null {
 }
 
 /** The saved conversation of a Clone session, as thread items (answers and Chroma's notices). */
-export async function savedThread(id: string): Promise<{ role: "user" | "assistant"; text: string; step: string | null }[]> {
+type SavedMessage = { role: "user" | "assistant"; kind: string; text: string; step: string | null;
+  payload?: { url?: string; status?: string | null } | null };
+
+export async function savedThread(id: string): Promise<SavedMessage[]> {
   try {
     const r = await fetch(`${BACKEND_HTTP}/clone/sessions/${encodeURIComponent(id)}/messages`);
     const d = await r.json();
-    return (d.messages ?? []).filter((m: { kind: string }) => m.kind !== "question")
-      .map((m: { role: "user" | "assistant"; text: string; step: string | null }) => ({ role: m.role, text: m.text, step: m.step }));
+    return (d.messages ?? []).filter((m: SavedMessage) => m.kind !== "question")
+      .map((m: SavedMessage) => ({ role: m.role, kind: m.kind, text: m.text, step: m.step, payload: m.payload ?? null }));
   } catch {
     return [];
   }

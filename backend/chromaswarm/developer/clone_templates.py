@@ -388,6 +388,8 @@ def _nav(m: Model, st: Style, js, s: Section) -> tuple[str, str, str]:
 {st.sel} .cl-nav-row {{ display: flex; align-items: center; justify-content: space-between; gap: 24px; min-height: {max(56, round(m.height))}px; }}
 {st.sel} .cl-brand {{ display: inline-flex; align-items: center; gap: 12px; text-decoration: none; color: inherit; min-height: 48px; min-width: 48px; }}
 {st.sel} .cl-brand-text {{ display: flex; flex-direction: column; }}
+{st.sel} .cl-brand {{ transition: opacity var(--duration) var(--ease); }}
+{st.sel} .cl-brand:hover {{ opacity: .82; }}
 {st.sel} .cl-logo {{ width: {round(logo["w"]) if logo else 32}px; height: {round(logo["h"]) if logo else 32}px; border-radius: 8px; object-fit: contain; }}
 {st.sel} .cl-nav-tools {{ display: flex; align-items: center; gap: 12px; }}
 {st.sel} .cl-lang {{ position: relative; }}
@@ -637,13 +639,14 @@ def rows_metrics(m: Model, rows: list[dict]) -> dict:
 def rows_css(m: Model, st: Style, rows: list[dict]) -> str:
     k = rows_metrics(m, rows)
     from chromaswarm.developer.measured import readable_variant
-    ink = (readable_variant(k["ink"], m.bg, False) if k["ink"] else None) or "var(--text-primary)"
+    ink = readable_variant(k["ink"] or "#111827", m.bg, False) or "#111827"
+    answer = readable_variant("#4b5563", m.bg, False) or "#4b5563"
     shadow = any((m.variants.get(c.get("variant") or "") or {}).get("shadow") for c in m.cards)
     return (ROWS_CSS.format(sel=st.sel, card=m.bg)
             + f"\n{st.sel} .cl-rows {{ gap: {k['gap']}px; }}"
             + f"\n{st.sel} .cl-row {{ border-radius: 16px;{' box-shadow: var(--shadow-sm);' if shadow else ''} }}"
             + f"\n{st.sel} .cl-row > summary {{ min-height: {k['h']}px; padding: 16px {k['pad'] - 16}px 16px {k['pad']}px; color: {ink}; font-size: 18px; }}"
-            + f"\n{st.sel} .cl-a {{ padding: 0 {k['pad']}px 24px; }}"
+            + f"\n{st.sel} .cl-a {{ padding: 0 {k['pad']}px 24px; color: {answer}; }}"
             + f"\n{st.sel} .cl-chev {{ box-sizing: content-box; padding: 9px; border-radius: 999px; border: 1px solid var(--border-subtle); }}")
 
 
@@ -748,6 +751,7 @@ def _features(m: Model, st: Style, js, s: Section) -> tuple[str, str, str]:
     head = _header(m, st, js, s.id)
     stack = ""
     chip_fill = "var(--accent)"
+    chip_ink = "#111827"
     if pics:
         x0, y0 = min(r["x"] for r in pics), min(r["y"] for r in pics)
         x1, y1 = max(r["x"] + r["w"] for r in pics), max(r["y"] + r["h"] for r in pics)
@@ -758,6 +762,9 @@ def _features(m: Model, st: Style, js, s: Section) -> tuple[str, str, str]:
                  and r["x"] >= x0 - 120 and r["y"] <= y1 and (r.get("chars") or 0) < 30 and r["h"] >= 32]
         for ci, r in enumerate(chips):
             light = (m.color(r.get("ink")) or "").lower() in ("#ffffff", "#fff")
+            if not light and m.color(r.get("ink")):
+                from chromaswarm.developer.measured import readable_variant as _rv
+                chip_ink = _rv(m.color(r.get("ink")), "#ffffff", False) or chip_ink
             from chromaswarm.developer.measured import readable_variant
             raw = m.color((m.variants.get("button/filled") or {}).get("fill"))
             chip_fill = (readable_variant(raw, "#e6e6e6", False) or raw) if raw else "var(--accent)"  # a margin over 4.5:1  # white label stays readable
@@ -780,7 +787,7 @@ def _features(m: Model, st: Style, js, s: Section) -> tuple[str, str, str]:
 @media (min-width: 1024px) {{ {st.sel} .cl-split {{ grid-template-columns: minmax(0, {round(m.heading["w"]) if m.heading else 576}fr) minmax(0, 520fr); }} }}
 {st.sel} .cl-stack {{ position: relative; width: 100%; justify-self: end; }}
 {st.sel} .cl-chip {{ position: absolute; z-index: 2; display: inline-flex; align-items: center; min-height: 40px; padding: 8px 16px; border-radius: 999px;
-  font-size: 15px; font-weight: 600; white-space: nowrap; background: #fff; color: var(--text-primary); box-shadow: var(--shadow-md); }}
+  font-size: 15px; font-weight: 600; white-space: nowrap; background: #fff; color: {chip_ink}; box-shadow: var(--shadow-md); }}
 @media (max-width: 1023px) {{ {st.sel} .cl-chip {{ display: none; }} }}
 {st.sel} .cl-chip.is-filled {{ background: {chip_fill}; color: #fff; }}
 {st.sel} .cl-stack-item {{ position: absolute; border-radius: 12px; overflow: hidden; box-shadow: var(--shadow-md); background: #fff; }}
