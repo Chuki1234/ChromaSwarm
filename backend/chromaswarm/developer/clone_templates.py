@@ -756,12 +756,12 @@ def _features(m: Model, st: Style, js, s: Section) -> tuple[str, str, str]:
                          f'{_img(js, m.picture(r), r)}</div>' for r in sorted(pics, key=lambda r: r["w"] * r["h"], reverse=True))
         chips = [r for r in m.loose if r["kind"] in ("text", "button") and r is not m.heading and r not in m.subs and r is not m.eyebrow
                  and r["x"] >= x0 - 120 and r["y"] <= y1 and (r.get("chars") or 0) < 30 and r["h"] >= 32]
-        for r in chips:
+        for ci, r in enumerate(chips):
             light = (m.color(r.get("ink")) or "").lower() in ("#ffffff", "#fff")
             from chromaswarm.developer.measured import readable_variant
             raw = m.color((m.variants.get("button/filled") or {}).get("fill"))
             chip_fill = (readable_variant(raw, "#e6e6e6", False) or raw) if raw else "var(--accent)"  # a margin over 4.5:1  # white label stays readable
-            layers += (f'<span className="cl-chip{" is-filled" if light else ""}" style={{{{ left: "{(r["x"] - x0) / max(1, x1 - x0) * 100:.2f}%", '
+            layers += (f'<span className="cl-chip cl-chip-{ci}{" is-filled" if light else ""}" style={{{{ left: "{(r["x"] - x0) / max(1, x1 - x0) * 100:.2f}%", '
                        f'top: "{(r["y"] - y0) / max(1, y1 - y0) * 100:.2f}%" }}}}>{_t(js, m.text(r), "label")}</span>')
         stack = (f'<div className="cl-stack" style={{{{ aspectRatio: "{round(x1 - x0)} / {round(y1 - y0)}", maxWidth: {round(x1 - x0)} }}}}>'
                  f'{layers}</div>')
