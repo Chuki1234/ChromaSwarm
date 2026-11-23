@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -56,7 +57,12 @@ from chromaswarm.clone.motion_check import inspect_motion
 from chromaswarm.clone.analysis import build as top_down
 from chromaswarm.clone.brief_doc import build_brief
 from chromaswarm.clone.sketch import check_reading
+from chromaswarm.clone.design_extract import extract as extract_design
+from chromaswarm.clone.design_extract import render as render_clone_design
 from chromaswarm.clone.spec import CloneSpec, apply_overrides, build_spec
+from chromaswarm.clone.conformance import check as check_conformance
+from chromaswarm.clone.verdict import judge as judge_clone
+from chromaswarm.clone.verdict import render as render_verdict
 from chromaswarm.clone.motion_check import summary as motion_check_summary
 from chromaswarm.qa.critic import render_markdown
 from chromaswarm.qa.master import heal_css
@@ -390,6 +396,11 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             write_artifact(p, "ANALYSIS.md", p.clone.analysis)
         except Exception as e:  # a report never blocks the clone
             log.warning("analysis failed: %s", e)
+        try:  # the reference's own design system and section specs, extracted backwards (design.json)
+            p.clone.design = extract_design(p.clone)
+            write_artifact(p, "design.json", json.dumps(p.clone.design, ensure_ascii=False, indent=1))
+        except Exception as e:
+            log.warning("design extraction failed: %s", e)
         try:  # what the rebuild copies / replaces / skips (clone/spec.py) — the build steps read it
             spec = build_spec(p.clone)
             p.clone.spec = spec.model_dump()
@@ -410,6 +421,13 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
                 sec["motion_params"] = {**(sec.get("motion_params") or {}), effect: params}
             sec["links"] = spec.controls(sec["id"])
             sec["paint"] = spec.layers(sec["id"])
+            design = p.clone.design or {}
+            spec_sec = next((d for d in design.get("sections", []) if d["id"] == sec["id"]), None)
+            if spec_sec:  # the template's numbers (clone_templates): this section's spec + the page's tokens
+                sec["design"] = {"section": spec_sec, "type": design.get("type", {}), "colors": design.get("colors", {}),
+                                 "components": design.get("components", {}), "fonts": design.get("fonts", [])}
+            if p.clone.owned and p.clone.owner_confirmed is not False and p.clone.content:
+                sec["owned"] = (p.clone.content.get("sections") or {}).get(sec["id"], {})
             sections.append(sec)
         p.clone.sections = sections
 
@@ -647,6 +665,11 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         elif phil is not None:
             log.warning("LLM philosophy cited numbers outside the engine facts; using the default")
         p.design_md = render_design_md(spec)
+        if p.mode is BuildMode.CLONE and p.clone and p.clone.design:
+            # Clone: DESIGN.md is the reference's design, extracted backwards (every number measured on it);
+            # the engine's tokens follow as the technical appendix the build's CSS variables come from.
+            p.design_md = (render_clone_design(p.clone.design)
+                           + "\n---\n\n## Phụ lục · token kỹ thuật (tokens.css, suy từ Style DNA của trang mẫu)\n\n" + p.design_md)
         p.tokens_css = render_tokens_css(spec)
         write_artifact(p, "DESIGN.md", p.design_md)
         write_artifact(p, "tokens.css", p.tokens_css)
@@ -971,6 +994,40 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
                 notice += f" · độ giống toàn trang {f.total:.0f}/100"
         if p.clone_compare:
             write_artifact(p, "COMPARE.md", render_compare(p.clone_compare, p.clone.url))
+        # Master QA's verdict: the finished page sketched and photographed against the reference, then every
+        # criterion against its threshold (clone/verdict.py).
+        if p.clone.components and hasattr(deps.build, "sketch_check"):
+            with contextlib.suppress(Exception):
+                built = {s.id for s in sections}
+                p.clone.sketch_final = await deps.build.sketch_check(
+                    p.session_id, {k: v for k, v in p.clone.boxes.items() if k in built},
+                    {k: v for k, v in p.clone.components.items() if k in built},
+                    deps.artifacts_root / p.session_id / "artifacts" / "sketch", final=True)
+        conformance = None
+        if p.clone.design and hasattr(deps.build, "measure_built"):
+            # Master QA checks the finished page against the reference's DESIGN.md, item by item.
+            with contextlib.suppress(Exception):
+                measured = await deps.build.measure_built(p.session_id)
+                if measured:
+                    built, boxes = measured
+                    missing_fx = {s["id"]: s.get("effects_missing", []) for s in (p.clone_compare or {}).get("sections", [])}
+                    skipped = CloneSpec.model_validate(p.clone.spec).skipped_sections() if p.clone.spec else set()
+                    conformance = check_conformance(p.clone.design, built, boxes, missing_fx, skipped)
+                    # Self-heal from the check: what differs in style is written for its own component, then the
+                    # page is measured and checked again (one round; layout differences are reported).
+                    if conformance.get("fixes") and hasattr(deps.build, "apply_design_fixes"):
+                        before = conformance["passed"]
+                        healed = await deps.build.apply_design_fixes(p.session_id, conformance["fixes"])
+                        if healed:
+                            measured = await deps.build.measure_built(p.session_id)
+                            if measured:
+                                conformance = check_conformance(p.clone.design, measured[0], measured[1], missing_fx, skipped)
+                                conformance["healed"] = {"properties": healed, "before": before}
+        v = judge_clone(p, conformance, p.clone.sketch_final)
+        p.clone_verdict = v.model_dump()
+        write_artifact(p, "CLONE_RESULT.md", render_verdict(v, p.clone.url))
+        mark = {"success": "✅", "close": "🟡", "failed": "❌"}[v.status]
+        notice += f". Master QA kết luận: {mark} {v.title}"
         p.advance()
         return {"pipeline": p, "notice": notice + "."}
 
@@ -982,6 +1039,10 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         pending = [pg for pg in p.sitemap if pg.slug not in p.page_routes]
         verdict = ("Master QA đạt 100% cả 4 bài." if p.qa_passed
                    else f"Master QA còn {len(p.qa_failures)} lỗi hệ thống chưa tự sửa được, bạn xem danh sách bên dưới.")
+        if p.clone_verdict:  # Clone: did it succeed, measured (CLONE_RESULT.md)
+            v = p.clone_verdict
+            mark = {"success": "✅", "close": "🟡", "failed": "❌"}.get(v["status"], "")
+            verdict = f"{mark} {v['title']}. " + verdict
         options = [{"label": f"Dựng trang tiếp theo: {pending[0].title}", "value": {"action": "next", "page": pending[0].slug},
                     "primary": True, "sent": f"Đang lập kế hoạch cho “{pending[0].title}” — duyệt trong Studio."}] if pending else []
         options.append({"label": "Tinh chỉnh trang này", "value": {"action": "refine"}, "feedback": True,

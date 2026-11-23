@@ -240,6 +240,8 @@ def add_found(boxes: dict[str, dict], comps: dict[str, list[dict]], found: list[
             continue
         box = boxes[sid]
         piece = {k: v for k, v in f.items() if k not in ("ax", "ay")}
+        if piece["kind"] in ("link", "button") and not piece.get("vision"):
+            piece["kind"] = "text"  # found in a gap, its behaviour unknown: drawn as words, never a dead control
         piece.update(x=int(f["ax"] - box.get("left", 0)), y=int(f["ay"] - box.get("top", 0)), found=True)
         comps.setdefault(sid, []).append(piece)
         have.append({**f, "sid": sid})
@@ -479,11 +481,11 @@ async def content_cells(page, shot: bytes) -> tuple[set[tuple[int, int]], int]:
     return {(c, r) for c, r in found["cells"]}, int(found["height"])
 
 
-async def shot_pairs(page, ref_shot: bytes, built_svg: str, height: int, out_dir: Path) -> list[str]:
-    return await _pairs(page, _data_url(ref_shot, "image/jpeg"), built_svg, height, out_dir, "shot",
+async def shot_pairs(page, ref_shot: bytes, built_svg: str, height: int, out_dir: Path, prefix: str = "shot") -> list[str]:
+    return await _pairs(page, _data_url(ref_shot, "image/jpeg"), built_svg, height, out_dir, prefix,
                         ("Trang mẫu (ảnh chụp)", "Bản dựng wireframe (ảnh chụp) · khung đỏ = thiếu"))
 
 
-async def sketch_pairs_built(page, ref_svg: str, built_svg: str, height: int, out_dir: Path) -> list[str]:
-    return await _pairs(page, _data_url(ref_svg.encode(), "image/svg+xml"), built_svg, height, out_dir, "built",
+async def sketch_pairs_built(page, ref_svg: str, built_svg: str, height: int, out_dir: Path, prefix: str = "built") -> list[str]:
+    return await _pairs(page, _data_url(ref_svg.encode(), "image/svg+xml"), built_svg, height, out_dir, prefix,
                         ("Sketch trang mẫu", "Sketch bản dựng (wireframe)"))

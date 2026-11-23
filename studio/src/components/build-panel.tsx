@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { CompareResult, CompareSection, PipelineState } from "@/components/pipeline-console";
+import type { CloneVerdict, CompareResult, CompareSection, PipelineState } from "@/components/pipeline-console";
 
 type Props = { state: PipelineState; notice: string | null; running: boolean };
 
@@ -80,6 +80,7 @@ export function BuildPanel({ state, notice, running }: Props) {
         <List title="Nhà máy cursor (B9): section → tổ → component" items={state.factory_log!} />
       )}
 
+      {state.clone_verdict && <VerdictPanel verdict={state.clone_verdict} />}
       {state.clone_compare && <ComparePanel result={state.clone_compare} session={state.session_id} />}
 
       {state.clone_fidelity != null && (
@@ -180,6 +181,41 @@ function QaPanel({ state }: { state: PipelineState }) {
 }
 
 /** B11 Clone: the Master cursor's 1:1 acceptance — each section of the reference beside the rebuild. */
+/** Clone: Master QA's verdict — the rebuild checked against the reference's DESIGN.md, item by item. */
+function VerdictPanel({ verdict }: { verdict: CloneVerdict }) {
+  const tone = verdict.status === "success" ? "text-accent" : verdict.status === "close" ? "text-fg" : "text-danger";
+  return (
+    <section className="flex flex-col gap-3 rounded-xl border border-line p-4" data-swarm-section="clone-verdict" aria-label="Master QA kết luận">
+      <h3 className={`text-sm font-semibold ${tone}`}>
+        {verdict.status === "success" ? "✓ " : verdict.status === "close" ? "≈ " : "✗ "}Master QA: {verdict.title}
+      </h3>
+      <p className="text-xs text-fg-2">
+        Đối chiếu từng mục với DESIGN.md trích ngược từ trang mẫu (khung, đệm, vị trí, kích thước, kiểu chữ, màu, bo góc, hiệu ứng).
+        Master QA (tương phản, vùng bấm…): {verdict.qa_passed ? "qua" : "chưa qua"}.
+      </p>
+      <ul className="flex flex-col divide-y divide-line">
+        {verdict.sections.map((s) => (
+          <li key={s.id} className="flex flex-col gap-1 py-2 text-sm">
+            <span className="flex items-baseline justify-between gap-4">
+              <span>{s.name}</span>
+              <span className={`font-mono text-xs ${s.passed === s.total ? "text-accent" : "text-fg-2"}`}>{s.passed}/{s.total}</span>
+            </span>
+            {s.failed.length > 0 && (
+              <details className="text-xs text-fg-2">
+                <summary className="cursor-pointer">{s.failed.length} mục lệch</summary>
+                <ul className="mt-1 flex flex-col gap-0.5">{s.failed.map((f, k) => <li key={k}>— {f}</li>)}</ul>
+              </details>
+            )}
+          </li>
+        ))}
+      </ul>
+      <p className="text-xs text-fg-3">
+        Tham khảo: {verdict.indicators.map((i) => `${i.label.toLowerCase()} ${i.value == null ? "—" : `${i.value}%`}`).join(" · ")}
+      </p>
+    </section>
+  );
+}
+
 function ComparePanel({ result, session }: { result: CompareResult; session: string }) {
   const [open, setOpen] = useState<string | null>(result.sections.find((s) => s.score < 80)?.id ?? result.sections[0]?.id ?? null);
   const shot = (name: string | null) => (name ? `${BACKEND_HTTP}/sessions/${encodeURIComponent(session)}/compare/${name}` : null);

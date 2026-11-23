@@ -111,6 +111,13 @@
   }
 
   async function glide(c, x, y) {
+    c.pin = null;  // sent somewhere else: it stops following its previous element (callers pin it again)
+    c.el.style.visibility = "";
+    c.moving = true;
+    try { await glideTo(c, x, y); } finally { c.moving = false; }
+  }
+
+  async function glideTo(c, x, y) {
     const x0 = c.x, y0 = c.y;
     const dist = Math.hypot(x - x0, y - y0);
     if (cfg.instant || dist < 1) { c.x = x; c.y = y; place(c); return; }
@@ -182,7 +189,22 @@
     return a;
   }
 
+  // A worker that reached its component stays on it: the page scrolls under the overlay (fixed layer), so
+  // the cursor follows the element, and hides while the element is off screen (never parked at an edge).
+  function pinAt(c) {
+    if (!c.pin || c.moving) return;
+    if (!c.pin.isConnected) { c.pin = null; return; }
+    const r = c.pin.getBoundingClientRect();
+    const off = r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth;
+    c.el.style.visibility = off ? "hidden" : "";
+    if (off) return;
+    c.x = r.left + Math.min(12, r.width / 2);
+    c.y = r.top + Math.min(8, r.height / 2);
+    place(c);
+  }
+
   function relayout() {
+    for (const c of Object.values(cursors)) pinAt(c);
     annotations = annotations.filter(a => a.node.isConnected);
     for (const a of annotations) {
       if (!a.el.isConnected) { a.node.remove(); continue; }
@@ -365,6 +387,7 @@
 
     async flyTo(id, selector) {
       const el = await reach(id, selector);
+      if (el && cursors[id] && id !== "master") { cursors[id].pin = el; pinAt(cursors[id]); }  // section / crew cursors stay on it
       return el ? rectOf(el) : null;
     },
 
@@ -387,8 +410,11 @@
         await Promise.all(batch.map(async ({ it, el }) => {
           api.spawn(it.id, it.label, it.color, it.from, 14);
           const r = el.getBoundingClientRect(), c = cursors[it.id];
-          await glide(c, Math.max(4, Math.min(innerWidth - 30, r.left + Math.min(12, r.width / 2))),
-                      Math.max(4, Math.min(innerHeight - 30, r.top + Math.min(8, r.height / 2))));
+          if (r.bottom > 0 && r.top < innerHeight) {
+            await glide(c, Math.max(4, Math.min(innerWidth - 30, r.left + Math.min(12, r.width / 2))), r.top + Math.min(8, r.height / 2));
+          }
+          c.pin = el;  // from now on the worker follows its component (scrolling, re-layout)
+          pinAt(c);
           annotate(el, "comp", (node, rr) => node.appendChild(boxEl(rr, it.ok ? it.color : FAIL, it.note || it.label, !it.ok)));
           done++;
         }));
@@ -402,11 +428,16 @@
       const target = cursors[into];
       await Promise.all(ids.filter(id => cursors[id]).map(async id => {
         const c = cursors[id];
+        c.pin = null;
+        c.el.style.visibility = "";
         if (target) await glide(c, target.x, target.y);
         c.el.remove(); delete cursors[id]; delete AGENTS[id];
       }));
       return true;
     },
+
+    /** Where a cursor is (tests / debugging): window position and whether it shows. */
+    pos(id) { const c = cursors[id]; return c ? { x: Math.round(c.x), y: Math.round(c.y), visible: c.el.style.visibility !== "hidden" } : null; },
 
     retire(id) { if (cursors[id]) { cursors[id].el.remove(); delete cursors[id]; delete AGENTS[id]; } return true; },
 

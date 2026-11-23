@@ -51,6 +51,21 @@
     }
     return false;
   };
+  /** The part of an element's box that is really painted: cut by every ancestor that clips its overflow
+      (a marquee window, a carousel frame). Null when nothing of it shows. */
+  const shownRect = el => {
+    const r = el.getBoundingClientRect();
+    let l = r.left, t = r.top, rt = r.right, b = r.bottom;
+    for (let n = el.parentElement; n && n !== document.body; n = n.parentElement) {
+      const cs = getComputedStyle(n);
+      const cx = cs.overflowX !== "visible", cy = cs.overflowY !== "visible";
+      if (!cx && !cy) continue;
+      const p = n.getBoundingClientRect();
+      if (cx) { l = Math.max(l, p.left); rt = Math.min(rt, p.right); }
+      if (cy) { t = Math.max(t, p.top); b = Math.min(b, p.bottom); }
+    }
+    return rt - l > 1 && b - t > 1 ? { left: l, top: t, right: rt, bottom: b } : null;
+  };
   const textBlocks = () => [...document.body.querySelectorAll("*")]
     .filter(el => !/^(SCRIPT|STYLE|NOSCRIPT|CHROMASWARM-OVERLAY)$/.test(el.tagName) && ownText(el) && visible(el));
 
@@ -156,7 +171,7 @@
     collisions(limit = 12) {
       const boxes = [...textBlocks(), ...document.querySelectorAll("button, input, select")]
         .filter(el => visible(el) && !inFloating(el) && !inHScroller(el))
-        .map(el => ({ el, r: el.getBoundingClientRect() }));
+        .map(el => ({ el, r: shownRect(el) })).filter(x => x.r);
       const out = [];
       for (let i = 0; i < boxes.length && out.length < limit; i++) {
         for (let j = i + 1; j < boxes.length && out.length < limit; j++) {
@@ -229,6 +244,9 @@
       }
       for (const el of document.querySelectorAll("a[href]")) {
         if (!visible(el) || !/^(P|LI|SPAN|LABEL|DD|TD)$/.test(el.parentElement?.tagName ?? "")) continue;
+        // In running text only: other words sit beside it (a link alone in a list item is navigation).
+        const beside = [...el.parentElement.childNodes].some(n => n !== el && n.textContent.trim().length > 1);
+        if (!beside) continue;
         links.push({ selector: cssPath(el), underline: getComputedStyle(el).textDecorationLine.includes("underline") });
       }
       for (const el of document.querySelectorAll("button, input, select, textarea, [aria-disabled=true]")) {

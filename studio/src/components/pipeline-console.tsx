@@ -82,6 +82,7 @@ export type PipelineState = {
   clone_fidelity?: number | null;
   clone_fidelity_notes?: string[];
   clone_compare?: CompareResult | null;
+  clone_verdict?: CloneVerdict | null;
   compare_rounds?: number;
   factory_log?: string[];
   design_critique: string[];
@@ -116,6 +117,13 @@ export type CompareSection = {
   id: string; name: string; score: number; parts: Record<string, number>; matched: number;
   diffs: string[]; effects_missing: string[]; ref_height: number; built_height: number;
   ref_image: string | null; built_image: string | null;
+};
+/** clone/verdict.py: Master QA's verdict on a Clone — every criterion measured against its threshold. */
+export type CloneVerdict = {
+  status: "success" | "close" | "failed"; title: string; next_steps: string[];
+  qa_passed: boolean; qa_failures: string[]; passed: number; total: number; pct: number;
+  sections: { id: string; name: string; passed: number; total: number; failed: string[] }[];
+  indicators: { key: string; label: string; value: number | null; detail: string }[];
 };
 export type CompareResult = { total: number; rounds: number; tuned: number; sections: CompareSection[] };
 

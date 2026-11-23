@@ -1032,6 +1032,12 @@ def render_section(section: Section, copy: PageCopy, page: str = "", content: di
     fn = BY_ID.get(section.id) or BY_STRUCTURE.get(section.structure)
     if measurable(section):
         fn = _measured_or(fn)
+    if section.design:
+        # Clone: the section understood and built as a real component, numbers from the reference's DESIGN.md
+        # (developer/clone_templates.py); other kinds fall back to the measured / structure renderer above.
+        from chromaswarm.developer import clone_templates
+        fallback = fn
+        fn = lambda s, c: clone_templates.render(s, c) or (fallback(s, c) if fallback else None)  # noqa: E731
     if fn is None:
         raise ValueError(f"no Next.js template for structure {section.structure!r}")
     folder = f"components/sections/{page}" if page else "components/sections"
