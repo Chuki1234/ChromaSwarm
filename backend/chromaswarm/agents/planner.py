@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer, field_validator
 
 from chromaswarm.agents.consultant import base_font_for, extract_cta, split_color
 from chromaswarm.developer.i18n import page_lang
@@ -50,6 +50,18 @@ class Section(BaseModel):
     # their tokens + the page's type / colour / component tokens) and, on the user's own site, its real words and
     # pictures by place (reader `texts` / `pics`). developer/clone_templates.py builds the section from them.
     design: dict = {}
+    reference: dict = {}  # Master inspector: sanitized DOM, authored responsive CSS, box model and special assets.
+
+    @field_validator('reference', mode='before')
+    @classmethod
+    def read_reference(cls, value):
+        from chromaswarm.clone.reference_payload import unpack
+        return unpack(value or {})
+
+    @field_serializer('reference')
+    def save_reference(self, value):
+        from chromaswarm.clone.reference_payload import pack
+        return pack(value)
     owned: dict = {}
 
 
@@ -327,8 +339,7 @@ def render_product_md(state: PipelineState, project_name: str, seed_note: str | 
     clone = state.clone if state.selected_page == CLONE_PAGE else None
     for r in state.references:
         if clone and r.url == clone.url:
-            level = ("Clone 100% — người dùng xác nhận đây là trang của họ: sao chép cấu trúc, chữ, ảnh"
-                     if clone.owned else "Clone cấu trúc — thứ tự và bố cục section y hệt; chữ, ảnh là của người dùng")
+            level = "Clone đầy đủ — giữ cấu trúc, chữ, ảnh và hiệu ứng của trang mẫu"
             lines.append(f"- Trang mẫu (Clone mode, FRONTEND_STANDARDS §2.5): {r.url} — {level}.")
         else:
             lines.append(f"- Tham khảo: {r.url or r.screenshot_path} — chỉ học Design DNA, không sao chép bố cục.")

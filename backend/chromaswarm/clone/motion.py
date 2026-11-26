@@ -156,9 +156,19 @@ POST_JS = r"""async () => {
     if (!t || !timing || timing.iterations !== Infinity) continue;
     const frames = a.effect.getKeyframes().map(k => k.transform || "").join(" ");
     const vertical = /translateY\(|translate3d\([^,]+,\s*-?[1-9]/.test(frames) && !/translateX\(/.test(frames);
-    if (/translate(X|Y|3d)?\(/.test(frames))
-      out.marquee.push({ ...abs(t.getBoundingClientRect()), cycle: (timing.duration || 0) / 1000, axis: vertical ? "y" : "x",
-                         reverse: /-50%\)?\s*$/.test(String(a.effect.getKeyframes()[0].transform || "")) });
+    if (/translate(X|Y|3d)?\(/.test(frames)) {
+      const r=t.getBoundingClientRect();
+      let top=r.top,bottom=r.bottom,left=r.left,right=r.right;
+      for(let p=t.parentElement;p&&p!==document.body;p=p.parentElement){
+        const style=getComputedStyle(p),q=p.getBoundingClientRect();
+        if(style.overflowY!=='visible'){top=Math.max(top,q.top);bottom=Math.min(bottom,q.bottom);}
+        if(style.overflowX!=='visible'){left=Math.max(left,q.left);right=Math.min(right,q.right);}
+      }
+      let reverse=/-50%\)?\s*$/.test(String(a.effect.getKeyframes()[0].transform || ""));
+      if(timing.direction==='reverse')reverse=!reverse;
+      out.marquee.push({ ...abs(r), clip:{top:Math.round(top+scrollY),left:Math.round(left),w:Math.max(0,right-left),h:Math.max(0,bottom-top)},
+                        cycle:(timing.duration||0)/1000,axis:vertical?'y':'x',reverse });
+    }
   }
   const tracks = [...document.querySelectorAll("body *")].filter(el => {
     const p = el.parentElement; if (!p) return false;

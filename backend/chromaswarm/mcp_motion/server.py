@@ -8,10 +8,10 @@ server (GSAP, Three.js, Spline...) that implements the same two tools:
   build_effect(effect, section_id, duration_ms, easing)
                                        -> {"kind", "css", "notes"}
 
-The built-in effects are dependency-free CSS (no JS bundle, works in every
-framework adapter): an entrance reveal and a scroll-driven parallax. Both
-respect prefers-reduced-motion and only animate transform/opacity, and the
-reveal ends at opacity 1 so B11's "stuck at opacity 0" check stays green.
+CSS effects remain dependency-free. build_special_asset(section_id, asset_id, scene)
+also emits a React/Three.js renderer, a typed scene component and pinned npm dependencies.
+It accepts source GLB/glTF or declarative geometry/camera/lights/tracks; it never invents
+geometry from a canvas screenshot. The measured DOM host owns position and spacing.
 
 Run standalone:  uv run python -m chromaswarm.mcp_motion.server
 """
@@ -156,7 +156,16 @@ BUILDERS = {"reveal": _reveal, "parallax": _parallax, "stagger-cards": _stagger,
 @server.tool()
 def list_effects() -> dict:
     """List the motion effects this server can build."""
-    return {"effects": EFFECTS}
+    return {"effects": {**EFFECTS, "threejs-scene": "Measured special asset: glTF/GLB or declarative Three.js scene, resize-aware and reduced-motion safe."}}
+
+
+@server.tool()
+def build_special_asset(section_id: str, asset_id: str, scene: dict) -> dict:
+    """Generate React/Three.js source files from measured scene data. The native DOM host controls layout.
+    scene: model_url (GLB/glTF) or objects (geometry, size, material, transforms), camera, lights, animation tracks.
+    Missing geometry is reported, never replaced with an invented scene."""
+    from chromaswarm.mcp_motion.special import build_special
+    return build_special(section_id, asset_id, scene)
 
 
 @server.tool()

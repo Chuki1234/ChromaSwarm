@@ -24,6 +24,9 @@ class MotionEffect(BaseModel):
     kind: str
     css: str
     notes: str = ""
+    files: list[dict[str, str]] = []
+    dependencies: dict[str, str] = {}
+    dev_dependencies: dict[str, str] = {}
 
 
 _EASING = re.compile(r"^(cubic-bezier\([0-9.,\s-]+\)|ease|ease-in|ease-out|ease-in-out|linear)$")
@@ -89,4 +92,22 @@ async def build_effects(requests: list[tuple], duration_ms: int, easing: str,
     # Raised outside the stdio task group, so callers get a MotionError, not an ExceptionGroup.
     if error:
         raise MotionError(error)
+    return out
+
+
+async def build_special_assets(section_id: str, assets: list[dict], params: StdioServerParameters | None = None) -> list[MotionEffect]:
+    requests = [a for a in assets if a.get('scene')]
+    if not requests:
+        return []
+    out = []
+    async with stdio_client(params or server_params()) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            for asset in requests:
+                data = _payload(await session.call_tool('build_special_asset', {
+                    'section_id': section_id, 'asset_id': asset['id'], 'scene': asset['scene']}))
+                if 'error' in data:
+                    raise MotionError(data['error'])
+                out.append(MotionEffect(effect='threejs-scene', section_id=section_id, **{
+                    k: data[k] for k in ('kind','css','notes','files','dependencies','dev_dependencies')}))
     return out

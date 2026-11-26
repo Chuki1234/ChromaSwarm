@@ -105,7 +105,6 @@ def build_spec(clone) -> CloneSpec:
     """Every decision for the rebuild, from what B2 read (`clone`: CloneSource)."""
     boxes = clone.boxes or {}
     report = clone.motion_report or {}
-    owned = bool(clone.owned and clone.owner_confirmed is not False)
     section_ids = [s["id"] for s in clone.sections]
     items: list[SpecItem] = []
 
@@ -116,28 +115,18 @@ def build_spec(clone) -> CloneSpec:
                               data={"name": s["name"], "structure": s["structure"]}))
 
     # Words, testimonials, brand.
-    if owned:
-        items.append(SpecItem(id="text:all", kind="text", action="copy", why="trang của bạn (xác nhận ở B3): chép chữ"))
-    else:
-        items.append(SpecItem(id="text:all", kind="text", action="replace", why="chữ là của chủ trang",
-                              replace_with="chữ mẫu theo loại trang, sửa trong content/"))
-        for s in clone.sections:
-            if s["structure"] == "testimonials":
-                items.append(SpecItem(id=f"testimonial:{s['id']}", kind="testimonial", section=s["id"], action="replace",
-                                      why="lời và tên người thật — chép sang là lời chứng thực giả",
-                                      replace_with="lời khách của bạn, hoặc mẫu ghi rõ là mẫu"))
+    items.append(SpecItem(id="text:all", kind="text", action="copy", why="giữ nội dung chữ của trang mẫu"))
 
     # Pictures, icons, logos.
     for n, m in enumerate(clone.media or []):
         sid = _section_at(boxes, m["top"], m["h"])
         if m.get("icon"):
-            kind, why, repl = "icon", "file icon của trang", "ô icon đúng kích thước (thay bằng icon mã nguồn mở của bạn)"
+            kind, why = "icon", "giữ icon của trang mẫu"
         elif m.get("logo"):
-            kind, why, repl = "logo", "logo / thương hiệu", "logo của bạn (public/)"
+            kind, why = "logo", "giữ logo / thương hiệu của trang mẫu"
         else:
-            kind, why, repl = "picture", "hình là tài sản của chủ trang", "khung giữ chỗ đúng kích thước hoặc ảnh của bạn (B4)"
-        items.append(SpecItem(id=f"{kind}:{n}", kind=kind, section=sid, action="copy" if owned else "replace", why=why,
-                              replace_with="" if owned else repl,
+            kind, why = "picture", "giữ hình ảnh của trang mẫu"
+        items.append(SpecItem(id=f"{kind}:{n}", kind=kind, section=sid, action="copy", why=why,
                               data={k: m.get(k) for k in ("kind", "top", "left", "w", "h", "nw", "nh", "file")}))
 
     # Controls: where each one leads in the rebuild.
@@ -194,7 +183,7 @@ def build_spec(clone) -> CloneSpec:
         sid = _section_at(boxes, b["top"], b["h"])
         box = boxes.get(sid or "", {})
         if b["kind"] == "faint-type":
-            items.append(SpecItem(id=f"background:{sid}:{n}", kind="background", section=sid, action="skip" if not owned else "copy",
+            items.append(SpecItem(id=f"background:{sid}:{n}", kind="background", section=sid, action="copy",
                                   why=f"chữ khổng lồ mờ {b.get('font_px')}px (tên thương hiệu)", replace_with="tên của bạn nếu muốn"))
             continue
         big = b["w"] >= 160 and b["h"] >= 120
@@ -218,6 +207,10 @@ def build_spec(clone) -> CloneSpec:
     for it in report.get("items") or []:
         sid, eff = it.get("section"), it.get("effect")
         params = dict(it.get("params") or {})
+        if eff == "marquee-vertical":
+            items.append(SpecItem(id=f"effect:{sid}:{eff}", kind="effect", section=sid, action="copy", why=it["how"],
+                                  data={"renderer": "section-template", "params": params, "label": it.get("label")}))
+            continue
         build = BUILD_AS.get(eff)
         if eff == "load-in":
             first = next((a for a in unplayed if _section_at(boxes, a["top"], a["h"]) == sid), None)

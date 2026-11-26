@@ -122,7 +122,7 @@ class CloneSource(BaseModel):
     """Clone mode input and what was read from the reference page."""
 
     url: str
-    owned: bool = False  # user confirmed the site is theirs: its text and images may be copied
+    owned: bool = True  # legacy field: new Clone sessions include the reference's text and images by default
     analysed: bool = False
     title: str | None = None
     sections: list[dict] = Field(default_factory=list)  # planner.Section dumps, in the page's order

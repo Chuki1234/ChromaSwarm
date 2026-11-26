@@ -135,16 +135,11 @@ Khi nhận được **Ảnh chụp màn hình** (và **Link URL** do người d�
 > Bảng trên là luật của **Creative mode**. Ở **Clone mode**, các thành phần trong cột "Bị cấm" được mở khóa theo Mục 2.5.
 
 ### 2.5. Clone mode — Dựng lại y hệt trang mẫu (Ngoại lệ của Mục 2.4, Dùng ở Bước 1 → Bước 6)
-Clone mode là chế độ duy nhất cho phép model sao chép trang mẫu. Người dùng phải **chủ động chọn Clone mode ở Bước 1** và gửi **Link URL + mô tả trang web của họ**. Mức sao chép phụ thuộc vào việc người dùng có xác nhận đó là trang web của chính họ hay không:
+Người dùng chọn **Clone mode** và gửi URL. Clone mặc định đọc đầy đủ bố cục, văn bản, thương hiệu, logo, hình ảnh và hiệu ứng của trang mẫu; không có bước xác nhận sở hữu hay lọc nội dung theo quyền sở hữu.
 
-| Mức | Điều kiện | Model được sao chép |
-| :--- | :--- | :--- |
-| **Clone cấu trúc** (mặc định) | Người dùng KHÔNG đánh dấu “Đây là trang web của tôi” | Thứ tự khối và kiểu bố cục của từng section y hệt trang mẫu, hệ màu, nhiệt độ màu, mật độ khoảng cách, phông chữ (nếu có bộ chữ tiếng Việt), cách xử lý bề mặt. **Văn bản, tên thương hiệu, logo và hình ảnh** dùng nội dung của người dùng — không lấy từ trang mẫu. |
-| **Clone 100%** | Người dùng đánh dấu “Đây là trang web của tôi” (ví dụ chuyển web cũ của họ sang Next.js) | Toàn bộ cột “Bị cấm” ở Mục 2.4: cấu trúc và thứ tự khối, văn bản, tên thương hiệu, logo, hình ảnh gốc. |
-
-Quy tắc bắt buộc ở cả hai mức:
-1. Xác nhận quyền sở hữu do **người dùng tự đánh dấu**; model không bao giờ tự suy ra một trang là của người dùng.
-2. Khi không có xác nhận, bộ đọc trang **không lấy bất kỳ nội dung chữ hay ảnh nào** ra khỏi trang mẫu — chỉ số đo bố cục và phong cách.
+Quy tắc bắt buộc:
+1. Sketch phải bao phủ toàn bộ trang từ header tới footer, đo đủ component trong mỗi section, kể cả phần tử chuyển động hoặc có `aria-hidden` nhưng vẫn được vẽ trên màn hình.
+2. Với animation lặp, giữ vị trí đã đo trong khung cắt, hướng và chu kỳ; thể hiện các component chuyển động trong sketch. Vùng chưa đọc được phải đánh dấu rõ, không coi khung ảnh nền lớn là đã đọc đủ nội dung bên trên.
 3. Clone mode **vẫn qua đủ các cổng chặn**: duyệt kế hoạch ở Bước 7, chuẩn màu – chữ – lưới 8pt ở Chương 2, và 4 bài kiểm thử của Cursor Lớn Nhất ở Chương 5. Trang dựng lại phải đạt chuẩn như một trang Creative.
 4. Section nào trang mẫu có mà hệ thống chưa dựng được, model dựng bằng kiểu gần nhất và ghi rõ trong `PLAN.md`.
 

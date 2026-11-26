@@ -18,6 +18,10 @@ pages one page at a time. Full spec: `docs/00_HANDOFF_CLAUDE.md` and
 
 ## Layout
 
+Master Cursor / special assets: `clone/master_inspector.py` reads authored responsive CSS, DOM hierarchy, computed layout and CDP `DOM.getBoxModel` / `CSS.getComputedStyleForNode`. `Section.reference` carries sanitized HTML/CSS and asset IDs; snapshots are losslessly compressed by `clone/reference_payload.py` for checkpoint/JSON transport and expanded when a Section is validated. `developer/reference_dom.py` preserves the actual grid, margin, padding, gap, vw/calc/media rules and keyframes instead of substituting a section template. Each section's stylesheet is scoped so utilities from another section cannot override it. B11 audits the same viewport/animation phase and writes `SPECIAL_ASSETS_QA.json`; native sections bypass heuristic geometry tuning. Motion MCP `build_special_asset` generates Three.js code for GLB/glTF or explicit scene data, with resize/reduced-motion/cleanup; known scenes reuse the measured canvas. Unknown canvas geometry remains unresolved and cannot earn a successful fidelity verdict.
+
+Clone behavior update: new Clone sessions read the reference's original text, images and brand by default. There is no ownership confirmation or copyright-based content filter in the user flow; older descriptions of opt-in/structure-only cloning below are historical. B7 plan approval and QA remain. The reader includes visible `aria-hidden` animation components, freezes motion for measurements, and produces a full-page sketch (with per-screen details), motion markers and explicit remaining gaps. `owned` / `owner_confirmed` remain as legacy checkpoint fields.
+
 - `backend/` — Python 3.11+ orchestrator (`uv`, FastAPI + WebSocket, Pydantic, LangGraph, Anthropic SDK, Playwright).
   - `chromaswarm/state_machine/pipeline_state.py` — B1→B12 state, exit criteria, per-step tool grants.
   - `chromaswarm/state_machine/graph.py` — LangGraph B1–B7, one `interrupt()` per node pass, single router on `pipeline.step`; `PipelineRunner` is the WebSocket-facing API.
@@ -55,11 +59,12 @@ cd backend && uv run pytest -q   # offline; needs `uv run playwright install chr
 cd backend && uv run python -m chromaswarm.clone.suite [--build] [--only a,b] [--update]   # Clone regression suite (live sites)
 CHROMASWARM_E2E=1 uv run pytest -q tests/test_build.py   # + real npm/next dev/Chromium build (~35s)
 cp backend/.env.example backend/.env   # then set the LLM key, or empty the model for rule-based
-cd backend && uv run uvicorn chromaswarm.main:app --port 8100 --reload
+cd backend && uv run python -m chromaswarm.server
 cd studio && npm run dev
 ```
 
 The backend uses port **8100** (8000 is taken by another local service).
+Use `chromaswarm.server` for development. On Windows it disables `--reload` so Playwright, Motion MCP and build subprocesses work; restart the backend after code changes. Other platforms can use `--reload`.
 
 ## Decisions (do not re-litigate)
 
@@ -73,7 +78,7 @@ The backend uses port **8100** (8000 is taken by another local service).
 8. Unclear answers are re-asked (`interpret()` returns None) — never filled in by the agent. Answers already given in the first prompt are taken (with a verified quote, `agents/brief.py`) and not asked again; nothing is inferred from the product type.
 9. Deviations from FRONTEND_STANDARDS.md, chosen to keep APCA / 8pt checks passing: dark-mode text-secondary 78% and text-muted 68% (spec: 72% / 52%); dense section padding 48px (spec: 40–56px, off-grid); mobile type ratio = 1 + 0.6·(r−1). Fonts (presets, i.e. Creative mode; Clone keeps the reference's fonts): Instrument Serif → Playfair Display (editorial-luxury), Outfit/DM Sans → Fraunces/Be Vietnam Pro (warm-organic; serif heading for contrast), because the originals have no Vietnamese subset; `VIETNAMESE_FONTS` + a test guard every preset font.
 10. Studio UI itself follows `FRONTEND_STANDARDS.md` (OKLCH tokens in `globals.css`, 8pt spacing, no AI-slop patterns).
-11. Anti-cloning (standards §2.4) applies to **Creative mode only**. **Clone mode** (§2.5) may rebuild the reference's whole look identically — layout, colours, typography (its own fonts), spacing — but never its text or images (copyright): structure clone by default, the user's own text/images in `content/`; **Clone 100%** (text, brand, logo, images too) only for the user's own site, opted into behind a small link and confirmed against the page's name at B3. Ownership is never inferred, and without the tick the reader returns no content at all. Clone pages still pass B7 approval and B11 with the Clone QA profile (accessibility rules kept, house-style rules waived — see Clone QA profile).
+11. Anti-cloning (standards §2.4) applies to **Creative mode only**. **Clone mode** (§2.5) reads original text, brand, logo, images, layout and effects by default, with no copyright/ownership confirmation gate. B7 plan approval and B11 Clone QA remain. Keep legacy ownership fields only for checkpoint compatibility; measure full-page fidelity honestly.
 
 ## Next.js note
 

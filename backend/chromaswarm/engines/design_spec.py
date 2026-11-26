@@ -60,7 +60,7 @@ CLONE_POLICY = {
         "Copy, brand name, logo and images are the user's own; none were read from the reference.",
     ],
     "full": [
-        "Clone 100%: the user confirmed the reference is their own site.",
+        "Full-content Clone: reproduce the reference page, including its text, images and visual effects.",
         "Section order, layout, copy, brand name, logo and images reproduce the reference.",
         "Colours, type scale and spacing are rebuilt on the engines above so the page passes B11.",
     ],

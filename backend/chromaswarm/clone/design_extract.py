@@ -256,6 +256,8 @@ def extract(clone) -> dict:
         rows = []
         for c in sorted(cs, key=lambda c: (c.y, c.x)):
             row = {"i": c.i, "kind": c.kind, "x": c.x, "y": c.y, "w": c.w, "h": c.h}
+            if c.motion:
+                row["motion"] = c.motion
             if c.kind in ("heading", "text", "link") and c.tw:
                 row["tx"], row["tw"] = c.tx, c.tw  # where the words really run inside the box (centred copy)
             if c.kind == "card" and any(o.kind == "image" and o.w * o.h >= 0.7 * c.w * c.h and c.x - 4 <= o.x and o.x + o.w <= c.x + c.w + 4

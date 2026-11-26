@@ -69,6 +69,14 @@ def draw(boxes: dict[str, dict], comps: dict[str, list[dict]], height: int, gaps
         ink, soft, line = ("#e5e7eb", "#4b5563", "#9ca3af") if p["dark"] else ("#374151", "#d1d5db", "#6b7280")
         x, y, w, hh = p["ax"], p["ay"], max(p.get("w", 0), 1), max(p.get("h", 0), 1)
         k = p["kind"]
+        motion = p.get("motion")
+        clip = (motion or {}).get("clip")
+        if clip:
+            box = boxes[p["sid"]]
+            cx, cy = box.get("left", 0) + clip["x"], box.get("top", 0) + clip["y"]
+            cid = f"clip-{len(out)}"
+            out.append(f'<defs><clipPath id="{cid}"><rect x="{cx}" y="{cy}" width="{clip["w"]}" height="{clip["h"]}"/></clipPath></defs>')
+            out.append(f'<g clip-path="url(#{cid})">')
         if k in ("heading", "text", "link"):
             fs = max(p.get("fs") or 16, 8)
             lh = fs * (p.get("lh") or 1.3)
@@ -92,6 +100,13 @@ def draw(boxes: dict[str, dict], comps: dict[str, list[dict]], height: int, gaps
             out.append(f'<rect x="{x}" y="{y}" width="{w}" height="{hh}" rx="{p.get("radius", 0)}" fill="none" stroke="{line}" stroke-dasharray="6 4"/>')
         elif k == "input":
             out.append(f'<rect x="{x}" y="{y}" width="{w}" height="{hh}" rx="{p.get("radius", 4)}" fill="none" stroke="{line}" stroke-width="2"/>')
+        if motion:
+            label = f"animation {motion.get('axis', 'y')} · {motion.get('cycle_s', 0):g}s"
+            out.append(f'<rect x="{x}" y="{y}" width="{w}" height="{hh}" fill="none" stroke="#3b82f6" stroke-width="2" stroke-dasharray="8 4"><title>{label}</title></rect>')
+            arrow = "↓" if motion.get("direction") == "down" else "↑"
+            out.append(f'<text x="{x + 8}" y="{max(y, cy if clip else y) + 22}" fill="#3b82f6" font-size="18">{arrow} {label}</text>')
+        if clip:
+            out.append('</g>')
     for g in gaps or []:
         out.append(f'<rect x="{g["x"]}" y="{g["y"]}" width="{g["w"]}" height="{g["h"]}" fill="#ef4444" fill-opacity="0.12" '
                    f'stroke="#ef4444" stroke-width="3" stroke-dasharray="10 6"/>')
@@ -117,8 +132,14 @@ def occupancy(pieces: list[dict], height: int, pad: int = 1, boxes: dict[str, di
             b = boxes[p["sid"]]
             if p.get("w", 0) * p.get("h", 0) >= 0.5 * max(1, b.get("width", WIDTH) * b.get("height", 0)):
                 continue
-        x0, y0 = int(p["ax"] // CELL) - pad, int(p["ay"] // CELL) - pad
-        x1, y1 = int((p["ax"] + p.get("w", 0)) // CELL) + pad, int((p["ay"] + p.get("h", 0)) // CELL) + pad
+        x, y, w, h = p["ax"], p["ay"], p.get("w", 0), p.get("h", 0)
+        clip = (p.get("motion") or {}).get("clip")
+        if clip and boxes and p.get("sid") in boxes:
+            box = boxes[p["sid"]]
+            x, y = box.get("left", 0) + clip["x"], box.get("top", 0) + clip["y"]
+            w, h = clip["w"], clip["h"]
+        x0, y0 = int(x // CELL) - pad, int(y // CELL) - pad
+        x1, y1 = int((x + w) // CELL) + pad, int((y + h) // CELL) + pad
         for r in range(max(0, y0), min(rows, y1 + 1)):
             for c in range(max(0, x0), min(cols, x1 + 1)):
                 cells.add((c, r))
@@ -211,7 +232,6 @@ REGION_JS = r"""({ rects, limit }) => {
                chars: kind === "image" ? 0 : (el.innerText || "").trim().length, level: /^H([1-6])$/.test(tag) ? +tag[1] : 0,
                media: kind === "image" ? tag.toLowerCase() : "" });
   }
-  for (const a of document.getAnimations()) { try { a.play(); } catch (e) {} }
   return out;
 }"""
 
@@ -231,7 +251,7 @@ def add_found(boxes: dict[str, dict], comps: dict[str, list[dict]], found: list[
     for f in found:
         cy = f["ay"] + f["h"] / 2
         sid = next((k for k, b in boxes.items() if b.get("top", 0) <= cy <= b.get("top", 0) + b.get("height", 0)), None)
-        if not sid or any(_iou(f, h) > 0.4 for h in have):
+        if not sid or any(f["kind"] == h["kind"] and _iou(f, h) > 0.4 for h in have):
             continue
         # A text inside a picture of the same gap is part of it (a screenshot's own words).
         if f["kind"] != "image" and any(g["kind"] == "image" and g is not f and _iou({**f, "w": f["w"], "h": f["h"]}, g) > 0
@@ -347,8 +367,9 @@ async def _pairs(page, left_src: str, right_svg: str, height: int, out_dir: Path
            f'</div></body></html>')
     await page.set_viewport_size({"width": WIDTH * 2 + 24, "height": SCREEN_H})
     await page.set_content(doc, wait_until="load")
+    await page.screenshot(path=str(out_dir / f"{prefix}-full.jpg"), type="jpeg", quality=72, full_page=True)
     names = []
-    for k, y in enumerate(range(0, min(height, SCREEN_H * 14), SCREEN_H)):
+    for k, y in enumerate(range(0, height, SCREEN_H)):
         name = f"{prefix}-{k + 1:02d}.jpg"
         await page.screenshot(path=str(out_dir / name), type="jpeg", quality=72, full_page=True,
                               clip={"x": 0, "y": y, "width": WIDTH * 2 + 24, "height": min(SCREEN_H, height - y)})
@@ -362,22 +383,22 @@ async def check_reading(url: str, boxes: dict[str, dict], comps: dict[str, list[
     still not read is cropped and named by the vision model (`vision`: JSONChat), or kept as a block."""
     from playwright.async_api import async_playwright
 
-    from chromaswarm.playwright_engine.style_dna_scraper import goto_ready
+    from chromaswarm.playwright_engine.style_dna_scraper import open_settled
+    from chromaswarm.clone.components import FREEZE_JS, measure_reference
     out_dir.mkdir(parents=True, exist_ok=True)
     comps = {k: [dict(c) for c in v] for k, v in comps.items()}
     async with async_playwright() as pw:
         browser = await pw.chromium.launch()
         try:
             page = await browser.new_page(viewport={"width": WIDTH, "height": SCREEN_H})
-            await goto_ready(page, url)
-            total = await page.evaluate("document.documentElement.scrollHeight")
-            for y in range(0, total, SCREEN_H // 2):  # lazy content in, then back to the top
-                await page.evaluate(f"window.scrollTo({{top: {y}, behavior: 'instant'}})")
-                await page.wait_for_timeout(120)
-            await page.evaluate("window.scrollTo({top: 0, behavior: 'instant'})")
-            await page.wait_for_timeout(600)
-            # Fixed bars would repeat on every screen of a full-page shot: drop them out of the flow for the shot.
-            await page.add_style_tag(content="*{animation-play-state:paused!important}")
+            await open_settled(page, url)
+            await page.evaluate(FREEZE_JS)
+            measured = await measure_reference(page, [{**box, "key": sid} for sid, box in boxes.items()])
+            for sid, pieces in measured["comps"].items():
+                if pieces:
+                    comps[sid] = pieces
+            boxes = {sid: {**box, **measured["boxes"].get(sid, {})} for sid, box in boxes.items()}
+            await page.evaluate(FREEZE_JS)
             shot = await page.screenshot(full_page=True, type="jpeg", quality=70)
             (out_dir / "reference.jpg").write_bytes(shot)
             work = await browser.new_page()
@@ -406,7 +427,7 @@ async def check_reading(url: str, boxes: dict[str, dict], comps: dict[str, list[
             for g in gaps:
                 g["filled"] = not any(_iou({"ax": g["x"], "ay": g["y"], "w": g["w"], "h": g["h"]},
                                            {"ax": r["x"], "ay": r["y"], "w": r["w"], "h": r["h"]}) > 0.3 for r in left)
-            svg = draw(boxes, comps, height, gaps=gaps, title=f"Chroma đọc được {after:g}% trang")
+            svg = draw(boxes, comps, height, gaps=left, title=f"Chroma đọc được {after:g}% trang")
             (out_dir / "sketch.svg").write_text(svg, encoding="utf-8")
             pairs = await _pairs(work, _data_url(shot, "image/jpeg"), svg, height, out_dir, "ref",
                                  ("Trang mẫu (ảnh chụp)", "Sketch từ những gì Chroma đọc được"))
@@ -414,7 +435,10 @@ async def check_reading(url: str, boxes: dict[str, dict], comps: dict[str, list[
             await browser.close()
     return {"coverage_before": before, "coverage": after, "gaps": len(gaps), "remeasured": added, "described": described,
             "gaps_left": [{k: g[k] for k in ("x", "y", "w", "h")} for g in left[:12]],
-            "pairs": pairs, "height": height, "components": comps}
+            "pairs": pairs, "full": "ref-full.jpg", "reference": "reference.jpg", "drawing": "sketch.svg",
+            "height": height, "section_components": {sid: len(pieces) for sid, pieces in comps.items()},
+            "animated_components": sum(bool(p.get("motion")) for pieces in comps.values() for p in pieces),
+            "boxes": boxes, "components": comps}
 
 
 # ------------------------------------------------------------------ the B10 check

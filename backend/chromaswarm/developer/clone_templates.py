@@ -419,9 +419,11 @@ def _marquee_columns(m: Model, js, pics: list[dict], cycle: float) -> tuple[str,
     for n, col in enumerate(cols[:3]):
         items = sorted(col, key=lambda r: r["y"])
         mine = owned[n::max(1, len(cols[:3]))] if owned else []
-        cards = "".join(f'<li className="cl-mq-item">{_img(js, mine[k % len(mine)] if mine else m.picture(r), r, eager=True)}</li>'
+        cards = "".join(f'<li className="cl-mq-item">{_img(js, m.picture(r) or (mine[k % len(mine)] if mine else None), r, eager=True)}</li>'
                         for k, r in enumerate(items))
-        html.append(f'<div className="cl-mq-col{" is-rev" if n % 2 else ""}" aria-hidden="true"><ul className="cl-mq-track">{cards}{cards}</ul></div>')
+        motion = next((r["motion"] for r in col if r.get("motion")), {})
+        reverse = motion.get("direction") == "down" if motion else bool(n % 2)
+        html.append(f'<div className="cl-mq-col{" is-rev" if reverse else ""}" aria-hidden="true"><ul className="cl-mq-track">{cards}{cards}</ul></div>')
     css = (f"@keyframes cl-mqv {{ from {{ transform: translateY(0); }} to {{ transform: translateY(-50%); }} }}\n"
            f"SEL .cl-mq {{ display: flex; gap: 20px; height: 100%; max-height: 100%; overflow: hidden; "
            f"mask-image: linear-gradient(transparent, #000 10%, #000 90%, transparent); }}\n"
@@ -444,6 +446,10 @@ def _hero(m: Model, st: Style, js, s: Section) -> tuple[str, str, str]:
     head = _header(m, st, js, s.id, on=on)
     pics = [r for r in m.pictures if r["x"] > m.width * 0.45]
     marquee = _effect(m, "marquee-vertical")
+    if not marquee:
+        moving = next((r["motion"] for r in pics if (r.get("motion") or {}).get("axis") == "y"), None)
+        if moving:
+            marquee = {"params": {"cycle_s": moving.get("cycle_s") or 30}}
     media, extra = "", ""
     if pics and marquee:
         media, extra = _marquee_columns(m, js, pics, float((marquee.get("params") or {}).get("cycle_s") or 30))

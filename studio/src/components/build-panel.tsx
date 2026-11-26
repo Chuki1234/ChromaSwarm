@@ -230,6 +230,17 @@ function ComparePanel({ result, session }: { result: CompareResult; session: str
         20% kiểu chữ, bo góc, đổ bóng · 10% chiều cao. Chữ và ảnh không được so.
         {result.rounds > 0 && ` ${result.rounds} vòng tinh chỉnh tự động.`}
       </p>
+      {!!result.special_assets?.total && (
+        <details className="rounded-lg border border-line p-3">
+          <summary className="cursor-pointer text-sm">Master Cursor · Special assets: {result.special_assets.passed}/{result.special_assets.total} số đo khớp</summary>
+          <p className="mt-2 text-xs text-fg-2">Đọc DOM/CSS và box model qua Chrome DevTools: vị trí, kích thước, margin, padding, gap và grid; cùng viewport và thời điểm animation.</p>
+          <ul className="mt-2 flex flex-col gap-1 text-xs text-fg-2">
+            {result.special_assets.checks.filter(c => !c.pass).slice(0, 30).map((c, i) => (
+              <li key={i}>{c.section} · {c.asset} · {c.property}: {String(c.reference ?? "thiếu")} → {String(c.built ?? "thiếu")}{c.delta != null ? ` (lệch ${c.delta}px)` : ""}</li>
+            ))}
+          </ul>
+        </details>
+      )}
       <ul className="flex flex-col divide-y divide-line">
         {result.sections.map((s) => (
           <CompareRow key={s.id} s={s} open={open === s.id} onToggle={() => setOpen(open === s.id ? null : s.id)}

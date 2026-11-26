@@ -28,7 +28,7 @@ from chromaswarm.clone import components as cmp
 from chromaswarm.clone import motion as motion_probe
 from chromaswarm.clone.motion_check import build_report as motion_report
 from chromaswarm.playwright_engine.style_dna_scraper import SETTLE_JS
-from chromaswarm.mcp_motion.client import MotionEffect, build_effects
+from chromaswarm.mcp_motion.client import MotionEffect, build_effects, build_special_assets
 from chromaswarm.mcp_motion.server import pick_effect
 from chromaswarm.developer.workspace import TOKENS_PATH, DevServer, Workspace
 from chromaswarm.engines.design_spec import DesignSpec
@@ -321,6 +321,25 @@ class LocalBuildRuntime:
     async def motion(self, session: str, section: Section, spec: DesignSpec, page: str = "") -> list[MotionEffect]:
         """Motion & 2D/3D MCP Specialist: asks the Motion MCP server for the PLAN.md effect and
         appends the returned CSS to app/motion.css."""
+        if section.reference.get('html'):
+            # Authored keyframes already move the measured DOM; generic effects would shift its box twice.
+            native = MotionEffect(effect='reference-motion', section_id=section.id, kind='native-css', css='',
+                                  notes='Native DOM/CSS and measured keyframes; layout verified by Master Cursor')
+            if not self.motion_enabled:
+                return [native]
+            effects = await build_special_assets(section.id, section.reference.get('assets', []))
+            if effects:
+                import json
+                s = self._s(session)
+                package = json.loads(s.workspace.read('package.json'))
+                for fx in effects:
+                    for f in fx.files:
+                        s.workspace.write(Step.B9_DEVELOP, WorkspaceFile(**f))
+                    package.setdefault('dependencies', {}).update(fx.dependencies)
+                    package.setdefault('devDependencies', {}).update(fx.dev_dependencies)
+                s.workspace.write(Step.B9_DEVELOP, WorkspaceFile(path='package.json', content=json.dumps(package, indent=2)))
+                await s.workspace.install(Step.B9_DEVELOP)
+            return [native, *effects]
         # The PLAN.md effect (Creative) plus every effect read from the reference (Clone).
         wanted = list(dict.fromkeys(e for e in [pick_effect(section.effect or ""), *section.motion] if e))
         if not self.motion_enabled or not wanted:
@@ -386,6 +405,8 @@ class LocalBuildRuntime:
             page = await ctx.new_page()
             result["pairs"] = await sketch.sketch_pairs_built(page, ref_svg, built_svg, max(ref_h, built_h), out_dir,
                                                               "fbuilt" if final else "built")
+            result["full"] = "fbuilt-full.jpg" if final else "built-full.jpg"
+            result["height"] = max(ref_h, built_h)
             if ref_shot_path.is_file():
                 ref_shot = ref_shot_path.read_bytes()
                 work = await ctx.new_page()
@@ -409,6 +430,8 @@ class LocalBuildRuntime:
         s = self._s(session)
         changed = 0
         for sid, by_sel in fixes.items():
+            if s.page and await s.page.locator(f'[data-swarm-section="{sid}"][data-cs-native]').count():
+                continue  # Preserve authored CSS; native assets use the strict DevTools audit instead.
             scope = (f'[data-swarm-page="{s.ref_page}"] ' if s.ref_page else "") + f'[data-swarm-section="{sid}"]'
             rules: dict[str, dict[str, str]] = {}
             for sel, props in by_sel.items():
@@ -456,6 +479,8 @@ class LocalBuildRuntime:
         """Section cursor -> crews (type / actions / media) -> one cursor per component. Each component is
         measured against its reference counterpart; the crews' differences are tuned into match.css, the
         section is measured again, and the workers merge back into the section cursor."""
+        if s.page and await s.page.locator(f'[data-swarm-section="{section_id}"][data-cs-native]').count():
+            return None  # Native layout is audited by DOM identity, never adjusted with guessed matching rules.
         ref = cmp.comps(s.ref_components.get(section_id, []))
         ref_box = s.ref_boxes.get(section_id)
         if not ref or not ref_box or not s.overlay or not s.page:
@@ -749,6 +774,12 @@ class LocalBuildRuntime:
             with contextlib.suppress(Exception):
                 await s.page.wait_for_load_state("networkidle", timeout=15000)
             await self._wait_for_heal_css(s)
+            from chromaswarm.clone.master_inspector import audit
+            await s.page.set_viewport_size({'width':1440, 'height':900})
+            special = await audit(ref, s.page, sections)
+            if shots and special['total']:
+                import json
+                (shots.parent / 'SPECIAL_ASSETS_QA.json').write_text(json.dumps(special, ensure_ascii=False), encoding='utf-8')
             built, boxes = await self._built_components(s)
             effects = await self._built_motion(s, url, boxes)
             ov = s.overlay
@@ -783,7 +814,8 @@ class LocalBuildRuntime:
                                 await ref_ov.flag(r_sel, "mẫu")
                         else:
                             await ov.pulse()
-                rules = cmp.tune_rules(sid, pairs, page)
+                native = any(sec.id == sid and sec.reference.get('html') for sec in sections)
+                rules = {} if native else cmp.tune_rules(sid, pairs, page)
                 key = f"{page}:{sid}"
                 s.match[key], changed = cmp.merge_rules(s.match.get(key, {}), rules)
                 tuned += changed
@@ -797,7 +829,8 @@ class LocalBuildRuntime:
             await ov.hud(None)
             await ov.master(False)
             total = cmp.page_score(results)
-            return {"total": total, "sections": [r.model_dump() for r in results], "tuned": tuned}
+            return {"total": total, "sections": [r.model_dump() for r in results], "tuned": tuned,
+                    "special_assets": {k:v for k,v in special.items() if k not in ('reference','built')}}
         finally:
             await ctx.close()
 

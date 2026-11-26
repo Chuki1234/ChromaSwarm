@@ -1029,6 +1029,12 @@ def _measured_or(template):
 def render_section(section: Section, copy: PageCopy, page: str = "", content: dict | None = None) -> WorkspaceFile:
     """One section component. With `content` (a dict), the section's copy is moved out of the code:
     `content[section.id]` receives it and the component reads it from the page's content file."""
+    if section.reference.get('html') and section.reference.get('css'):
+        from chromaswarm.developer.reference_dom import render
+        if content is not None:
+            content[section.id] = {}  # Native reference copy stays beside its DOM in this component.
+        folder = f"components/sections/{page}" if page else "components/sections"
+        return WorkspaceFile(path=f"{folder}/{component_name(section.id)}.tsx", content=render(section, page))
     fn = BY_ID.get(section.id) or BY_STRUCTURE.get(section.structure)
     if measurable(section):
         fn = _measured_or(fn)

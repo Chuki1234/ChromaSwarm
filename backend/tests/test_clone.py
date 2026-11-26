@@ -14,6 +14,22 @@ DEMO = (Path(__file__).parents[1] / "chromaswarm/playwright_engine/fixtures/demo
 PROMPT = "Shop bán gốm thủ công Bát Tràng, khách 25-40 tuổi, muốn họ bấm Nhắn tin đặt hàng"
 
 
+def test_failed_reader_preserves_the_url_and_explains_empty_errors(tmp_path):
+    async def fail(url, owned):
+        raise NotImplementedError()
+
+    async def go():
+        runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=fail))
+        await runner.start("failed-reader")
+        await runner.answer("failed-reader", "clone")
+        return await runner.answer("failed-reader", {"url": "https://example.com"})
+
+    snap = asyncio.run(go())
+    assert snap["question"]["kind"] == "clone_source"
+    assert "https://example.com" in snap["notice"]
+    assert "Không thể khởi động trình duyệt" in snap["notice"]
+
+
 def feat(**kw):
     base = dict(tag="section", role=None, index=1, height=500, top=0, h1=False, headings=1, nav=False, links=0,
                 buttons=0, inputs=0, password=False, accordion=0, tablist=False, images=0, big_image=False,
@@ -143,8 +159,8 @@ def test_owned_clone_uses_the_sites_own_copy_and_photos(tmp_path):
                              {"title": "Đĩa men rạn", "note": "Đường kính 20cm", "price": "250.000₫"}]}}}
     runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=fake_reader(content)))
     snap = asyncio.run(drive(runner, "c4", ["clone", {"url": "https://gom-moc.vn", "prompt": PROMPT, "owned": True}]))
-    assert snap["question"]["key"] == "clone_owner_confirm" and "Gốm Mộc" in snap["question"]["text"]
-    p = asyncio.run(runner.answer("c4", "confirm"))["pipeline"]
+    assert snap["question"]["key"] == "approval"
+    p = snap["pipeline"]
     assert p.clone.owner_confirmed is True
     copy = build_copy(p)
     assert copy.brand == "Gốm Mộc" and copy.headline == "Gốm làm tay, nung củi" and copy.cta == "Nhắn tin đặt hàng"
@@ -155,12 +171,11 @@ def test_owned_clone_uses_the_sites_own_copy_and_photos(tmp_path):
     assert all(i.name not in ("Sản phẩm", "Liên hệ", "Gốm làm tay, nung củi") for i in copy.items)
 
 
-def test_not_owned_clone_keeps_the_users_own_copy(tmp_path):
+def test_legacy_owned_false_does_not_filter_reference_content(tmp_path):
     runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=fake_reader({"site_title": "X", "sections": {}})))
     p = asyncio.run(drive(runner, "c5", ["clone", {"url": "https://gom-moc.vn", "prompt": PROMPT, "owned": False}]))["pipeline"]
-    # nothing is read from a site that is not theirs: only topic-matched stock photos
-    assert p.clone.content is None
-    assert all(u.startswith(CDN) for u in build_copy(p).images)
+    assert p.clone.content == {"site_title": "X", "sections": {}}
+    assert p.clone.owned and build_copy(p).brand == "X"
 
 
 def test_unclear_domain_is_asked_not_guessed_in_clone_mode(tmp_path):
@@ -187,7 +202,7 @@ def test_style_dna_reads_oklch_colours():
 def test_product_md_states_the_clone_level_and_plan_flags_approximations(tmp_path):
     runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=fake_reader()))
     p = asyncio.run(drive(runner, "c7", ["clone", {"url": "https://gom-moc.vn", "prompt": PROMPT, "owned": False}]))["pipeline"]
-    assert "Clone cấu trúc" in p.product_md and "§2.5" in p.product_md
+    assert "Clone đầy đủ" in p.product_md and "§2.5" in p.product_md
     secs = sections_from_blocks([feat(h1=True, images=1), feat(text_len=900)])
     assert "khối nội dung gần nhất" in secs[-1].content  # an unmatched block is flagged in PLAN.md
 
@@ -350,15 +365,15 @@ def test_exact_copy_request_is_explained_once_never_asked(tmp_path):
     snap = asyncio.run(run())
     p = snap["pipeline"]
     # No question about ownership: most people clone someone else's page. Straight on to the plan.
-    assert p.step.value == "B7" and p.clone.exact_requested and p.clone.owned is False and p.clone.content is None
-    assert any("không được chép" in n and "template" in n for n in notices)
+    assert p.step.value == "B7" and p.clone.owned and p.clone.content is not None
+    assert not any("không được chép" in n for n in notices)
 
 
-def test_declining_ownership_at_confirmation_drops_the_read_content(tmp_path):
+def test_clone_has_no_ownership_confirmation_step(tmp_path):
     runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=fake_reader({"site_title": "Gốm Mộc", "sections": {}})))
-    asyncio.run(drive(runner, "d1", ["clone", {"url": "https://gom-moc.vn", "prompt": PROMPT, "owned": True}]))
-    p = asyncio.run(runner.answer("d1", "structure"))["pipeline"]
-    assert p.clone.owned is False and p.clone.content is None and p.clone.owner_confirmed is False
+    snap = asyncio.run(drive(runner, "d1", ["clone", {"url": "https://gom-moc.vn", "prompt": PROMPT, "owned": True}]))
+    assert snap["question"]["kind"] == "approval"
+    assert snap["pipeline"].clone.content["site_title"] == "Gốm Mộc"
 
 
 def test_reading_notice_lists_what_will_not_match():
@@ -431,17 +446,10 @@ def test_picture_led_reference_warns_and_takes_the_users_photos_and_words(tmp_pa
     runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=reader))
     snap = asyncio.run(drive(runner, "pc1", ["clone", {"url": "https://alex.example"}]))
     q = snap["question"]
-    assert q["kind"] == "clone_content" and "không chép ảnh và nội dung" in q["text"] and "6 chỗ đặt ảnh" in q["text"]
-    assert [o["value"] for o in q["options"]] == ["hero", "feature-showcase", "bento"]
-    snap = asyncio.run(runner.answer("pc1", {"images": [{"slot": "hero", "data": png}],
-                                             "texts": {"name": "Minh Anh Studio", "headline": "Thiết kế phần mềm B2B",
-                                                       "projects": "Cổng đặt tour\nQuản lý đội tàu", "evil": "x"}}))
-    p = snap["pipeline"]
-    assert p.step.value == "B7" and p.clone.user_images == ["01-hero.png"] and "evil" not in p.clone.user_texts
-    copy = build_copy(p)
-    assert copy.brand == "Minh Anh Studio" and copy.headline == "Thiết kế phần mềm B2B" and copy.images == ["/images/01-hero.png"]
-    assert [c.name for c in copy.cards[:2]] == ["Cổng đặt tour", "Quản lý đội tàu"]
-    assert (tmp_path / "pc1" / "uploads" / "01-hero.png").exists() and p.domain is Domain.PORTFOLIO
+    assert q["kind"] == "approval"
+    assert snap["pipeline"].clone.owned
+    assert not snap["pipeline"].clone.content_asked
+    assert snap["pipeline"].domain is Domain.PORTFOLIO
 
 
 def test_skipping_the_content_step_keeps_the_template_samples(tmp_path):
@@ -454,7 +462,7 @@ def test_skipping_the_content_step_keeps_the_template_samples(tmp_path):
     runner = PipelineRunner(Deps(artifacts_root=tmp_path, clone_reader=reader))
     asyncio.run(drive(runner, "pc2", ["clone", {"url": "https://g.example"}]))
     p = asyncio.run(runner.answer("pc2", {"images": [], "texts": {}}))["pipeline"]
-    assert p.step.value == "B7" and p.clone.content_asked and not p.clone.user_images
+    assert p.step.value == "B7" and not p.clone.content_asked and not p.clone.user_images
     assert build_copy(p).brand.startswith("[")
 
 

@@ -7,7 +7,9 @@ that the link is the page they mean. Nothing is stored beyond a small in-memory 
 from __future__ import annotations
 
 import base64
+import asyncio
 import contextlib
+import sys
 from collections import OrderedDict
 
 from playwright.async_api import async_playwright
@@ -29,6 +31,24 @@ async def page_preview(url: str, width: int = 1280, height: int = 800) -> PagePr
     if url in _cache:
         _cache.move_to_end(url)
         return _cache[url]
+    if sys.platform == "win32":
+        # Uvicorn --reload uses a SelectorEventLoop on Windows. Playwright needs
+        # subprocess support, so keep the whole capture in its own Proactor loop.
+        result = await asyncio.to_thread(_windows_preview, url, width, height)
+    else:
+        result = await _capture_preview(url, width, height)
+    _cache[url] = result
+    while len(_cache) > CACHE_SIZE:
+        _cache.popitem(last=False)
+    return result
+
+
+def _windows_preview(url: str, width: int, height: int) -> PagePreview:
+    with asyncio.Runner(loop_factory=asyncio.ProactorEventLoop) as runner:
+        return runner.run(_capture_preview(url, width, height))
+
+
+async def _capture_preview(url: str, width: int, height: int) -> PagePreview:
     async with async_playwright() as pw:
         browser = await pw.chromium.launch()
         try:
@@ -41,9 +61,5 @@ async def page_preview(url: str, width: int = 1280, height: int = 800) -> PagePr
             final = page.url
         finally:
             await browser.close()
-    result = PagePreview(url=final, title=title[:120],
-                         image="data:image/jpeg;base64," + base64.b64encode(shot).decode())
-    _cache[url] = result
-    while len(_cache) > CACHE_SIZE:
-        _cache.popitem(last=False)
-    return result
+    return PagePreview(url=final, title=title[:120],
+                       image="data:image/jpeg;base64," + base64.b64encode(shot).decode())

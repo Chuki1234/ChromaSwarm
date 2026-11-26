@@ -26,6 +26,17 @@ from collections import Counter, defaultdict
 from pydantic import BaseModel
 
 
+FREEZE_JS = r"""() => {
+  for (const a of document.getAnimations()) {
+    try {
+      const timing = a.effect.getTiming();
+      a.pause();
+      a.currentTime = timing.iterations === Infinity ? 0 : Math.max(0, Number(timing.delay) + Number(timing.duration));
+    } catch (_) {}
+  }
+}"""
+
+
 COMPONENTS_JS = r"""(args) => {
   const { boxes, built, limit } = args;            // boxes: [{key, top, left, width, height}] (page px)
   const pixel = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
@@ -36,13 +47,31 @@ COMPONENTS_JS = r"""(args) => {
     + (c[3] < 0.98 ? Math.round(c[3] * 255).toString(16).padStart(2, "0") : "");
   const px = v => parseFloat(v) || 0;
   const sy = scrollY;
+  const fixed = el => {
+    for (let p = el; p && p !== document.body; p = p.parentElement)
+      if (getComputedStyle(p).position === 'fixed') return true;
+    return false;
+  };
+  const loops = document.getAnimations().filter(a => a.effect?.target && a.effect.getTiming().iterations === Infinity);
+  const animationOf = el => loops.find(a => a.effect.target === el || a.effect.target.contains(el));
+  const clipped = el => {
+    const r = el.getBoundingClientRect();
+    let left = r.left, right = r.right, top = r.top, bottom = r.bottom;
+    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+      const cs = getComputedStyle(p), q = p.getBoundingClientRect();
+      if (cs.overflowX !== 'visible') { left = Math.max(left, q.left); right = Math.min(right, q.right); }
+      if (cs.overflowY !== 'visible') { top = Math.max(top, q.top); bottom = Math.min(bottom, q.bottom); }
+    }
+    return {left, right, top, bottom, width: Math.max(0, right-left), height: Math.max(0, bottom-top)};
+  };
   const out = {};
   for (const b of boxes) out[b.key] = [];
   const rootOf = (el) => {
     if (built) { const s = el.closest("[data-swarm-section]"); return s ? s.getAttribute("data-swarm-section") : null; }
     // The block whose band holds the element's centre line: the one around it when there is one (the
     // smallest), else the nearest one sideways (a block can be narrower than its section's content).
-    const r = el.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + sy + r.height / 2;
+    const r = animationOf(el) ? clipped(el) : el.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + (fixed(el) ? 0 : sy) + r.height / 2;
     let best = null, bestScore = Infinity;
     for (const b of boxes) {
       if (cy < b.top || cy > b.top + b.height) continue;
@@ -95,6 +124,7 @@ COMPONENTS_JS = r"""(args) => {
       return q.width >= 200 && q.height >= 120 && q.width < innerWidth * 0.98;
     }).sort((a, b) => { const qa = a.getBoundingClientRect(), qb = b.getBoundingClientRect(); return qb.width * qb.height - qa.width * qa.height; });
     for (const c of cands) {
+      if (loops.some(a => a.effect.target.contains(c) || c.contains(a.effect.target))) continue;
       if ([...mockups].some(m => m.contains(c))) continue;
       const inside = texts.filter(t => c.contains(t.e));
       const small = inside.filter(t => t.fs <= 14).length;
@@ -130,7 +160,7 @@ COMPONENTS_JS = r"""(args) => {
     }
     const comp = {
       kind: k[0], level: k[1],
-      x: Math.round(r.left - box.left), y: Math.round(r.top + sy - box.top), w: Math.round(r.width), h: Math.round(r.height),
+      x: Math.round(r.left - box.left), y: Math.round(r.top + (fixed(el) ? 0 : sy) - box.top), w: Math.round(r.width), h: Math.round(r.height),
       fs: Math.round(fsMax * 10) / 10, fw: px(cs.fontWeight) || 400, chars, tw, tx,
       lh: cs.lineHeight === "normal" ? 0 : Math.round(px(cs.lineHeight) / Math.max(px(cs.fontSize), 1) * 100) / 100,
       ls: Math.round(px(cs.letterSpacing) * 10) / 10, tt: cs.textTransform === "uppercase" ? "uppercase" : "",
@@ -147,6 +177,18 @@ COMPONENTS_JS = r"""(args) => {
       comp.sel = id ? `[data-swarm-id="${id}"]` : el.tagName.toLowerCase() + cls.map(c => "." + c).join("");
       comp.i = i;
     } else {
+      if (!el.dataset.csReadId) el.dataset.csReadId = String(window.__csReadId = (window.__csReadId || 0) + 1);
+      comp.rid = el.dataset.csReadId;
+      const animation = animationOf(el);
+      if (animation) {
+        const frames = animation.effect.getKeyframes(), timing = animation.effect.getTiming();
+        const transforms = frames.map(f => f.transform || '').join(' '), frame = clipped(el);
+        let direction = /-50%/.test(frames[0]?.transform || '') ? 'down' : 'up';
+        if (timing.direction === 'reverse') direction = direction === 'down' ? 'up' : 'down';
+        comp.motion = {axis: /translateY|translate3d\([^,]+,\s*-?[1-9]/.test(transforms) ? 'y' : 'x',
+          cycle_s: Number(timing.duration) / 1000, direction,
+          clip: {x: frame.left - box.left, y: frame.top + sy - box.top, w: frame.width, h: frame.height}};
+      }
       el.setAttribute("data-cs-ref", `${key}:${out[key].length}`);
       comp.i = out[key].length;
     }
@@ -185,6 +227,10 @@ COMPONENTS_JS = r"""(args) => {
     if (cs.display === "none") continue;
     const r = el.getBoundingClientRect();
     if (r.width < 8 || r.height < 8) continue;
+    if (!built && animationOf(el)) {
+      const visible = clipped(el);
+      if (visible.width <= 0 || visible.height <= 0) continue;
+    }
     // Big words hidden in the DOM and painted by a canvas over the same spot (WebGL type) are what people see.
     const gl = !built && px(cs.fontSize) >= 28 && ownText(el) && glCanvas.some(c => {
       const ix = Math.max(0, Math.min(r.right, c.right) - Math.max(r.left, c.left));
@@ -212,13 +258,13 @@ COMPONENTS_JS = r"""(args) => {
         const iy = Math.max(0, Math.min(r.bottom, fr.bottom) - Math.max(r.top, fr.top));
         shown = Math.min(shown, (ix * iy) / (r.width * r.height));
       }
-      if (shown <= 0.3) continue;
+      if (shown <= (animationOf(el) ? 0 : 0.3)) continue;
     }
     if (mockups.size && !mockups.has(el) && [...mockups].some(m => m.contains(el))) continue;
     const k = mockups.has(el) ? ["image", 0] : kindOf(el, cs, r);
     if (!k) continue;
     // Decorative media (wave canvases, background art) stays out; a decorative wordmark is kept above.
-    if (!built && (k[0] === "image" || k[0] === "card") && el.closest("[aria-hidden=true]")) continue;
+    // aria-hidden affects accessibility, not painting: moving CV columns and decorative media still belong in the sketch.
     // Text inside a heading / button / link already taken is part of it, not a component of its own.
     if (["text", "link", "heading"].includes(k[0])) {
       let p = el.parentElement, inside = false;
@@ -276,21 +322,25 @@ BAND_JS = r"""(b) => {
 }"""
 
 
-async def measure_reference(page, boxes: list[dict], limit: int = 260) -> dict:
+async def measure_reference(page, boxes: list[dict], limit: int = 1024) -> dict:
     """Reference components, one block at a time with that block scrolled into view: pages that hide their
     text again once it leaves the screen (scroll-linked reveals) only show it while it is on screen."""
-    import asyncio
     comps_out: dict[str, list[dict]] = {}
     boxes_out: dict[str, dict] = {}
     for b in boxes:
-        await page.evaluate("(y) => scrollTo(0, y)", max(0, int(b["top"]) - 80))
-        await asyncio.sleep(0.45)
-        # Elements are assigned among all boxes (so a neighbour's pieces never leak in), kept for this one.
-        found = await page.evaluate(COMPONENTS_JS, {"boxes": boxes, "built": False, "limit": limit})
-        comps_out[b["key"]] = found["comps"].get(b["key"], [])
+        pieces = {}
+        viewport = page.viewport_size or {"height": 900}
+        for offset in range(0, max(1, int(b["height"])), max(300, int(viewport["height"] * 0.75))):
+            await page.evaluate("(y) => scrollTo({top:y, behavior:'instant'})", max(0, int(b["top"]) + offset - 80))
+            await page.wait_for_timeout(100)
+            await page.evaluate(FREEZE_JS)
+            found = await page.evaluate(COMPONENTS_JS, {"boxes": boxes, "built": False, "limit": limit})
+            for c in found["comps"].get(b["key"], []):
+                pieces.setdefault(c["rid"], c)
+        comps_out[b["key"]] = list(pieces.values())
         paint = await page.evaluate(BAND_JS, b)
         boxes_out[b["key"]] = {**found["boxes"].get(b["key"], b), **paint}
-    await page.evaluate("() => scrollTo(0, 0)")
+    await page.evaluate("() => scrollTo({top:0, behavior:'instant'})")
     return {"comps": comps_out, "boxes": boxes_out}
 
 
@@ -330,6 +380,7 @@ class Comp(BaseModel):
     tw: int = 0  # text pieces: how wide the words actually run (px), often narrower than the box
     tx: int = 0  # text pieces: where the words start inside the box (px from its left edge)
     media: str = ""  # images: img / svg / video / canvas (3D, WebGL) / picture / mockup (an app screen in HTML) / div
+    motion: dict | None = None
     sel: str | None = None  # rebuilt page only: a stable selector inside its section
     i: int | None = None  # index within its section (data-cs-comp / data-cs-ref attribute)
 

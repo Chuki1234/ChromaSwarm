@@ -98,7 +98,8 @@ def _ease(values: list[str]) -> str:
 
 
 def _inside(item: dict, box: dict) -> bool:
-    mid = item["top"] + item.get("h", 0) / 2
+    visible = item.get('clip') or item
+    mid = visible["top"] + visible.get("h", 0) / 2
     return box["top"] <= mid <= box["top"] + max(box["height"], 1)
 
 

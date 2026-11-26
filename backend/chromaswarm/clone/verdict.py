@@ -41,6 +41,10 @@ def judge(p, conformance: dict | None, final_sketch: dict | None = None) -> Verd
     measured = c["total"] > 0
     healed = c.get("healed")
     compare = p.clone_compare or {}
+    special = compare.get('special_assets') or {}
+    expected_special = bool(p.clone and any((s.get('reference') or {}).get('assets') or
+                                            (s.get('reference') or {}).get('asset_count') for s in p.clone.sections))
+    special_ok = (not expected_special and not special.get('total')) or bool(special.get('total') and special.get('passed') == special['total'])
     fs = final_sketch or {}
     indicators = [
         Indicator(key="reading", label="Đọc được trang mẫu (sketch B2)", value=((p.clone.sketch or {}).get("coverage") if p.clone else None)),
@@ -50,9 +54,9 @@ def judge(p, conformance: dict | None, final_sketch: dict | None = None) -> Verd
         Indicator(key="fidelity", label="Độ giống toàn trang (cùng bộ đọc)", value=p.clone_fidelity),
     ]
     worst = sorted([s for s in c["sections"] if s["total"]], key=lambda s: s["passed"] / s["total"])[:3]
-    if measured and p.qa_passed and c["passed"] == c["total"]:
+    if measured and p.qa_passed and c["passed"] == c["total"] and special_ok:
         status, title = "success", f"Clone thành công — khớp {c['passed']}/{c['total']} mục DESIGN.md của trang mẫu"
-    elif measured and p.qa_passed and c["pct"] >= 90:
+    elif measured and p.qa_passed and c["pct"] >= 90 and special_ok:
         status, title = "close", f"Gần đạt — khớp {c['passed']}/{c['total']} mục ({c['pct']:g}%)"
     else:
         why = [] if p.qa_passed else ["Master QA chưa qua"]
@@ -60,7 +64,12 @@ def judge(p, conformance: dict | None, final_sketch: dict | None = None) -> Verd
             why.append("chưa đối chiếu được với DESIGN.md")
         elif c["passed"] < c["total"]:
             why.append(f"khớp {c['passed']}/{c['total']} mục ({c['pct']:g}%)")
+        if not special_ok:
+            why.append('special assets còn số đo lệch hoặc thiếu dữ liệu 3D')
         status, title = "failed", "Chưa đạt — " + "; ".join(why)
+    if not special_ok:
+        title += f" · special assets khớp {special.get('passed', 0)}/{special.get('total', 0)} số đo DOM/CSS"
+        indicators.append(Indicator(key='special_assets', label='Special assets: box model và gap', value=special.get('pct')))
     steps = []
     if not p.qa_passed:
         steps.append("Sửa các lỗi Master QA còn lại (tương phản, vùng bấm…), rồi chạy lại B11.")

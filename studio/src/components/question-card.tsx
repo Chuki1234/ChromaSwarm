@@ -422,6 +422,7 @@ const validLink = (v: string) => {
  *  right page before Chroma reads it. Debounced; a page that blocks screenshots simply shows no preview. */
 function LinkPreview({ url }: { url: string }) {
   const link = validLink(url);
+  const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState<{ link: string; preview?: Preview; error?: string } | null>(null);
   useEffect(() => {
     if (!link) return;
@@ -429,21 +430,31 @@ function LinkPreview({ url }: { url: string }) {
     const timer = setTimeout(() => {
       setState({ link });
       fetch(`${BACKEND_HTTP}/clone/preview?url=${encodeURIComponent(link)}`, { signal: ctrl.signal })
-        .then(async (r) => (r.ok ? setState({ link, preview: await r.json() }) : setState({ link, error: (await r.json()).detail })))
-        .catch((e) => { if (e.name !== "AbortError") setState({ link, error: "Không kết nối được tới backend." }); });
+        .then(async (r) => {
+          const data = await r.json();
+          if (ctrl.signal.aborted) return;
+          setState(r.ok ? { link, preview: data } : { link, error: data.detail || "Không tải được bản xem trước." });
+        })
+        .catch(() => { if (!ctrl.signal.aborted) setState({ link, error: "Không kết nối được tới backend." }); });
     }, 600);
     return () => { clearTimeout(timer); ctrl.abort(); };
-  }, [link]);
+  }, [link, attempt]);
   if (!link || !state || state.link !== link) return null;
   return (
     <figure className="flex flex-col gap-2" data-swarm-section="link-preview" aria-live="polite">
-      <div className="relative aspect-[16/10] overflow-hidden rounded-xl border border-line bg-surface">
+      <div className="relative aspect-[16/10] overflow-hidden rounded-xl border border-line bg-surface" aria-busy={!state.preview && !state.error}>
         {state.preview ? (
           // eslint-disable-next-line @next/next/no-img-element -- a data URL screenshot, not an asset to optimise
           <img src={state.preview.image} alt={`Bản xem trước của ${state.preview.title}`} className="size-full object-cover object-top" />
         ) : (
-          <div className="grid size-full place-items-center p-4 text-center text-sm text-fg-3">
-            {state.error ? `Không xem trước được trang này (${state.error}). Bạn vẫn có thể đọc trang.` : "Đang tải bản xem trước…"}
+          <div className="flex size-full flex-col items-center justify-center gap-4 p-4 text-center text-sm text-fg-3">
+            <p>{state.error ? `Không xem trước được trang này (${state.error}). Bạn vẫn có thể đọc trang.` : "Đang tải bản xem trước…"}</p>
+            {state.error && (
+              <button type="button" onClick={() => setAttempt((n) => n + 1)}
+                className="min-h-12 rounded-lg border border-line px-4 text-fg hover:bg-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+                Thử lại bản xem trước
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -457,25 +468,22 @@ function LinkPreview({ url }: { url: string }) {
   );
 }
 
-/** Clone mode, B1: just the link. Copying the page's own words and photos is an opt-in
- *  behind a small link (moving one's own site), never a question asked of everyone. */
+/** Clone mode, B1: a URL is enough to read the complete reference page. */
 export function CloneSource({ busy, onAnswer }: { busy: boolean; onAnswer: Props["onAnswer"] }) {
   const [url, setUrl] = useState("");
-  const [owned, setOwned] = useState(false);
-  const [showOwned, setShowOwned] = useState(false);
   // The link survives a refresh until it is sent (read after mount: localStorage does not exist on the server).
   useEffect(() => {
     const d = loadDraft();
     // eslint-disable-next-line react-hooks/set-state-in-effect -- browser storage exists only after mount (SSR-safe)
-    if (d.url) { setUrl(d.url); setOwned(d.owned); setShowOwned(d.owned); }
+    if (d.url) setUrl(d.url);
   }, []);
-  useEffect(() => { saveDraft(url, owned); }, [url, owned]);
+  useEffect(() => { saveDraft(url, true); }, [url]);
   return (
     <form
       className="flex flex-col gap-4"
       onSubmit={(e) => {
         e.preventDefault();
-        onAnswer({ value: { url: url.trim(), owned }, label: `${url.trim()}${owned ? " (trang của tôi)" : ""}` });
+        onAnswer({ value: { url: url.trim(), owned: true }, label: url.trim() });
         saveDraft("", false);
       }}
     >
@@ -486,25 +494,8 @@ export function CloneSource({ busy, onAnswer }: { busy: boolean; onAnswer: Props
       </label>
       <LinkPreview url={url} />
       <p className="text-sm text-fg-2">
-        Chroma dựng lại giao diện của trang mẫu — bố cục, màu, kiểu chữ, khoảng cách — thành một template.
-        Chữ và hình ảnh của trang mẫu không được chép (bản quyền thuộc chủ trang); bạn dán nội dung của mình vào.
+        Chroma đọc toàn bộ trang mẫu: bố cục, chữ, hình ảnh, font và hiệu ứng. Bạn xem sketch toàn trang và duyệt kế hoạch trước khi dựng.
       </p>
-      {/* Rare case (moving one's own site to Next.js): kept out of the way, never asked of everyone. */}
-      {!showOwned ? (
-        <button type="button" onClick={() => setShowOwned(true)} data-swarm-id="clone-own-site" data-swarm-role="button"
-          className="self-start text-sm text-fg-2 underline underline-offset-4 hover:text-fg">
-          Chuyển trang của chính bạn sang Next.js?
-        </button>
-      ) : (
-        <label className="flex items-start gap-3 rounded-lg border border-line p-4 text-sm">
-          <input id="clone-owned" type="checkbox" checked={owned} onChange={(e) => setOwned(e.target.checked)}
-            className="mt-1 size-4 accent-[var(--color-accent)]" data-swarm-id="clone-owned" data-swarm-role="input" />
-          <span className="flex flex-col gap-1">
-            <span className="font-medium">Đây là trang web của tôi — chép cả chữ và ảnh</span>
-            <span className="text-fg-2">Chỉ dành cho trang bạn sở hữu hoặc được chủ trang cho phép. Chroma xác nhận lại tên trang sau khi đọc.</span>
-          </span>
-        </label>
-      )}
       <button type="submit" disabled={busy || !url.trim()} data-swarm-id="clone-submit"
         data-swarm-role="button" className={`${primaryBtn} self-start`}>
         Đọc trang mẫu

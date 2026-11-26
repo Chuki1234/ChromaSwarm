@@ -303,7 +303,7 @@ def build_copy(state: PipelineState) -> PageCopy:
         copy = copy.model_copy(update={"images": photos})
     if state.page_copy and lang == "vi":  # written (in Vietnamese) by the LLM copywriter and validated there
         copy = apply_written_copy(copy, state.page_copy)
-    if state.selected_page == "clone" and clone and not clone.owned:
+    if state.selected_page == "clone" and clone and (not clone.owned or not clone.content):
         # Structure clone: the page is a template for the user's own words. The lines a visitor reads
         # first are clear placeholders (never the reference's text, never a name guessed from the prompt).
         copy = copy.model_copy(update=CLONE_PLACEHOLDERS if lang == "vi" else CLONE_PLACEHOLDERS_EN)

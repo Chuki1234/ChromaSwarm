@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import shutil
 import signal
 import socket
 from pathlib import Path
@@ -60,10 +61,13 @@ class Workspace:
     async def install(self, step: Step) -> None:
         """npm install, preferring the local cache (a few seconds when Next is already cached)."""
         self._check(step, "run_dev_server")
-        if (self.root / "node_modules" / "next").exists():
-            return
+        import json
+        package = json.loads((self.root / 'package.json').read_text(encoding='utf-8'))
+        requested = {**package.get('dependencies', {}), **package.get('devDependencies', {})}
+        if all((self.root / 'node_modules' / name / 'package.json').is_file() for name in requested):
+            return  # Includes newly requested Motion MCP dependencies, not just Next.js.
         proc = await asyncio.create_subprocess_exec(
-            "npm", "install", "--prefer-offline", "--no-audit", "--no-fund", cwd=self.root,
+            shutil.which("npm") or "npm", "install", "--prefer-offline", "--no-audit", "--no-fund", cwd=self.root,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
         out, _ = await proc.communicate()
         if proc.returncode:
@@ -96,7 +100,8 @@ class DevServer:
             return self.url
         self.port = free_port()
         self.proc = await asyncio.create_subprocess_exec(
-            "npx", "next", "dev", "-p", str(self.port), cwd=self.workspace.root,
+            shutil.which("node") or "node", str(self.workspace.root.resolve() / "node_modules/next/dist/bin/next"),
+            "dev", "-p", str(self.port), cwd=self.workspace.root,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
             start_new_session=True, env={**os.environ, "NEXT_TELEMETRY_DISABLED": "1"})
         await self._wait_ready(timeout)
@@ -121,6 +126,14 @@ class DevServer:
 
     async def stop(self) -> None:
         if not self.proc or self.proc.returncode is not None:
+            return
+        if os.name == "nt":
+            # next dev has a child server process; terminate the whole tree on Windows.
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill", "/PID", str(self.proc.pid), "/T", "/F",
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            await killer.wait()
+            await asyncio.wait_for(self.proc.wait(), timeout=5)
             return
         with contextlib.suppress(ProcessLookupError):
             os.killpg(self.proc.pid, signal.SIGTERM)

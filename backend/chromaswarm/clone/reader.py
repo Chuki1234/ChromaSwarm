@@ -32,7 +32,7 @@ from chromaswarm.engines.presets import VIETNAMESE_FONTS, Layout, Theme
 from chromaswarm.engines.spacing import Density
 from chromaswarm.engines.style_dna import StyleDNA, analyze
 from chromaswarm.clone import motion
-from chromaswarm.clone.components import merge_blocks, measure_reference
+from chromaswarm.clone.components import FREEZE_JS, merge_blocks, measure_reference
 from chromaswarm.playwright_engine.style_dna_scraper import SETTLE_JS, collect, open_settled
 from chromaswarm.state_machine.pipeline_state import Domain
 
@@ -315,7 +315,7 @@ def _aligned(sections: list[Section]) -> list[Section]:
     return sections[1:] if sections and sections[0].content.startswith("Thêm vào") else sections
 
 
-async def analyse(url: str, owned: bool, width: int = 1440, height: int = 900) -> CloneAnalysis:
+async def analyse(url: str, owned: bool = True, width: int = 1440, height: int = 900) -> CloneAnalysis:
     async with async_playwright() as pw:
         browser = await pw.chromium.launch()
         try:
@@ -326,6 +326,7 @@ async def analyse(url: str, owned: bool, width: int = 1440, height: int = 900) -
             # Motion is read by its own step afterwards (clone/motion_check.py), on a fresh page.
             with contextlib.suppress(Exception):
                 await page.evaluate(SETTLE_JS)
+            await page.evaluate(FREEZE_JS)
             raw = await page.evaluate(READER_JS, owned)
             with contextlib.suppress(Exception):
                 raw["signals"] = (await page.evaluate(SIGNALS_JS))[:4000]
@@ -340,6 +341,11 @@ async def analyse(url: str, owned: bool, width: int = 1440, height: int = 900) -
                          for b in raw["blocks"]]
                 found = await measure_reference(page, boxes)
                 raw["components"], raw["component_boxes"] = found["comps"], found["boxes"]
+            if owned:
+                from chromaswarm.clone.master_inspector import inspect, capture_panels
+                raw["reference"] = await inspect(page, [str(b['features']['index']) for b in raw['blocks']])
+                with contextlib.suppress(Exception):
+                    await capture_panels(page, raw['reference'])
         finally:
             await browser.close()
     families = list(dict.fromkeys(f for f in (raw.get("heading_font"), raw.get("body_font")) if f))
@@ -361,6 +367,11 @@ def build_analysis(raw: dict, dna: StyleDNA, owned: bool, fonts: dict[str, FontS
     blocks, notes = prepare_blocks(raw)
     raw = {**raw, "blocks": blocks}
     sections = sections_from_blocks(blocks)
+    for sec in sections:
+        # Only replay a complete DOM root. Merged/reordered blocks keep the measured renderer.
+        if len(sec.sources) == 1:
+            index = str(blocks[sec.sources[0]]['features']['index'])
+            sec.reference = (raw.get('reference') or {}).get(index, {})
     motion.page_wide(sections, raw.get("motion") or {})
     kept: dict[str, str] = {}
     sources: list[dict] = []

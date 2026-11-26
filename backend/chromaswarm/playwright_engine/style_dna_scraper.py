@@ -77,12 +77,12 @@ SETTLE_JS = """async () => {
   // then return to the top. Bounded: at most ~40 steps.
   const step = Math.max(400, innerHeight * 0.8);
   for (let y = 0, n = 0; y < document.documentElement.scrollHeight && n < 40; y += step, n++) {
-    scrollTo(0, y);
+    scrollTo({top: y, behavior: 'instant'});
     await new Promise(r => setTimeout(r, 120));
   }
-  scrollTo(0, document.documentElement.scrollHeight);
+  scrollTo({top: document.documentElement.scrollHeight, behavior: 'instant'});
   await new Promise(r => setTimeout(r, 400));
-  scrollTo(0, 0);
+  scrollTo({top: 0, behavior: 'instant'});
   await new Promise(r => setTimeout(r, 300));
 }"""
 

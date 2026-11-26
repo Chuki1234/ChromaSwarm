@@ -45,7 +45,7 @@ from urllib.parse import urlparse
 from chromaswarm.clone.reader import analyse as analyse_reference
 from chromaswarm.clone.content_slots import clean_texts, image_slots, needs_content, save_images
 from chromaswarm.clone.content_slots import warning as content_warning
-from chromaswarm.clone.reader import clone_limits, guess_domain, motion_summary, wants_exact_copy
+from chromaswarm.clone.reader import clone_limits, guess_domain, motion_summary
 from chromaswarm.developer.i18n import normalise
 from chromaswarm.build.runtime import SectionCheck
 from chromaswarm.agents.brief import Brief, mode_from_background
@@ -206,7 +206,7 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
                 options=[Option(value=BuildMode.CREATIVE.value, label="Creative: dựng từ ý tưởng của bạn",
                                 hint="Trò chuyện với Chroma; Chroma hỏi 5 trụ cột rồi thiết kế riêng cho bạn"),
                          Option(value=BuildMode.CLONE.value, label="Clone: dựng lại từ một trang web",
-                                hint="Gửi link và mô tả; dựng lại cấu trúc trang, cả chữ và ảnh nếu là trang của bạn")],
+                                hint="Gửi link; dựng lại bố cục, nội dung, hình ảnh và hiệu ứng của trang mẫu")],
             ).model_dump())
             try:
                 p.mode = BuildMode(answer)
@@ -226,9 +226,7 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
                 url = None
             if not url:
                 return {"pipeline": p, "notice": "Clone cần một link hợp lệ (ví dụ https://tenmien.vn)."}
-            owned = bool(data.get("owned"))
-            p.clone = CloneSource(url=url, owned=owned, described=bool(prompt),
-                                  exact_requested=not owned and wants_exact_copy(prompt))
+            p.clone = CloneSource(url=url, owned=True, owner_confirmed=True, described=bool(prompt))
             # The link is enough: without a description the kind of site is read from the reference at B2.
             p.raw_prompt = prompt or f"Dựng lại trang {urlparse(url).hostname or url}"
             if not prompt:
@@ -275,9 +273,11 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
         try:
             a = await reader(p.clone.url, p.clone.owned)
         except Exception as e:
-            log.warning("clone analysis failed for %s: %s", p.clone.url, e)
+            failed_url = p.clone.url
+            log.exception("clone analysis failed for %s", failed_url)
+            detail = str(e).strip()[:120] or "Không thể khởi động trình duyệt để đọc trang mẫu."
             p.reset_clone_source()
-            return {"pipeline": p, "notice": f"Không mở được trang {p.clone.url if p.clone else ''}: {str(e)[:120]}. Bạn kiểm tra link rồi gửi lại nhé."}
+            return {"pipeline": p, "notice": f"Không mở được trang {failed_url}: {detail} Bạn có thể gửi lại link để thử lại."}
         p.clone = p.clone.model_copy(update={
             "analysed": True, "title": a.title, "sections": [sec.model_dump() for sec in a.sections],
             "pillars": a.pillars, "heading_font": a.heading_font, "body_font": a.body_font,
@@ -299,13 +299,9 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             p.clone.motion_checked = True
             analyse_top_down(p)
             p.advance()
-        kind = "cấu trúc, chữ và ảnh (trang của bạn)" if p.clone.owned else "cấu trúc và phong cách (chữ, ảnh là của bạn)"
+        kind = "bố cục, chữ, ảnh và hiệu ứng của trang mẫu"
         names = ", ".join(sec.name for sec in a.sections)
         notice = f"Đã đọc {len(a.sections)} section từ trang mẫu: {names}. Sẽ dựng lại {kind}."
-        if p.clone.exact_requested and not p.clone.owned:
-            # "Giống 100%": said once, never asked — most people clone someone else's page.
-            notice += (" Bố cục, phong cách và nhịp trang được dựng giống trang mẫu; chữ, ảnh và tên thương hiệu "
-                       "của trang mẫu thuộc về chủ trang nên không được chép — bạn dán nội dung của mình vào template.")
         if a.lang:
             lang = normalise(a.lang)
             notice += (f" Ngôn ngữ trang mẫu: {a.lang} — bản dựng giữ nguyên ngôn ngữ này."
@@ -366,6 +362,7 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
             out = deps.artifacts_root / p.session_id / "artifacts" / "sketch"
             res = await check(p.clone.url, p.clone.boxes, p.clone.components, out)
             p.clone.components = res.pop("components")
+            p.clone.boxes = res.pop("boxes", p.clone.boxes)
             sections = []
             for raw in p.clone.sections:  # measured sections are rebuilt from the completed reading
                 sec = dict(raw)
@@ -472,24 +469,6 @@ def build_graph(deps: Deps | None = None, checkpointer=None):
     # ---------------------------------------------------------------- B3
     def b3(state: GraphState) -> dict:
         p = _copy(state)
-        if p.mode is BuildMode.CLONE and p.clone and p.clone.analysed and p.clone.owned and p.clone.owner_confirmed is None:
-            # Owned clones copy someone's name, words and photos: confirm against the page's own name.
-            answer = interrupt(Question(
-                step="B3", kind="choice", key="clone_owner_confirm", allow_free_text=False,
-                text=(f"Trang mẫu tên là “{p.clone.title}”. Chroma sẽ chép tên, chữ và ảnh của trang này. "
-                      "Chỉ xác nhận nếu bạn là chủ trang hoặc được chủ trang cho phép."),
-                options=[Option(value="confirm", label="Tôi là chủ trang / được phép",
-                                hint="Chép cả chữ, ảnh và thương hiệu"),
-                         Option(value="structure", label="Chỉ dựng cấu trúc",
-                                hint="Bỏ chữ và ảnh đã đọc; dùng nội dung của bạn")],
-            ).model_dump())
-            if answer not in ("confirm", "structure"):
-                return {"pipeline": p, "notice": "Vui lòng chọn một trong hai cách."}
-            if answer == "confirm":
-                p.clone = p.clone.model_copy(update={"owner_confirmed": True})
-                return {"pipeline": p, "notice": None}
-            p.clone = p.clone.model_copy(update={"owner_confirmed": False, "owned": False, "content": None})
-            return {"pipeline": p, "notice": "Đã bỏ chữ và ảnh của trang mẫu; chỉ dựng lại cấu trúc và phong cách."}
         if p.mode is BuildMode.CLONE and p.clone and p.clone.analysed:
             # Measured on the reference page, not guessed; the user reviews them at B7.
             for key, value in p.clone.pillars.items():

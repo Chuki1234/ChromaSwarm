@@ -183,6 +183,7 @@
   const out = [];
   grouped.forEach(({ el: blockEl, lead }, index) => {
     const el = blockEl || lead[0];
+    el.setAttribute('data-cs-block', String(index));
     const r = blockEl ? blockEl.getBoundingClientRect() : (() => {
       const rs = lead.map(l => l.getBoundingClientRect());
       return { top: Math.min(...rs.map(x => x.top)), left: Math.min(...rs.map(x => x.left)),

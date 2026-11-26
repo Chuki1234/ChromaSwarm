@@ -99,6 +99,8 @@ export type SketchResult = {
   coverage?: number; coverage_before?: number; gaps?: number; remeasured?: number; score?: number;
   sections?: Record<string, number>; pairs?: string[]; error?: string;
   pixel_score?: number; shot_pairs?: string[];
+  full?: string; reference?: string; drawing?: string; height?: number;
+  animated_components?: number; section_components?: Record<string, number>;
   described?: { x: number; y: number; w: number; h: number; added: number; seen: { kind: string; count: number; note: string } | null }[];
 };
 
@@ -125,7 +127,10 @@ export type CloneVerdict = {
   sections: { id: string; name: string; passed: number; total: number; failed: string[] }[];
   indicators: { key: string; label: string; value: number | null; detail: string }[];
 };
-export type CompareResult = { total: number; rounds: number; tuned: number; sections: CompareSection[] };
+export type CompareResult = { total: number; rounds: number; tuned: number; sections: CompareSection[];
+  special_assets?: { passed: number; total: number; pct: number | null; viewport?: { width: number; height: number };
+    checks: { section: string; asset: string; property: string; reference?: unknown; built?: unknown; delta?: number; pass: boolean }[] };
+};
 
 type Snapshot = {
   state: PipelineState;
@@ -709,8 +714,7 @@ function ActivityBlock({ title, stepNo, notes, active, until }: {
 
 const BACKEND_HTTP = BACKEND_WS.replace(/^ws/, "http");
 
-/** Clone sketch step: screen by screen, the reference next to what Chroma read (B2), or the reference's sketch
- * next to the rebuild's (B10). A red frame = a reading gap ("đọc thiếu" / "đã đo lại"). */
+/** Full-page sketch plus screen details. Blue marks motion; red marks remaining reading gaps. */
 function SketchCard({ stage, result, session }: { stage: "read" | "built"; result: SketchResult; session: string }) {
   const shot = (name: string) => `${BACKEND_HTTP}/sessions/${encodeURIComponent(session)}/sketch/${name}`;
   const pairs = [...(result.shot_pairs ?? []), ...(result.pairs ?? [])];
@@ -719,16 +723,34 @@ function SketchCard({ stage, result, session }: { stage: "read" | "built"; resul
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-line p-4" data-swarm-section={`sketch-${stage}`}>
       <div className="flex items-baseline justify-between gap-4">
-        <h3 className="text-sm font-medium">{stage === "read" ? "Sketch: trang mẫu vẽ lại từ những gì Chroma đọc được" : "Sketch bản dựng so với trang mẫu"}</h3>
+        <h3 className="text-sm font-medium">{stage === "read" ? "Sketch toàn trang từ trang mẫu" : "Sketch toàn trang: bản dựng so với trang mẫu"}</h3>
         <span className="font-mono text-xs text-accent">
           {stage === "read" ? `đọc được ${result.coverage}%` : `sketch ${result.score}%` + (result.pixel_score != null ? ` · ảnh ${result.pixel_score}%` : "")}
         </span>
       </div>
       <p className="text-sm text-fg-2">
         {stage === "read"
-          ? (result.gaps ? `Lần đầu phủ ${result.coverage_before}% trang; ${result.gaps} chỗ đọc thiếu (khung đỏ) được đo lại khi dừng animation, thêm ${result.remeasured} phần.` : "Không thấy chỗ nào đọc thiếu.")
+          ? (result.gaps ? `Lần đầu phủ ${result.coverage_before}% trang; đã đo lại ${result.gaps} chỗ khi dừng animation, thêm ${result.remeasured} phần. Khung đỏ đánh dấu vùng còn đọc thiếu.` : "Không thấy chỗ nào đọc thiếu.")
           : `Wireframe của bản dựng trước khi tô màu: ảnh chụp so với ảnh chụp trang mẫu (khung đỏ = thiếu), rồi sketch so với sketch.${low.length ? " Thấp nhất: " + low.map(([k, v]) => `${k} ${v}%`).join(", ") + "." : ""}`}
       </p>
+      {stage === "read" && result.section_components && (
+        <p className="text-sm text-fg-2">
+          {Object.keys(result.section_components).length} section · {Object.values(result.section_components).reduce((a, b) => a + b, 0)} component
+          {result.animated_components ? ` · ${result.animated_components} component chuyển động (khung xanh và mũi tên)` : ""}.
+        </p>
+      )}
+      {result.full && (
+        <>
+          <div className="flex flex-wrap gap-4 text-sm">
+            <a href={shot(result.full)} target="_blank" rel="noreferrer" className="min-h-12 content-center text-accent underline underline-offset-4">Mở bản vẽ toàn trang</a>
+            {result.drawing && <a href={shot(result.drawing)} target="_blank" rel="noreferrer" className="min-h-12 content-center text-accent underline underline-offset-4">Mở sketch SVG</a>}
+          </div>
+          <div className="max-h-[640px] overflow-auto rounded-lg border border-line" tabIndex={0} role="region" aria-label="Sketch toàn trang, cuộn để xem tất cả section">
+            {/* eslint-disable-next-line @next/next/no-img-element -- generated full-page comparison */}
+            <img src={shot(result.full)} alt="Toàn bộ trang mẫu bên trái và sketch bên phải, từ header đến footer" width={2904} height={result.height} className="block h-auto w-full" loading="lazy" />
+          </div>
+        </>
+      )}
       {named.length > 0 && (
         <ul className="flex flex-col gap-1 text-xs text-fg-2">
           {named.map((d, k) => (

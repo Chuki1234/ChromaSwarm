@@ -134,7 +134,9 @@ async def clone_preview(url: str) -> dict:
     try:
         return (await page_preview(str(target))).model_dump()
     except Exception as e:  # noqa: BLE001 — unreachable / blocked page: the form still works without a preview
-        raise HTTPException(status_code=502, detail=f"Không mở được trang: {str(e)[:120]}") from None
+        log.exception("Reference page preview failed")
+        detail = str(e).strip()[:120] or "Không thể khởi động trình duyệt xem trước. Vui lòng thử lại."
+        raise HTTPException(status_code=502, detail=f"Không mở được trang: {detail}") from None
 
 
 @app.get("/sessions/{session_id}/template.zip")
@@ -162,7 +164,7 @@ def compare_shot(session_id: str, name: str) -> Response:
     return Response(path.read_bytes(), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
-_SAFE_SKETCH = re.compile(r"^(ref|built|shot|fbuilt|fshot)-\d{2}\.jpg$")
+_SAFE_SKETCH = re.compile(r"^(?:(ref|built|shot|fbuilt|fshot)-(?:\d{2,4}|full)\.jpg|reference\.jpg|sketch\.svg)$")
 
 
 @app.get("/sessions/{session_id}/sketch/{name}")
@@ -174,7 +176,8 @@ def sketch_shot(session_id: str, name: str) -> Response:
     path = WORKSPACES / session_id / "artifacts" / "sketch" / name
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Không có ảnh này.")
-    return Response(path.read_bytes(), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+    return Response(path.read_bytes(), media_type="image/svg+xml" if name.endswith(".svg") else "image/jpeg",
+                    headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 
 @app.get("/sessions/{session_id}/page")
@@ -220,9 +223,10 @@ async def announce_page(session_id: str, snap: dict) -> None:
 
 
 @app.get("/health")
-def health() -> dict:
+async def health() -> dict:
     return {"ok": True, "consultant": getattr(consultant, "name", "rule-based"),
-            "chat": getattr(chat_agent, "name", "rule-based"), "build": build is not None}
+            "chat": getattr(chat_agent, "name", "rule-based"), "build": build is not None,
+            "event_loop": type(asyncio.get_running_loop()).__name__}
 
 
 # Every open Studio tab of a session, and one lock per session so an answer from the Studio

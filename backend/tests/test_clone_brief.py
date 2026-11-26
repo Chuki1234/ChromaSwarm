@@ -94,7 +94,7 @@ def test_brief_covers_every_part_and_says_what_is_not_cloned():
     assert "×2" in md  # the same picture shown twice
     assert "link hỏng (404)" in md
     assert "CloneSpec" in md and "| 2 hình | Hình |" in md  # pictures grouped: replaced by placeholders
-    assert "lời và tên người thật" in md and "| Icon |" in md and "### ⛔ Không dựng (skip)" in md
+    assert "giữ nội dung chữ của trang mẫu" in md and "| Icon |" in md and "### ⛔ Không dựng (skip)" in md
     assert "radial" in md and "Lexend" in md
 
 
@@ -138,9 +138,20 @@ def test_spec_decides_hrefs_layers_and_effects_the_build_uses():
     assert "reveal" not in spec.effects("hero")  # the intro is played by the layer, not as a section reveal
     assert spec.effects("blog") == {"parallax": {"distance_px": 30}}
     todo = [i for i in spec.items if i.kind == "effect" and spec.action(i) == "todo"]
-    assert [i.data["label"] for i in todo] == ["Cột chạy dọc"]
+    assert todo == []
+    vertical = next(i for i in spec.of("effect") if i.data.get("label") == "Cột chạy dọc")
+    assert vertical.action == "copy" and vertical.data["renderer"] == "section-template"
     faq_row = next(i for i in spec.items if i.kind == "control" and i.section == "faq")
     assert spec.action(faq_row) == "copy"  # an accordion row opens for real in the rebuild
+
+
+def test_spec_keeps_reference_brand_background_without_ownership_gate():
+    from chromaswarm.clone.spec import build_spec
+    clone = _spec_clone(owned=False, backgrounds=[{
+        "kind": "faint-type", "top": 100, "left": 0, "w": 1200, "h": 300, "font_px": 300,
+    }])
+    item = build_spec(clone).of("background")[0]
+    assert item.action == "copy"
 
 
 def test_user_overrides_skip_a_section_and_the_plan_drops_it():
